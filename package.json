@@ -9,6 +9,7 @@
     "lint": "oxlint",
     "test": "vitest run",
     "preview": "vite preview",
+    "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
     "tauri:android:init": "tauri android init",

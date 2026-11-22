@@ -89,7 +89,10 @@ jobs:
 
       - name: Rename installable APK artifact
         run: |
-          APK_PATH=$(find src-tauri/gen/android/app/build/outputs/apk -name "*.apk" | head -n 1)
+          APK_PATH=$(find src-tauri/gen/android/app/build/outputs/apk -name "*universal*.apk" | head -n 1)
+          if [ -z "$APK_PATH" ]; then
+            APK_PATH=$(find src-tauri/gen/android/app/build/outputs/apk -name "*.apk" | head -n 1)
+          fi
           cp "$APK_PATH" ./Luma-TV-Android-Universal.apk
 
       - name: Upload Android APK artifact
