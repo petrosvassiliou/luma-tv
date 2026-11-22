@@ -1,5 +1,13 @@
-export const LUMA_APP_VERSION = '0.1.0-beta.1';
-export const LUMA_RELEASE_BADGE = '0.1 beta';
+export const LUMA_APP_VERSION = '0.2.0-beta.1';
+export const LUMA_RELEASE_BADGE = '0.2 beta';
+
+export interface EpgReminder {
+  programId: string;
+  channelId: string;
+  channelName: string;
+  title: string;
+  startMs: number;
+}
 
 export type PlatformDesignMode = 'm3-expressive' | 'liquid-glass';
 

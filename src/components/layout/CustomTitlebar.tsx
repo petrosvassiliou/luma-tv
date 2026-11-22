@@ -8,6 +8,7 @@ import {
   Smartphone,
   Sparkles,
 } from 'lucide-react';
+import { invokeNativeWindowControl } from '../../services/universalInput';
 import {
   LUMA_RELEASE_BADGE,
   type NavigationSection,
@@ -70,9 +71,24 @@ export const CustomTitlebar: React.FC<CustomTitlebarProps> = ({
             className="mr-1.5 flex items-center gap-2 pl-0.5"
             title="macOS Window Controls"
           >
-            <span className="h-3 w-3 rounded-full bg-[#FF5F57] shadow-[inset_0_0_0_0.5px_rgba(0,0,0,0.35)]" />
-            <span className="h-3 w-3 rounded-full bg-[#FEBC2E] shadow-[inset_0_0_0_0.5px_rgba(0,0,0,0.35)]" />
-            <span className="h-3 w-3 rounded-full bg-[#28C840] shadow-[inset_0_0_0_0.5px_rgba(0,0,0,0.35)]" />
+            <button
+              type="button"
+              onClick={() => invokeNativeWindowControl('close')}
+              className="h-3 w-3 rounded-full bg-[#FF5F57] shadow-[inset_0_0_0_0.5px_rgba(0,0,0,0.35)]"
+              aria-label="Fenster schließen"
+            />
+            <button
+              type="button"
+              onClick={() => invokeNativeWindowControl('minimize')}
+              className="h-3 w-3 rounded-full bg-[#FEBC2E] shadow-[inset_0_0_0_0.5px_rgba(0,0,0,0.35)]"
+              aria-label="Minimieren"
+            />
+            <button
+              type="button"
+              onClick={() => invokeNativeWindowControl('toggle-maximize')}
+              className="h-3 w-3 rounded-full bg-[#28C840] shadow-[inset_0_0_0_0.5px_rgba(0,0,0,0.35)]"
+              aria-label="Vollbild / Zoom"
+            />
           </div>
         )}
 

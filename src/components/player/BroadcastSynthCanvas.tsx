@@ -6,6 +6,7 @@ interface BroadcastSynthCanvasProps {
   programTitle: string;
   paused?: boolean;
   compact?: boolean;
+  externalCanvasRef?: React.RefObject<HTMLCanvasElement | null>;
 }
 
 export const BroadcastSynthCanvas: React.FC<BroadcastSynthCanvasProps> = ({
@@ -13,8 +14,10 @@ export const BroadcastSynthCanvas: React.FC<BroadcastSynthCanvasProps> = ({
   programTitle,
   paused = false,
   compact = false,
+  externalCanvasRef,
 }) => {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const internalRef = useRef<HTMLCanvasElement | null>(null);
+  const canvasRef = externalCanvasRef ?? internalRef;
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -39,15 +42,16 @@ export const BroadcastSynthCanvas: React.FC<BroadcastSynthCanvasProps> = ({
       const w = (canvas.width = canvas.clientWidth || 640);
       const h = (canvas.height = canvas.clientHeight || 360);
 
-      // Deep cinematic base gradient
       const bg = ctx.createLinearGradient(0, 0, w, h);
       bg.addColorStop(0, '#070B14');
-      bg.addColorStop(0.55, `rgba(${Math.round(ar * 0.22)}, ${Math.round(ag * 0.24)}, ${Math.round(ab * 0.34)}, 1)`);
+      bg.addColorStop(
+        0.55,
+        `rgba(${Math.round(ar * 0.22)}, ${Math.round(ag * 0.24)}, ${Math.round(ab * 0.34)}, 1)`
+      );
       bg.addColorStop(1, '#05070D');
       ctx.fillStyle = bg;
       ctx.fillRect(0, 0, w, h);
 
-      // Flowing Aurora / Anamorphic Luminance Waves
       for (let layer = 0; layer < 3; layer++) {
         ctx.beginPath();
         const amp = h * (0.08 + layer * 0.035);
@@ -71,7 +75,6 @@ export const BroadcastSynthCanvas: React.FC<BroadcastSynthCanvasProps> = ({
         ctx.fill();
       }
 
-      // Precision Orbital / Broadcast Ring
       const cx = w * 0.72;
       const cy = h * 0.44;
       const radius = Math.min(w, h) * 0.24;
@@ -94,7 +97,6 @@ export const BroadcastSynthCanvas: React.FC<BroadcastSynthCanvasProps> = ({
       ctx.stroke();
       ctx.restore();
 
-      // Studio Broadcast Watermark & Live Timecode
       if (!compact) {
         ctx.fillStyle = 'rgba(255, 255, 255, 0.86)';
         ctx.font = '600 13px Inter, system-ui, sans-serif';
@@ -119,7 +121,16 @@ export const BroadcastSynthCanvas: React.FC<BroadcastSynthCanvasProps> = ({
 
     rafId = requestAnimationFrame(render);
     return () => cancelAnimationFrame(rafId);
-  }, [channel.accentColor, channel.number, channel.resolution, channel.shortCode, compact, paused, programTitle]);
+  }, [
+    canvasRef,
+    channel.accentColor,
+    channel.number,
+    channel.resolution,
+    channel.shortCode,
+    compact,
+    paused,
+    programTitle,
+  ]);
 
   return (
     <canvas

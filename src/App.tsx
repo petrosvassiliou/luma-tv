@@ -18,6 +18,10 @@ import type {
 } from './services/lumaCloudSync';
 import { syncOsMediaSession } from './services/mediaSession';
 import {
+  useCrossPlatformFileDropAndLaunch,
+  useUniversalGamepadControls,
+} from './services/universalInput';
+import {
   deletePersistedSource,
   importM3uPlaylist,
   importXmltvForSource,
@@ -54,6 +58,7 @@ import type {
   CustomBouquet,
   EngineProxyConfig,
   EpgProgram,
+  EpgReminder,
   NavigationSection,
   ParentalControlConfig,
   PlatformDesignMode,
@@ -660,6 +665,101 @@ export function App() {
     await refreshActiveSourceBundle(activeSourceId);
   };
 
+  // EPG Broadcast Reminders (macOS / Android / PWA Notification + In-App Toast)
+  const [reminders, setReminders] = useState<EpgReminder[]>(() => {
+    try {
+      const raw = localStorage.getItem('luma.reminders.v1');
+      if (raw) return JSON.parse(raw) as EpgReminder[];
+    } catch {
+      // Ignore
+    }
+    return [];
+  });
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  const reminderProgramIds = useMemo(
+    () => new Set(reminders.map((r) => r.programId)),
+    [reminders]
+  );
+
+  const handleToggleReminder = useCallback((channel: Channel, program: EpgProgram) => {
+    setReminders((prev) => {
+      const exists = prev.some((r) => r.programId === program.id);
+      const next = exists
+        ? prev.filter((r) => r.programId !== program.id)
+        : [
+            ...prev,
+            {
+              programId: program.id,
+              channelId: channel.id,
+              channelName: channel.name,
+              title: program.title,
+              startMs: program.startMs,
+            },
+          ];
+      try {
+        localStorage.setItem('luma.reminders.v1', JSON.stringify(next));
+      } catch {
+        // Ignore
+      }
+      setToastMessage(
+        exists
+          ? `Erinnerung entfernt: ${program.title}`
+          : `Erinnerung aktiviert: ${program.title} auf ${channel.name}`
+      );
+      window.setTimeout(() => setToastMessage(null), 3200);
+      return next;
+    });
+
+    if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
+      Notification.requestPermission().catch(() => undefined);
+    }
+  }, []);
+
+  // Universal Gamepad / Android TV Remote D-Pad Controls
+  const sectionOrder: NavigationSection[] = useMemo(
+    () => ['home', 'live-epg', 'multiview', 'vod', 'series', 'catchup', 'studio', 'sources'],
+    []
+  );
+
+  const gamepadHandlers = useMemo(
+    () => ({
+      onChannelPrev: () => zapRelative(-1),
+      onChannelNext: () => zapRelative(1),
+      onCycleSectionPrev: () =>
+        setActiveSection((cur) => {
+          const i = sectionOrder.indexOf(cur);
+          return sectionOrder[(i - 1 + sectionOrder.length) % sectionOrder.length];
+        }),
+      onCycleSectionNext: () =>
+        setActiveSection((cur) => {
+          const i = sectionOrder.indexOf(cur);
+          return sectionOrder[(i + 1) % sectionOrder.length];
+        }),
+      onToggleSearch: () => setCommandBarOpen((v) => !v),
+    }),
+    [sectionOrder, zapRelative]
+  );
+  useUniversalGamepadControls(gamepadHandlers);
+
+  // OS File Association & Global .m3u / .m3u8 / .xml.gz Drag-and-Drop Receiver
+  const fileDropHandlers = useMemo(
+    () => ({
+      onImportM3uFile: (name: string, content: string) => {
+        setToastMessage(`Importiere Playlist „${name}“ im Hintergrund…`);
+        handleImportM3u({ name, rawText: content });
+        setActiveSection('sources');
+      },
+      onImportXmltvBuffer: (buffer: ArrayBuffer) => {
+        setToastMessage('Importiere XMLTV EPG-Datei…');
+        handleUploadXmltvBuffer(buffer);
+      },
+    }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [activeSourceId, proxyConfig]
+  );
+  useCrossPlatformFileDropAndLaunch(fileDropHandlers);
+
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
@@ -868,11 +968,13 @@ export function App() {
                 xmltvMap={activeSourceId === 'builtin-reference' ? undefined : xmltvMap}
                 activeChannelId={activeChannel.id}
                 favoriteIds={favoriteIds}
+                reminderProgramIds={reminderProgramIds}
                 epgOffsetHours={epgOffsetHours}
                 nowMs={nowMs}
                 onSelectChannel={selectLiveChannel}
                 onStartTimeshift={handleStartTimeshift}
                 onToggleFavorite={toggleFavorite}
+                onToggleReminder={handleToggleReminder}
               />
             </>
           )}
@@ -1003,6 +1105,16 @@ export function App() {
             }
           }}
         />
+      )}
+
+      {toastMessage && (
+        <div
+          className={`fixed bottom-5 left-1/2 z-50 -translate-x-1/2 px-4 py-2.5 text-xs font-semibold text-white shadow-2xl ${
+            isM3 ? 'rounded-full bg-[#232B3D] ring-1 ring-[#7FD4FF]/50' : 'lg-modal rounded-full'
+          }`}
+        >
+          {toastMessage}
+        </div>
       )}
 
       {/* Parental Control 4-Digit PIN Modal */}

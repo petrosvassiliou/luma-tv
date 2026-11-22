@@ -4,6 +4,7 @@ import {
   Captions,
   ChevronDown,
   ChevronUp,
+  Circle,
   Expand,
   Maximize2,
   Minimize2,
@@ -14,11 +15,19 @@ import {
   RotateCcw,
   Settings2,
   ShieldCheck,
+  Sliders,
+  Square,
   Star,
   Volume2,
   VolumeX,
 } from 'lucide-react';
 import { getCurrentAndNextProgram } from '../../data/mockCatalog';
+import {
+  AUDIO_DSP_PRESETS,
+  LumaAudioProcessor,
+  type AudioDspPreset,
+} from '../../engine/audioProcessor';
+import { LumaDvrRecorder } from '../../engine/dvrRecorder';
 import { LumaPlayerEngine } from '../../engine/LumaPlayerEngine';
 import type {
   AspectRatioMode,
@@ -74,7 +83,11 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
   const isM3 = designMode === 'm3-expressive';
   const stageRef = useRef<HTMLDivElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const synthCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const engineRef = useRef<LumaPlayerEngine | null>(null);
+  const audioDspRef = useRef<LumaAudioProcessor | null>(null);
+  const dvrRef = useRef<LumaDvrRecorder | null>(null);
+  const touchStartY = useRef<number | null>(null);
 
   const [telemetry, setTelemetry] = useState<StreamTelemetry>({
     engine: 'WebHLS · MSE Worker',
@@ -96,8 +109,15 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
   const [isPlaying, setIsPlaying] = useState(true);
   const [isMuted, setIsMuted] = useState(true);
   const [volume, setVolume] = useState(0.85);
+  const [audioPreset, setAudioPreset] = useState<AudioDspPreset>('direct');
+  const [preAmpBoost, setPreAmpBoost] = useState<number>(1.0);
   const [aspectMode, setAspectMode] = useState<AspectRatioMode>('16:9');
   const [showQualityMenu, setShowQualityMenu] = useState(false);
+
+  // Live DVR Recording State
+  const [isRecording, setIsRecording] = useState(false);
+  const [recSeconds, setRecSeconds] = useState(0);
+
   const [sampledStreamState, setSampledStreamState] = useState<{
     url: string;
     rgb: string;
@@ -125,10 +145,19 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
     const engine = new LumaPlayerEngine((nextTelemetry) => {
       setTelemetry(nextTelemetry);
     });
+    const dsp = new LumaAudioProcessor();
+    const dvr = new LumaDvrRecorder();
     engineRef.current = engine;
+    audioDspRef.current = dsp;
+    dvrRef.current = dvr;
+
     return () => {
+      dvr.stopAndDownload();
+      dsp.destroy();
       engine.destroy();
       engineRef.current = null;
+      audioDspRef.current = null;
+      dvrRef.current = null;
     };
   }, []);
 
@@ -151,6 +180,18 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
     video.muted = isMuted;
     video.volume = volume;
   }, [isMuted, volume]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !audioDspRef.current) return;
+    audioDspRef.current.attachAndConfigure(video, audioPreset, preAmpBoost);
+  }, [audioPreset, preAmpBoost]);
+
+  useEffect(() => {
+    if (!isRecording) return;
+    const timer = window.setInterval(() => setRecSeconds((s) => s + 1), 1000);
+    return () => window.clearInterval(timer);
+  }, [isRecording]);
 
   useEffect(() => {
     if (!ambilightEnabled) return;
@@ -228,6 +269,30 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
     setIsMuted(nextVol === 0);
   };
 
+  const toggleDvrRecording = () => {
+    const dvr = dvrRef.current;
+    if (!dvr) return;
+
+    if (isRecording) {
+      dvr.stopAndDownload();
+      setIsRecording(false);
+      setRecSeconds(0);
+      return;
+    }
+
+    const targetEl =
+      telemetry.state === 'playing' && videoRef.current
+        ? videoRef.current
+        : synthCanvasRef.current;
+    if (!targetEl) return;
+
+    const ok = dvr.startRecording(targetEl, channel.shortCode);
+    if (ok) {
+      setRecSeconds(0);
+      setIsRecording(true);
+    }
+  };
+
   const handleOsPip = async () => {
     const video = videoRef.current;
     if (!video) return;
@@ -264,6 +329,22 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
     );
   };
 
+  // Android / Tablet Touch Vertical Swipe Zapping
+  const handleTouchStart = (e: React.TouchEvent) => {
+    touchStartY.current = e.touches[0]?.clientY ?? null;
+  };
+
+  const handleTouchEnd = (e: React.TouchEvent) => {
+    if (touchStartY.current === null) return;
+    const endY = e.changedTouches[0]?.clientY ?? touchStartY.current;
+    const dy = endY - touchStartY.current;
+    touchStartY.current = null;
+    if (Math.abs(dy) > 60) {
+      if (dy < 0) onNextChannel();
+      else onPrevChannel();
+    }
+  };
+
   const { current, next, progressPct } = getCurrentAndNextProgram(channel, nowMs);
   const displayTitle = overrideTitle ?? timeshiftProgram?.title ?? current.title;
   const displaySubtitle =
@@ -274,6 +355,12 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
 
   const fmtTime = (ms: number) =>
     new Intl.DateTimeFormat('de-DE', { hour: '2-digit', minute: '2-digit' }).format(ms);
+
+  const fmtRecTimer = (secs: number) => {
+    const m = String(Math.floor(secs / 60)).padStart(2, '0');
+    const s = String(secs % 60).padStart(2, '0');
+    return `${m}:${s}`;
+  };
 
   const resolutionLabel =
     telemetry.height >= 2160
@@ -290,6 +377,8 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
     <section
       ref={stageRef}
       id="luma-player-stage"
+      onTouchStart={handleTouchStart}
+      onTouchEnd={handleTouchEnd}
       className={`relative shrink-0 overflow-hidden transition-all duration-300 ${
         theaterExpanded ? 'h-[60vh] min-h-[350px]' : 'h-[37vh] min-h-[250px] max-h-[385px]'
       } ${
@@ -313,11 +402,13 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
             channel={channel}
             programTitle={displayTitle}
             paused={!isPlaying}
+            externalCanvasRef={synthCanvasRef}
           />
         )}
 
         <video
           ref={videoRef}
+          crossOrigin="anonymous"
           playsInline
           autoPlay
           muted={isMuted}
@@ -333,7 +424,6 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
           }`}
         />
 
-        {/* Active Simulated/WebVTT Subtitle Overlay Banner */}
         {telemetry.currentSubtitleTrack >= 0 && (
           <div className="pointer-events-none absolute bottom-28 z-20 rounded-xl bg-black/75 px-4 py-1.5 text-xs font-medium text-white shadow-lg backdrop-blur-md">
             [CC] {displayTitle} — Live-Untertitelspur aktiv
@@ -359,7 +449,7 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
           </button>
         )}
 
-        {/* Top-Left Stream Telemetry Pill */}
+        {/* Top-Left Stream Telemetry + DVR + DSP Badges */}
         <div className="absolute top-3.5 left-4 z-20 flex flex-wrap items-center gap-2">
           <span
             className={
@@ -373,8 +463,20 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
                 timeshiftProgram ? 'bg-amber-300' : 'bg-sky-300 animate-luma-live'
               }`}
             />
-            {timeshiftProgram ? 'CATCH-UP' : overrideStreamUrl ? 'CINEMA VOD' : 'LIVE'}
+            {timeshiftProgram ? 'CATCH-UP' : overrideStreamUrl ? 'ON DEMAND' : 'LIVE'}
           </span>
+
+          {isRecording && (
+            <button
+              type="button"
+              onClick={toggleDvrRecording}
+              className="inline-flex items-center gap-1.5 rounded-full bg-rose-500/90 px-3 py-1 text-[11px] font-bold text-white shadow-lg luma-tabular"
+              title="Aufnahme beenden & speichern"
+            >
+              <span className="h-2 w-2 rounded-full bg-white animate-luma-live" />
+              <span>REC {fmtRecTimer(recSeconds)}</span>
+            </button>
+          )}
 
           <span
             className={
@@ -395,6 +497,13 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
             <span className="opacity-35">·</span>
             <span className="opacity-75">{telemetry.engine}</span>
           </span>
+
+          {audioPreset !== 'direct' && (
+            <span className="hidden items-center gap-1 rounded-full bg-sky-400/20 px-2.5 py-1 text-[10px] font-semibold text-sky-200 ring-1 ring-sky-400/35 md:inline-flex">
+              <Sliders className="h-3 w-3" />
+              {AUDIO_DSP_PRESETS[audioPreset].label}
+            </span>
+          )}
 
           {telemetry.proxyActive && (
             <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/20 px-2.5 py-1 text-[10px] font-semibold text-emerald-300 ring-1 ring-emerald-400/30">
@@ -504,7 +613,7 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
               </div>
             </div>
 
-            {/* Transport & Spatial Controls */}
+            {/* Transport, DVR, Audio DSP & Spatial Controls */}
             <div className="flex items-center gap-1.5">
               <div
                 className={
@@ -548,6 +657,33 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
                 title={isPlaying ? 'Pause' : 'Wiedergabe'}
               >
                 {isPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
+              </button>
+
+              {/* Live DVR Record Button */}
+              <button
+                id="btn-dvr-record"
+                type="button"
+                onClick={toggleDvrRecording}
+                className={`flex items-center justify-center rounded-full transition ${
+                  isM3 ? 'h-10 w-10' : 'h-9 w-9'
+                } ${
+                  isRecording
+                    ? 'bg-rose-500 text-white shadow-[0_0_16px_rgba(244,63,94,0.65)]'
+                    : isM3
+                      ? 'm3-secondary-tonal'
+                      : 'lg-capsule text-rose-300'
+                }`}
+                title={
+                  isRecording
+                    ? 'Live-DVR Aufnahme stoppen & auf Gerät speichern'
+                    : 'Sofort-DVR Aufnahme starten (macOS / Android / PWA)'
+                }
+              >
+                {isRecording ? (
+                  <Square className="h-3.5 w-3.5 fill-current" />
+                ) : (
+                  <Circle className="h-3.5 w-3.5 fill-rose-400 text-rose-400" />
+                )}
               </button>
 
               {/* Volume */}
@@ -600,7 +736,7 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
                 <span>{aspectMode.toUpperCase()}</span>
               </button>
 
-              {/* Quality, Audio & Subtitles Menu */}
+              {/* Quality, Audio DSP, Audio Tracks & Subtitles Menu */}
               <div className="relative">
                 <button
                   id="btn-stream-settings"
@@ -611,20 +747,66 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
                       ? 'm3-secondary-tonal flex h-10 items-center gap-1.5 rounded-full px-3 text-[11px] font-semibold'
                       : 'lg-capsule flex h-9 items-center gap-1 rounded-full px-3 text-[11px] font-medium text-white/90'
                   }
-                  title="Qualität, Audio & Untertitel"
+                  title="Qualität, Studio Audio-DSP & Untertitel"
                 >
                   <Settings2 className="h-3.5 w-3.5" />
-                  <span className="hidden xl:inline">Spuren</span>
+                  <span className="hidden xl:inline">DSP &amp; Spuren</span>
                 </button>
 
                 {showQualityMenu && (
                   <div
-                    className={`luma-scroll absolute right-0 bottom-12 z-30 max-h-80 w-64 overflow-y-auto p-3 text-xs ${
+                    className={`luma-scroll absolute right-0 bottom-12 z-30 max-h-96 w-72 overflow-y-auto p-3.5 text-xs ${
                       isM3
                         ? 'rounded-[24px] bg-[#232B3D] shadow-2xl ring-1 ring-white/10'
                         : 'lg-modal rounded-[22px]'
                     }`}
                   >
+                    {/* Luma Studio Audio DSP */}
+                    <div className="mb-1.5 flex items-center justify-between text-[10px] font-semibold uppercase tracking-wider text-sky-300">
+                      <span>Studio Audio-DSP &amp; Nachtmodus</span>
+                      <Sliders className="h-3 w-3" />
+                    </div>
+                    <div className="space-y-1">
+                      {(Object.keys(AUDIO_DSP_PRESETS) as AudioDspPreset[]).map((key) => {
+                        const meta = AUDIO_DSP_PRESETS[key];
+                        const active = audioPreset === key;
+                        return (
+                          <button
+                            key={key}
+                            type="button"
+                            onClick={() => setAudioPreset(key)}
+                            className={`flex w-full flex-col rounded-2xl px-3 py-1.5 text-left transition ${
+                              active
+                                ? isM3
+                                  ? 'm3-tonal-active font-semibold'
+                                  : 'lg-pill-active'
+                                : 'text-slate-200 hover:bg-white/10'
+                            }`}
+                          >
+                            <span className="text-xs font-semibold">{meta.label}</span>
+                            <span className="text-[10px] opacity-75">{meta.description}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    <div className="mt-2 flex items-center justify-between px-1 text-[11px] text-slate-300 luma-tabular">
+                      <span>Pre-Amp Boost</span>
+                      <span>{Math.round(preAmpBoost * 100)}%</span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0.8}
+                      max={1.6}
+                      step={0.1}
+                      value={preAmpBoost}
+                      onChange={(e) => setPreAmpBoost(Number(e.target.value))}
+                      className="mt-1 h-1 w-full cursor-pointer accent-sky-400"
+                    />
+
+                    <div className="my-2.5 border-t border-white/10" />
+
+                    {/* Quality Levels */}
                     <div className="mb-1.5 flex items-center justify-between text-[10px] font-semibold uppercase tracking-wider text-slate-300">
                       <span>Qualitätsstufe</span>
                       <Radio className="h-3 w-3 text-sky-400" />
@@ -670,38 +852,7 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
                       ))}
                     </div>
 
-                    {telemetry.audioTracks.length > 0 && (
-                      <>
-                        <div className="my-2 border-t border-white/10" />
-                        <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-300">
-                          Audiospur
-                        </div>
-                        <div className="space-y-1">
-                          {telemetry.audioTracks.map((tr) => (
-                            <button
-                              key={tr.index}
-                              type="button"
-                              onClick={() => {
-                                engineRef.current?.setAudioTrack(tr.index);
-                                setShowQualityMenu(false);
-                              }}
-                              className={`flex w-full items-center justify-between rounded-full px-3 py-1.5 text-left ${
-                                telemetry.currentAudioTrack === tr.index
-                                  ? isM3
-                                    ? 'm3-tonal-active font-semibold'
-                                    : 'lg-pill-active'
-                                  : 'text-slate-200 hover:bg-white/10'
-                              }`}
-                            >
-                              <span className="truncate">{tr.name}</span>
-                              <span className="text-[10px] uppercase opacity-70">{tr.lang}</span>
-                            </button>
-                          ))}
-                        </div>
-                      </>
-                    )}
-
-                    <div className="my-2 border-t border-white/10" />
+                    <div className="my-2.5 border-t border-white/10" />
                     <div className="mb-1 flex items-center justify-between text-[10px] font-semibold uppercase tracking-wider text-slate-300">
                       <span>Untertitel / CC</span>
                       <Captions className="h-3 w-3 text-sky-400" />

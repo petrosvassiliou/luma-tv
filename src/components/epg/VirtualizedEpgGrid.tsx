@@ -1,5 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Bell,
+  BellRing,
   Clock,
   Crosshair,
   History,
@@ -20,11 +22,13 @@ interface VirtualizedEpgGridProps {
   xmltvMap?: Map<string, StoredEpgProgram[]>;
   activeChannelId: string;
   favoriteIds: Set<string>;
+  reminderProgramIds?: Set<string>;
   epgOffsetHours: number;
   nowMs: number;
   onSelectChannel: (channel: Channel) => void;
   onStartTimeshift: (channel: Channel, program: EpgProgram) => void;
   onToggleFavorite: (channelId: string) => void;
+  onToggleReminder?: (channel: Channel, program: EpgProgram) => void;
 }
 
 const ROW_HEIGHT = 60;
@@ -38,11 +42,13 @@ export const VirtualizedEpgGrid: React.FC<VirtualizedEpgGridProps> = ({
   xmltvMap,
   activeChannelId,
   favoriteIds,
+  reminderProgramIds,
   epgOffsetHours,
   nowMs,
   onSelectChannel,
   onStartTimeshift,
   onToggleFavorite,
+  onToggleReminder,
 }) => {
   const isM3 = designMode === 'm3-expressive';
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -614,7 +620,33 @@ export const VirtualizedEpgGrid: React.FC<VirtualizedEpgGridProps> = ({
             {inspected.program.description}
           </p>
 
-          <div className="mt-3.5 flex items-center justify-end gap-2">
+          <div className="mt-3.5 flex flex-wrap items-center justify-end gap-2">
+            {inspected.program.startMs > nowMs && onToggleReminder && (
+              <button
+                type="button"
+                onClick={() => onToggleReminder(inspected.channel, inspected.program)}
+                className={`inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-xs font-semibold transition ${
+                  reminderProgramIds?.has(inspected.program.id)
+                    ? 'bg-amber-400/20 text-amber-200 ring-1 ring-amber-400/50'
+                    : isM3
+                      ? 'm3-secondary-tonal'
+                      : 'lg-capsule text-white'
+                }`}
+              >
+                {reminderProgramIds?.has(inspected.program.id) ? (
+                  <>
+                    <BellRing className="h-3.5 w-3.5 text-amber-300" />
+                    <span>Erinnerung aktiv</span>
+                  </>
+                ) : (
+                  <>
+                    <Bell className="h-3.5 w-3.5" />
+                    <span>Erinnern</span>
+                  </>
+                )}
+              </button>
+            )}
+
             <button
               type="button"
               onClick={() => {

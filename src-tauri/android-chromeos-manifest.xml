@@ -1,21 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!--
-  Luma TV (app.lumatv.client) — Android & GoogleOS / Chromebook Manifest Template
-  Merged during `tauri android init` / Gradle build for full Freeform Windowing,
-  Trackpad/Keyboard ergonomics, Hardware Picture-in-Picture, and TV/Desktop support.
--->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="app.lumatv.client">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
 
-    <!-- Essential for Chromebook / GoogleOS Desktop & Non-Touch Devices -->
+    <!-- Android Phone, Tablet, Android TV (D-Pad Leanback) & Chromebook Compatibility -->
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
     <uses-feature android:name="android.hardware.type.pc" android:required="false" />
     <uses-feature android:name="android.software.leanback" android:required="false" />
+    <uses-feature android:name="android.hardware.gamepad" android:required="false" />
 
     <application
         android:label="Luma"
@@ -43,6 +40,16 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+            </intent-filter>
+
+            <!-- Native Android .m3u / .m3u8 File Intent Handler -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:mimeType="audio/x-mpegurl" />
+                <data android:mimeType="application/vnd.apple.mpegurl" />
+                <data android:mimeType="application/x-mpegurl" />
             </intent-filter>
         </activity>
     </application>

@@ -3,11 +3,13 @@ import {
   buildChannelCatalog,
   getChannelProgramsInRange,
 } from '../data/mockCatalog';
+import { AUDIO_DSP_PRESETS } from '../engine/audioProcessor';
 import {
   buildProxiedStreamUrl,
   detectStreamDriver,
   rewriteHlsManifestUrls,
 } from '../engine/corsProxy';
+import { selectSupportedRecorderMimeType } from '../engine/dvrRecorder';
 import {
   decryptSyncVault,
   encryptSyncVault,
@@ -178,5 +180,12 @@ describe('Luma TV v0.1 beta — Zero-Knowledge AES-256-GCM Sync Vault & 20k EPG 
     for (let i = 1; i < progs.length; i++) {
       expect(progs[i].startMs).toBe(progs[i - 1].endMs);
     }
+  });
+
+  it('provides calibrated Studio Audio DSP curves and safe DVR fallback in headless Node', () => {
+    expect(AUDIO_DSP_PRESETS['vocal-boost'].midPeakDb).toBeGreaterThan(4);
+    expect(AUDIO_DSP_PRESETS['night-leveler'].compressorActive).toBe(true);
+    const recFormat = selectSupportedRecorderMimeType();
+    expect(['mp4', 'webm']).toContain(recFormat.extension);
   });
 });
