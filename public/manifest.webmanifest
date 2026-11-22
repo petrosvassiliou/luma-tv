@@ -1,0 +1,42 @@
+{
+  "id": "app.lumatv.client",
+  "name": "Luma TV",
+  "short_name": "Luma",
+  "description": "Next-Gen High-Luminance Stream, M3U & Xtream Player for ChromeOS, macOS & Spatial Desktops.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone"],
+  "orientation": "any",
+  "background_color": "#090A0F",
+  "theme_color": "#090A0F",
+  "categories": ["entertainment", "video", "multimedia"],
+  "icons": [
+    {
+      "src": "/luma-logo.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/luma-logo.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Live TV & EPG",
+      "short_name": "EPG",
+      "description": "Direkt in das virtualisierte 2D-EPG-Grid starten",
+      "url": "/?view=epg"
+    },
+    {
+      "name": "Luma Multiview (4x Sport)",
+      "short_name": "Multiview",
+      "description": "4 Live-Streams gleichzeitig im Bento-Grid öffnen",
+      "url": "/?view=multiview"
+    }
+  ]
+}

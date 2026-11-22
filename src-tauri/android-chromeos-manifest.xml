@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Luma TV (app.lumatv.client) — Android & GoogleOS / Chromebook Manifest Template
+  Merged during `tauri android init` / Gradle build for full Freeform Windowing,
+  Trackpad/Keyboard ergonomics, Hardware Picture-in-Picture, and TV/Desktop support.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="app.lumatv.client">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+
+    <!-- Essential for Chromebook / GoogleOS Desktop & Non-Touch Devices -->
+    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+    <uses-feature android:name="android.hardware.type.pc" android:required="false" />
+    <uses-feature android:name="android.software.leanback" android:required="false" />
+
+    <application
+        android:label="Luma"
+        android:usesCleartextTraffic="true"
+        android:hardwareAccelerated="true"
+        android:appCategory="video">
+
+        <meta-data android:name="WindowManagerPreference:FreeformWindowSize" android:value="maximize" />
+        <meta-data android:name="WindowManagerPreference:FreeformWindowOrientation" android:value="landscape" />
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:resizeableActivity="true"
+            android:supportsPictureInPicture="true"
+            android:launchMode="singleTask"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboard|keyboardHidden|navigation|uiMode|density">
+            <layout
+                android:defaultWidth="1366dp"
+                android:defaultHeight="840dp"
+                android:minWidth="720dp"
+                android:minHeight="480dp"
+                android:gravity="center" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

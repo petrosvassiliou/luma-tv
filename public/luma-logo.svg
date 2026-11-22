@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <defs>
+    <linearGradient id="lumaSquircle" x1="64" y1="32" x2="448" y2="480" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#161926" />
+      <stop offset="55%" stop-color="#0C0E16" />
+      <stop offset="100%" stop-color="#07080D" />
+    </linearGradient>
+    <linearGradient id="lumaRim" x1="96" y1="24" x2="416" y2="488" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.28" />
+      <stop offset="35%" stop-color="#38BDF8" stop-opacity="0.22" />
+      <stop offset="100%" stop-color="#818CF8" stop-opacity="0.06" />
+    </linearGradient>
+    <linearGradient id="lumaBeam" x1="136" y1="128" x2="396" y2="376" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#38BDF8" />
+      <stop offset="52%" stop-color="#60A5FA" />
+      <stop offset="100%" stop-color="#818CF8" />
+    </linearGradient>
+    <linearGradient id="lumaPrismFace" x1="168" y1="124" x2="332" y2="388" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#E0F2FE" stop-opacity="0.95" />
+      <stop offset="45%" stop-color="#38BDF8" stop-opacity="0.88" />
+      <stop offset="100%" stop-color="#818CF8" stop-opacity="0.92" />
+    </linearGradient>
+    <radialGradient id="lumaCoreGlow" cx="50%" cy="48%" r="44%">
+      <stop offset="0%" stop-color="#38BDF8" stop-opacity="0.34" />
+      <stop offset="60%" stop-color="#818CF8" stop-opacity="0.12" />
+      <stop offset="100%" stop-color="#090A0F" stop-opacity="0" />
+    </radialGradient>
+    <filter id="beamBlur" x="-25%" y="-25%" width="150%" height="150%">
+      <feGaussianBlur stdDeviation="16" />
+    </filter>
+  </defs>
+
+  <!-- Squircle Chassis -->
+  <rect x="24" y="24" width="464" height="464" rx="112" fill="url(#lumaSquircle)" />
+  <rect x="25.5" y="25.5" width="461" height="461" rx="110.5" stroke="url(#lumaRim)" stroke-width="3" />
+
+  <!-- Internal Ambient Luminance -->
+  <circle cx="264" cy="256" r="188" fill="url(#lumaCoreGlow)" />
+
+  <!-- Soft Refracted Light Wake -->
+  <path d="M236 188L416 138V374L236 324Z" fill="url(#lumaBeam)" opacity="0.22" filter="url(#beamBlur)" />
+  <path d="M244 206L398 166V346L244 306Z" fill="url(#lumaBeam)" opacity="0.26" />
+
+  <!-- Precision Optical L-Prism & Play Vector -->
+  <path
+    d="M156 132C156 120.954 164.954 112 176 112H208C219.046 112 228 120.954 228 132V316C228 322.627 233.373 328 240 328H352C363.046 328 372 336.954 372 348V380C372 391.046 363.046 400 352 400H188C170.327 400 156 385.673 156 368V132Z"
+    fill="url(#lumaPrismFace)"
+  />
+
+  <!-- Refracted Spectral Play Facet -->
+  <path
+    d="M256 162C256 151.505 267.792 145.34 276.422 151.314L378.898 222.259C386.418 227.465 386.418 238.535 378.898 243.741L276.422 314.686C267.792 320.66 256 314.495 256 304V162Z"
+    fill="url(#lumaBeam)"
+  />
+
+  <!-- Specular Glass Edge Highlight -->
+  <path
+    d="M168 120H204"
+    stroke="#FFFFFF"
+    stroke-opacity="0.7"
+    stroke-width="4"
+    stroke-linecap="round"
+  />
+</svg>

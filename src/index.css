@@ -1,0 +1,240 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --titlebar-x: env(titlebar-area-x, 0px);
+    --titlebar-width: env(titlebar-area-width, 100%);
+    --titlebar-height: env(titlebar-area-height, 48px);
+    color-scheme: dark;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+    width: 100%;
+    margin: 0;
+    padding: 0;
+    background-color: #090A0F;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    user-select: none;
+  }
+}
+
+/* ============================================================================
+   1. GOOGLEOS / CHROMEBOOK & ANDROID — MATERIAL 3 EXPRESSIVE DESIGN SYSTEM
+   Tonal elevation hierarchy, bold stadium/squircle shapes, spring physics
+   ============================================================================ */
+[data-design="m3-expressive"] {
+  font-family: 'Inter', 'Roboto Flex', 'Google Sans', system-ui, sans-serif;
+  --m3-surface-lowest: #0B0E14;
+  --m3-surface-low: #131722;
+  --m3-surface-container: #1A202E;
+  --m3-surface-high: #232B3D;
+  --m3-surface-highest: #2E384F;
+  --m3-primary: #7FD4FF;
+  --m3-on-primary: #00354A;
+  --m3-primary-container: #004C6A;
+  --m3-on-primary-container: #C4E8FF;
+  --m3-secondary-container: #29354D;
+  --m3-on-secondary-container: #D6E3FF;
+  --m3-tertiary-container: #5B2B3E;
+  --m3-on-tertiary-container: #FFD9E4;
+  --m3-outline: rgba(142, 155, 181, 0.22);
+}
+
+.m3-surface-low {
+  background-color: #131722;
+}
+
+.m3-surface-container {
+  background-color: #1A202E;
+}
+
+.m3-surface-high {
+  background-color: #232B3D;
+}
+
+.m3-surface-highest {
+  background-color: #2E384F;
+}
+
+.m3-primary-pill {
+  background-color: #7FD4FF;
+  color: #00354A;
+  transition: transform 240ms cubic-bezier(0.2, 0, 0, 1.35), border-radius 240ms cubic-bezier(0.2, 0, 0, 1.35), background-color 180ms ease;
+}
+
+.m3-primary-pill:hover {
+  background-color: #A6E1FF;
+  transform: scale(1.02);
+}
+
+.m3-primary-pill:active {
+  transform: scale(0.96);
+  border-radius: 14px;
+}
+
+.m3-tonal-active {
+  background-color: #004C6A;
+  color: #C4E8FF;
+  transition: all 240ms cubic-bezier(0.2, 0, 0, 1.3);
+}
+
+.m3-secondary-tonal {
+  background-color: #263148;
+  color: #D6E3FF;
+  transition: all 220ms cubic-bezier(0.2, 0, 0, 1.25);
+}
+
+.m3-secondary-tonal:hover {
+  background-color: #313F5C;
+}
+
+.m3-tertiary-badge {
+  background-color: #5E2B40;
+  color: #FFD8E6;
+}
+
+.m3-spring {
+  transition: all 260ms cubic-bezier(0.2, 0, 0, 1.3);
+}
+
+/* ============================================================================
+   2. macOS — APPLE LIQUID GLASS DESIGN SYSTEM
+   Optical refraction, multi-edge specular highlights, floating spatial panes
+   ============================================================================ */
+[data-design="liquid-glass"] {
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', 'Inter', system-ui, sans-serif;
+}
+
+.lg-pane {
+  background: linear-gradient(
+    155deg,
+    rgba(255, 255, 255, 0.11) 0%,
+    rgba(255, 255, 255, 0.045) 42%,
+    rgba(16, 20, 32, 0.56) 100%
+  );
+  backdrop-filter: blur(44px) saturate(210%) brightness(1.06);
+  -webkit-backdrop-filter: blur(44px) saturate(210%) brightness(1.06);
+  box-shadow:
+    inset 0 1px 0.5px 0 rgba(255, 255, 255, 0.36),
+    inset 1px 0 0.5px 0 rgba(255, 255, 255, 0.14),
+    inset 0 -1px 1px 0 rgba(125, 211, 252, 0.10),
+    0 20px 50px -12px rgba(0, 0, 0, 0.78),
+    0 0 0 0.5px rgba(255, 255, 255, 0.12);
+}
+
+.lg-capsule {
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.15) 0%,
+    rgba(255, 255, 255, 0.06) 100%
+  );
+  backdrop-filter: blur(36px) saturate(200%);
+  -webkit-backdrop-filter: blur(36px) saturate(200%);
+  box-shadow:
+    inset 0 1px 0.5px 0 rgba(255, 255, 255, 0.44),
+    inset 0 -0.5px 0.5px 0 rgba(255, 255, 255, 0.12),
+    0 12px 32px -6px rgba(0, 0, 0, 0.65),
+    0 0 0 0.5px rgba(255, 255, 255, 0.16);
+  transition: all 220ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+.lg-capsule:hover {
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.22) 0%,
+    rgba(255, 255, 255, 0.09) 100%
+  );
+}
+
+.lg-pill-active {
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.24) 0%,
+    rgba(56, 189, 248, 0.18) 100%
+  );
+  box-shadow:
+    inset 0 1px 0.5px rgba(255, 255, 255, 0.48),
+    0 4px 14px -2px rgba(14, 165, 233, 0.28),
+    0 0 0 0.5px rgba(255, 255, 255, 0.22);
+  color: #FFFFFF;
+}
+
+.lg-modal {
+  background: linear-gradient(
+    165deg,
+    rgba(38, 44, 62, 0.72) 0%,
+    rgba(16, 19, 28, 0.78) 100%
+  );
+  backdrop-filter: blur(52px) saturate(220%);
+  -webkit-backdrop-filter: blur(52px) saturate(220%);
+  box-shadow:
+    inset 0 1px 0.5px rgba(255, 255, 255, 0.42),
+    inset 0 0 24px rgba(255, 255, 255, 0.04),
+    0 32px 80px -12px rgba(0, 0, 0, 0.88),
+    0 0 0 0.5px rgba(255, 255, 255, 0.18);
+}
+
+/* Shared Utilities */
+.luma-accent-gradient {
+  background-image: linear-gradient(135deg, #38BDF8 0%, #60A5FA 60%, #818CF8 100%);
+}
+
+.luma-tabular {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1, "cv05" 1;
+}
+
+.app-drag-region {
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+
+.app-no-drag {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+.luma-scroll::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.luma-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.luma-scroll::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.24);
+  border-radius: 9999px;
+}
+
+.luma-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(125, 211, 252, 0.5);
+}
+
+.luma-scroll::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+@keyframes lumaPulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.52;
+    transform: scale(0.9);
+  }
+}
+
+.animate-luma-live {
+  animation: lumaPulse 2.2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}

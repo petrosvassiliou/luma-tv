@@ -1,0 +1,78 @@
+name: Release Native Builds (macOS Liquid Glass & Android M3)
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  release-macos:
+    name: Build macOS Universal (.dmg & .app)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Rust stable (Apple Silicon + Intel targets)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Install Tauri CLI v2
+        run: npm install -D @tauri-apps/cli@^2.0.0
+
+      - name: Build Universal macOS App & DMG (app.lumatv.client)
+        run: npx tauri build --target universal-apple-darwin
+
+      - name: Upload macOS DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Luma-macOS-Universal-DMG
+          path: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+
+  release-android-chromeos:
+    name: Build Android & Chromebook (.apk)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Android SDK & NDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install NDK r27 & Rust Android targets
+        run: |
+          sdkmanager "ndk;27.0.12077973" "platforms;android-34" "build-tools;34.0.0"
+          rustup target add aarch64-linux-android x86_64-linux-android
+
+      - name: Install dependencies & Tauri CLI v2
+        run: |
+          npm ci
+          npm install -D @tauri-apps/cli@^2.0.0
+
+      - name: Initialize & Build Android/Chromebook APK (app.lumatv.client)
+        env:
+          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.0.12077973
+        run: |
+          npx tauri android init
+          npx tauri android build --apk --ci
