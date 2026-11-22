@@ -325,6 +325,7 @@ interface SeriesBrowserViewProps {
     episode: SeriesEpisode,
     resumeSec?: number
   ) => void;
+  onInspectSeries?: (series: SeriesItem) => void;
 }
 
 export const SeriesBrowserView: React.FC<SeriesBrowserViewProps> = ({
@@ -333,6 +334,7 @@ export const SeriesBrowserView: React.FC<SeriesBrowserViewProps> = ({
   initialSeriesId,
   watchHistory,
   onPlayEpisode,
+  onInspectSeries,
 }) => {
   const isM3 = designMode === 'm3-expressive';
   const [selectedSeriesId, setSelectedSeriesId] = useState<string>(
@@ -398,16 +400,28 @@ export const SeriesBrowserView: React.FC<SeriesBrowserViewProps> = ({
           background: `linear-gradient(135deg, ${activeSeries.accentFrom}44 0%, ${activeSeries.accentTo}CC 100%)`,
         }}
       >
-        <div className="flex flex-wrap items-center gap-2 text-xs">
-          <span className="rounded-full bg-black/50 px-3 py-0.5 font-semibold text-sky-200">
-            {activeSeries.badge}
-          </span>
-          <span className="rounded-full bg-black/50 px-3 py-0.5 font-semibold text-amber-300 luma-tabular">
-            ★ {activeSeries.rating}
-          </span>
-          <span className="text-sky-100/80">
-            {activeSeries.genre} · {activeSeries.year}
-          </span>
+        <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="rounded-full bg-black/50 px-3 py-0.5 font-semibold text-sky-200">
+              {activeSeries.badge}
+            </span>
+            <span className="rounded-full bg-black/50 px-3 py-0.5 font-semibold text-amber-300 luma-tabular">
+              ★ {activeSeries.rating}
+            </span>
+            <span className="text-sky-100/80">
+              {activeSeries.genre} · {activeSeries.year}
+            </span>
+          </div>
+
+          {onInspectSeries && (
+            <button
+              type="button"
+              onClick={() => onInspectSeries(activeSeries)}
+              className="rounded-full bg-black/50 px-3 py-1 text-xs font-semibold text-sky-200 hover:bg-black/75 hover:text-white"
+            >
+              Cast &amp; Trailer Info
+            </button>
+          )}
         </div>
 
         <h3 className="mt-2 text-xl font-bold text-white">{activeSeries.title}</h3>

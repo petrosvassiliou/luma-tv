@@ -13,12 +13,14 @@ import {
   Lock,
   Radio,
   Search,
+  Settings,
   SlidersHorizontal,
   Sparkles,
   Star,
   Trophy,
   Tv,
 } from 'lucide-react';
+import { TRANSLATIONS, type LumaLocale } from '../../i18n/translations';
 import {
   LUMA_RELEASE_BADGE,
   type ChannelGroup,
@@ -28,6 +30,7 @@ import {
 
 interface SidebarProps {
   designMode: PlatformDesignMode;
+  locale: LumaLocale;
   collapsed: boolean;
   activeSection: NavigationSection;
   onSelectSection: (section: NavigationSection) => void;
@@ -51,6 +54,7 @@ const GROUP_ICONS: Record<string, React.FC<{ className?: string }>> = {
 
 export const Sidebar: React.FC<SidebarProps> = ({
   designMode,
+  locale,
   collapsed,
   activeSection,
   onSelectSection,
@@ -62,6 +66,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   favoritesCount,
 }) => {
   const isM3 = designMode === 'm3-expressive';
+  const t = TRANSLATIONS[locale];
 
   const navItems: {
     id: NavigationSection;
@@ -70,14 +75,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
     badge?: string;
     icon: React.FC<{ className?: string }>;
   }[] = [
-    { id: 'home', label: 'Start & Weiterschauen', shortLabel: 'Start', icon: Home },
-    { id: 'live-epg', label: 'Live TV & EPG', shortLabel: 'Live', icon: Radio },
-    { id: 'multiview', label: 'Multiview 4x', shortLabel: '4x Sport', badge: 'SPORT', icon: Grid2x2 },
-    { id: 'vod', label: 'Cinema VOD', shortLabel: 'Filme', icon: Film },
-    { id: 'series', label: 'Xtream Serien', shortLabel: 'Serien', icon: Clapperboard },
-    { id: 'catchup', label: 'Catch-Up Archiv', shortLabel: 'Archiv', icon: History },
-    { id: 'studio', label: 'Channel Studio & PIN', shortLabel: 'Studio', icon: SlidersHorizontal },
-    { id: 'sources', label: 'Quellen & Cloud', shortLabel: 'Cloud', icon: Database },
+    { id: 'home', label: t.navHome, shortLabel: 'Start', icon: Home },
+    { id: 'live-epg', label: t.navLive, shortLabel: 'Live', icon: Radio },
+    { id: 'multiview', label: t.navMultiview, shortLabel: '4x', badge: 'SPORT', icon: Grid2x2 },
+    { id: 'vod', label: t.navVod, shortLabel: 'VOD', icon: Film },
+    { id: 'series', label: t.navSeries, shortLabel: 'Series', icon: Clapperboard },
+    { id: 'catchup', label: t.navCatchup, shortLabel: 'Replay', icon: History },
+    { id: 'studio', label: t.navStudio, shortLabel: 'Studio', icon: SlidersHorizontal },
+    { id: 'sources', label: t.navSources, shortLabel: 'Cloud', icon: Database },
+    { id: 'settings', label: t.navSettings, shortLabel: 'Prefs', icon: Settings },
   ];
 
   if (isM3) {
@@ -91,15 +97,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
         <button
           type="button"
           onClick={onOpenCommandBar}
-          className={`m3-primary-pill mb-2.5 flex items-center justify-center gap-2.5 shadow-lg ${
+          className={`m3-primary-pill mb-2 flex items-center justify-center gap-2.5 shadow-lg ${
             collapsed
-              ? 'h-12 w-12 rounded-[16px]'
-              : 'h-11 w-full rounded-[20px] px-4 text-xs font-bold tracking-wide'
+              ? 'h-11 w-11 rounded-[16px]'
+              : 'h-10 w-full rounded-[20px] px-4 text-xs font-bold tracking-wide'
           }`}
-          title="Schnellsuche & Zapping (Ctrl+K)"
+          title="Ctrl+K"
         >
           <Search className="h-4 w-4 shrink-0" />
-          {!collapsed && <span>Schnellsuche &amp; Zap</span>}
+          {!collapsed && <span>{locale === 'de' ? 'Schnellsuche & Zap' : 'Quick Search & Zap'}</span>}
         </button>
 
         <div className="w-full space-y-0.5">
@@ -114,7 +120,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   id={`nav-${item.id}`}
                   type="button"
                   onClick={() => onSelectSection(item.id)}
-                  className="group flex w-full flex-col items-center gap-0.5 py-1 text-[10px] font-medium"
+                  className="group flex w-full flex-col items-center gap-0.5 py-0.5 text-[10px] font-medium"
                 >
                   <span
                     className={`m3-spring flex h-7 w-14 items-center justify-center rounded-full ${
@@ -138,7 +144,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 id={`nav-${item.id}`}
                 type="button"
                 onClick={() => onSelectSection(item.id)}
-                className={`m3-spring flex h-10 w-full items-center justify-between rounded-full px-4 text-xs font-semibold ${
+                className={`m3-spring flex h-9 w-full items-center justify-between rounded-full px-4 text-xs font-semibold ${
                   isActive
                     ? 'm3-tonal-active'
                     : 'text-slate-300 hover:bg-[#1E2536] hover:text-white'
@@ -160,10 +166,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
         <div className="my-2 w-full border-t border-white/[0.07]" />
 
-        <div className="luma-scroll w-full flex-1 overflow-y-auto space-y-1 pr-0.5">
+        <div className="luma-scroll w-full flex-1 overflow-y-auto space-y-0.5 pr-0.5">
           {!collapsed && (
             <div className="px-4 pb-1 text-[11px] font-semibold text-[#8CA2C6]">
-              Bouquets &amp; Gruppen
+              {t.bouquetsHeader}
             </div>
           )}
 
@@ -171,7 +177,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             id="group-all"
             type="button"
             onClick={() => onSelectGroup('all')}
-            title={collapsed ? 'Alle Kanäle' : undefined}
+            title={collapsed ? t.allChannels : undefined}
             className={`m3-spring flex w-full items-center justify-between rounded-full ${
               collapsed ? 'h-9 justify-center' : 'h-9 px-4'
             } text-xs font-medium ${
@@ -182,7 +188,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           >
             <span className="flex items-center gap-3 truncate">
               <Layers className="h-4 w-4 shrink-0 text-[#7FD4FF]" />
-              {!collapsed && <span>Alle Kanäle</span>}
+              {!collapsed && <span>{t.allChannels}</span>}
             </span>
             {!collapsed && (
               <span className="rounded-full bg-[#131722] px-2.5 py-0.5 text-[11px] text-slate-300 luma-tabular">
@@ -195,7 +201,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             id="group-favorites"
             type="button"
             onClick={() => onSelectGroup('favorites')}
-            title={collapsed ? 'Favoriten' : undefined}
+            title={collapsed ? t.favorites : undefined}
             className={`m3-spring flex w-full items-center justify-between rounded-full ${
               collapsed ? 'h-9 justify-center' : 'h-9 px-4'
             } text-xs font-medium ${
@@ -206,7 +212,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           >
             <span className="flex items-center gap-3 truncate">
               <Star className="h-4 w-4 shrink-0 text-[#FFB1C8]" />
-              {!collapsed && <span>Favoriten</span>}
+              {!collapsed && <span>{t.favorites}</span>}
             </span>
             {!collapsed && (
               <span className="rounded-full bg-[#131722] px-2.5 py-0.5 text-[11px] text-slate-300 luma-tabular">
@@ -257,7 +263,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <span className="h-2 w-2 rounded-full bg-emerald-400 animate-luma-live" />
             </div>
             <p className="mt-0.5 text-[10px] text-slate-400">
-              GoogleOS M3 Expressive · `app.lumatv.client`
+              GoogleOS / Android M3 · `app.lumatv.client`
             </p>
           </div>
         )}
@@ -275,7 +281,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       <div className="p-2.5 space-y-0.5">
         {!collapsed && (
           <div className="px-2.5 pb-1 pt-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-white/45">
-            Mediathek
+            {t.workspaceHeader}
           </div>
         )}
 
@@ -315,10 +321,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
       <div className="mx-3.5 my-1 border-t border-white/10" />
 
-      <div className="luma-scroll flex-1 overflow-y-auto px-2.5 py-1.5 space-y-0.5">
+      <div className="luma-scroll flex-1 overflow-y-auto px-2.5 py-1 space-y-0.5">
         {!collapsed && (
           <div className="px-2.5 pb-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-white/45">
-            Bouquets
+            {t.bouquetsHeader}
           </div>
         )}
 
@@ -326,7 +332,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           id="group-all"
           type="button"
           onClick={() => onSelectGroup('all')}
-          title={collapsed ? 'Alle Kanäle' : undefined}
+          title={collapsed ? t.allChannels : undefined}
           className={`flex w-full items-center justify-between rounded-[14px] px-3 py-1.5 text-xs font-medium transition ${
             selectedGroupId === 'all' && activeSection === 'live-epg'
               ? 'lg-pill-active'
@@ -335,7 +341,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         >
           <span className="flex items-center gap-2.5 truncate">
             <Layers className="h-4 w-4 shrink-0 text-sky-300" />
-            {!collapsed && <span className="truncate">Alle Kanäle</span>}
+            {!collapsed && <span className="truncate">{t.allChannels}</span>}
           </span>
           {!collapsed && (
             <span className="text-[11px] text-white/55 luma-tabular">
@@ -348,7 +354,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           id="group-favorites"
           type="button"
           onClick={() => onSelectGroup('favorites')}
-          title={collapsed ? 'Favoriten' : undefined}
+          title={collapsed ? t.favorites : undefined}
           className={`flex w-full items-center justify-between rounded-[14px] px-3 py-1.5 text-xs font-medium transition ${
             selectedGroupId === 'favorites' && activeSection === 'live-epg'
               ? 'lg-pill-active'
@@ -357,7 +363,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         >
           <span className="flex items-center gap-2.5 truncate">
             <Star className="h-4 w-4 shrink-0 text-amber-300" />
-            {!collapsed && <span className="truncate">Favoriten</span>}
+            {!collapsed && <span className="truncate">{t.favorites}</span>}
           </span>
           {!collapsed && (
             <span className="text-[11px] text-white/55 luma-tabular">{favoritesCount}</span>

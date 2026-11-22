@@ -10,11 +10,13 @@ import {
   rewriteHlsManifestUrls,
 } from '../engine/corsProxy';
 import { selectSupportedRecorderMimeType } from '../engine/dvrRecorder';
+import { TRANSLATIONS } from '../i18n/translations';
 import {
   decryptSyncVault,
   encryptSyncVault,
   type LumaSyncPlainPayload,
 } from '../services/lumaCloudSync';
+import { pickBestSpatialCandidate } from '../services/spatialNavigation';
 import {
   exportChannelsToM3uPlus,
   parseM3uContent,
@@ -187,5 +189,21 @@ describe('Luma TV v0.1 beta — Zero-Knowledge AES-256-GCM Sync Vault & 20k EPG 
     expect(AUDIO_DSP_PRESETS['night-leveler'].compressorActive).toBe(true);
     const recFormat = selectSupportedRecorderMimeType();
     expect(['mp4', 'webm']).toContain(recFormat.extension);
+  });
+
+  it('selects accurate 2D spatial focus targets for D-Pad / TV remotes and maintains DE/EN parity', () => {
+    const origin = { id: 'btn-a', x: 100, y: 100, width: 80, height: 40 };
+    const candidates = [
+      origin,
+      { id: 'btn-right-aligned', x: 220, y: 102, width: 80, height: 40 },
+      { id: 'btn-diagonal-far', x: 230, y: 320, width: 80, height: 40 },
+      { id: 'btn-below', x: 105, y: 180, width: 80, height: 40 },
+    ];
+
+    expect(pickBestSpatialCandidate(origin, candidates, 'right')).toBe('btn-right-aligned');
+    expect(pickBestSpatialCandidate(origin, candidates, 'down')).toBe('btn-below');
+    expect(pickBestSpatialCandidate(origin, candidates, 'left')).toBeNull();
+
+    expect(Object.keys(TRANSLATIONS.de)).toEqual(Object.keys(TRANSLATIONS.en));
   });
 });

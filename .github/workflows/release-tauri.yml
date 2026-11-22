@@ -6,6 +6,9 @@ on:
       - 'v*'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   release-macos:
     name: Build macOS Universal (.dmg & .app)
@@ -13,22 +16,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Node.js 22
+      - name: Setup Node.js 24
         uses: actions/setup-node@v4
         with:
-          node-version: 22
-          cache: npm
+          node-version: 24
 
       - name: Setup Rust stable (Apple Silicon + Intel targets)
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
 
-      - name: Install frontend dependencies
-        run: npm ci
-
-      - name: Install Tauri CLI v2
-        run: npm install -D @tauri-apps/cli@^2.0.0
+      - name: Install frontend & Tauri CLI dependencies
+        run: npm install --no-audit --no-fund
 
       - name: Build Universal macOS App & DMG (app.lumatv.client)
         run: npx tauri build --target universal-apple-darwin
@@ -39,17 +38,25 @@ jobs:
           name: Luma-macOS-Universal-DMG
           path: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
 
+      - name: Attach macOS DMG to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --prerelease --title "Luma TV $TAG" --notes "Automated multi-platform release."
+          gh release upload "$TAG" src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg --clobber
+
   release-android-chromeos:
     name: Build Android & Chromebook (.apk)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Node.js 22
+      - name: Setup Node.js 24
         uses: actions/setup-node@v4
         with:
-          node-version: 22
-          cache: npm
+          node-version: 24
 
       - name: Setup Java 17
         uses: actions/setup-java@v4
@@ -57,22 +64,43 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - name: Setup Android SDK & NDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install NDK r27 & Rust Android targets
+      - name: Install Android NDK & Platform SDK via preinstalled sdkmanager
         run: |
-          sdkmanager "ndk;27.0.12077973" "platforms;android-34" "build-tools;34.0.0"
-          rustup target add aarch64-linux-android x86_64-linux-android
+          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKM" --licenses >/dev/null || true
+          "$SDKM" "ndk;27.0.12077973" "platforms;android-34" "build-tools;34.0.0"
 
-      - name: Install dependencies & Tauri CLI v2
-        run: |
-          npm ci
-          npm install -D @tauri-apps/cli@^2.0.0
+      - name: Setup Rust stable + Android targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,x86_64-linux-android
 
-      - name: Initialize & Build Android/Chromebook APK (app.lumatv.client)
+      - name: Install frontend & Tauri CLI dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Initialize & Build Installable Android/Chromebook APK (app.lumatv.client)
         env:
           NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.0.12077973
         run: |
           npx tauri android init
-          npx tauri android build --apk --ci
+          npx tauri android build --apk --debug
+
+      - name: Rename installable APK artifact
+        run: |
+          APK_PATH=$(find src-tauri/gen/android/app/build/outputs/apk -name "*.apk" | head -n 1)
+          cp "$APK_PATH" ./Luma-TV-Android-Universal.apk
+
+      - name: Upload Android APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Luma-Android-Universal-APK
+          path: ./Luma-TV-Android-Universal.apk
+
+      - name: Attach Android APK to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --prerelease --title "Luma TV $TAG" --notes "Automated multi-platform release."
+          gh release upload "$TAG" ./Luma-TV-Android-Universal.apk --clobber

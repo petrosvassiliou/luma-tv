@@ -37,12 +37,14 @@ interface VodViewProps {
   designMode: PlatformDesignMode;
   vodCatalog: VodItem[];
   onPlayVod: (vod: VodItem) => void;
+  onInspectVod?: (vod: VodItem) => void;
 }
 
 export const VodCatalogView: React.FC<VodViewProps> = ({
   designMode,
   vodCatalog,
   onPlayVod,
+  onInspectVod,
 }) => {
   const isM3 = designMode === 'm3-expressive';
   const cardSurface = isM3
@@ -54,7 +56,7 @@ export const VodCatalogView: React.FC<VodViewProps> = ({
       <div className="mb-4">
         <h2 className="text-base font-semibold text-white">Cinema VOD &amp; 4K Referenz-Master</h2>
         <p className="text-xs text-slate-400">
-          Direkt abspielbare HLS- &amp; importierte M3U/Xtream-VOD-Master.
+          Direkt abspielbare HLS- &amp; importierte M3U/Xtream-VOD-Master inkl. TMDB-Metadaten &amp; Trailer.
         </p>
       </div>
 
@@ -98,8 +100,21 @@ export const VodCatalogView: React.FC<VodViewProps> = ({
             <div className="p-4">
               <p className="line-clamp-2 text-xs leading-relaxed text-slate-300">{vod.synopsis}</p>
               <div className="mt-3 flex items-center justify-between text-[11px] text-slate-400 luma-tabular">
-                <span>Jahr {vod.year}</span>
-                <span>{vod.durationMin} Min.</span>
+                <span>
+                  Jahr {vod.year} · {vod.durationMin} Min.
+                </span>
+                {onInspectVod && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onInspectVod(vod);
+                    }}
+                    className="rounded-full bg-white/10 px-2.5 py-0.5 text-[10px] font-semibold text-sky-300 hover:bg-sky-400/25 hover:text-white"
+                  >
+                    Cast &amp; Trailer
+                  </button>
+                )}
               </div>
             </div>
           </div>

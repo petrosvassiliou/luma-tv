@@ -238,3 +238,17 @@
 .animate-luma-live {
   animation: lumaPulse 2.2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
+
+/* 10-Foot Spatial D-Pad / Keyboard Focus Rings */
+[data-design="m3-expressive"] button:focus-visible,
+[data-design="m3-expressive"] [data-spatial="true"]:focus-visible {
+  outline: 3px solid #7FD4FF;
+  outline-offset: 2px;
+}
+
+[data-design="liquid-glass"] button:focus-visible,
+[data-design="liquid-glass"] [data-spatial="true"]:focus-visible {
+  outline: 2px solid rgba(125, 211, 252, 0.9);
+  outline-offset: 2px;
+  box-shadow: 0 0 22px rgba(56, 189, 248, 0.45);
+}

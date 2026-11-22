@@ -14,14 +14,13 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js 22
+      - name: Setup Node.js 24
         uses: actions/setup-node@v4
         with:
-          node-version: 22
-          cache: npm
+          node-version: 24
 
       - name: Install frontend dependencies
-        run: npm ci
+        run: npm install --no-audit --no-fund
 
       - name: Run oxlint static analysis
         run: npm run lint
@@ -34,7 +33,7 @@ jobs:
 
       - name: Build Firebase Cloud Functions (CORS Stream Proxy)
         working-directory: functions
-        run: npm install && npm run build
+        run: npm install --no-audit --no-fund && npm run build
 
       - name: Upload PWA dist artifact
         uses: actions/upload-artifact@v4
@@ -42,20 +41,11 @@ jobs:
           name: luma-tv-pwa-dist
           path: dist/
 
-  deploy-firebase:
-    name: Deploy PWA & Stream Proxy to Firebase
-    needs: verify-and-build
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && env.FIREBASE_SERVICE_ACCOUNT != ''
-    runs-on: ubuntu-latest
-    env:
-      FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: luma-tv-pwa-dist
-          path: dist/
-      - uses: FirebaseExtended/action-hosting-deploy@v0
+      - name: Deploy PWA Hosting (when FIREBASE_SERVICE_ACCOUNT is configured)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && env.FIREBASE_SERVICE_ACCOUNT != ''
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        uses: FirebaseExtended/action-hosting-deploy@v0
         with:
           repoToken: ${{ secrets.GITHUB_TOKEN }}
           firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}

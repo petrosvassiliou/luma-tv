@@ -11,12 +11,19 @@ import {
   DEMO_SERIES_CATALOG,
   DEMO_VOD_CATALOG,
   getCurrentAndNextProgram,
+  VERIFIED_HLS_STREAMS,
 } from './data/mockCatalog';
+import {
+  detectSystemLocale,
+  TRANSLATIONS,
+  type LumaPreferences,
+} from './i18n/translations';
 import type {
   LumaSyncPlainPayload,
   WatchHistoryEntry,
 } from './services/lumaCloudSync';
 import { syncOsMediaSession } from './services/mediaSession';
+import { useSpatialDpadFocus } from './services/spatialNavigation';
 import {
   useCrossPlatformFileDropAndLaunch,
   useUniversalGamepadControls,
@@ -48,10 +55,15 @@ import {
   SeriesBrowserView,
 } from './components/views/HomeAndSeriesHub';
 import {
+  MediaDetailModal,
+  type MediaInspectTarget,
+} from './components/views/MediaDetailModal';
+import {
   CatchupArchiveView,
   SourcesEngineView,
   VodCatalogView,
 } from './components/views/SecondaryViews';
+import { SettingsHubView } from './components/views/SettingsHubView';
 import type {
   Channel,
   ChannelGroup,
@@ -98,6 +110,34 @@ function detectInitialDesignMode(): PlatformDesignMode {
 
 export function App() {
   const [designMode, setDesignMode] = useState<PlatformDesignMode>(detectInitialDesignMode);
+  const [preferences, setPreferences] = useState<LumaPreferences>(() => {
+    try {
+      const raw = localStorage.getItem('luma.prefs.v3');
+      if (raw) return JSON.parse(raw) as LumaPreferences;
+    } catch {
+      // Ignore
+    }
+    return {
+      locale: detectSystemLocale(),
+      bufferProfile: 'balanced',
+      sleepTimerMinutes: 0,
+      spatialDpadEnabled: true,
+    };
+  });
+
+  const handleUpdatePreferences = useCallback((next: LumaPreferences) => {
+    setPreferences(next);
+    try {
+      localStorage.setItem('luma.prefs.v3', JSON.stringify(next));
+    } catch {
+      // Ignore
+    }
+  }, []);
+
+  const [sleepDeadlineMs, setSleepDeadlineMs] = useState<number | null>(null);
+  const [shortcutsOpen, setShortcutsOpen] = useState<boolean>(false);
+  const [inspectMedia, setInspectMedia] = useState<MediaInspectTarget | null>(null);
+
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [activeSection, setActiveSection] = useState<NavigationSection>('live-epg');
   const [selectedGroupId, setSelectedGroupId] = useState<string>('all');
@@ -108,7 +148,6 @@ export function App() {
   const [commandBarOpen, setCommandBarOpen] = useState<boolean>(false);
   const [globalAmbientRgb, setGlobalAmbientRgb] = useState<string>('56, 189, 248');
 
-  // Draggable In-App Picture-in-Picture State
   const [detachedPipInEpg, setDetachedPipInEpg] = useState<boolean>(false);
   const [autoPipWhenBrowsing, setAutoPipWhenBrowsing] = useState<boolean>(true);
 
@@ -117,11 +156,22 @@ export function App() {
   const [proxyConfig, setProxyConfig] = useState<EngineProxyConfig>({
     enabled: false,
     endpointUrl: 'https://luma-tv-app.web.app/api/stream-proxy',
-    customUserAgent: 'LumaTV/0.1-beta (TiviMate-Compatible)',
+    customUserAgent: 'LumaTV/0.3-beta (TiviMate-Compatible)',
     autoFallbackOnCors: true,
   });
 
-  // Custom Bouquets & Parental Control PIN Lock State
+  // Sync Sleep Timer Deadline
+  useEffect(() => {
+    if (preferences.sleepTimerMinutes <= 0) {
+      setSleepDeadlineMs(null);
+    } else {
+      setSleepDeadlineMs(Date.now() + preferences.sleepTimerMinutes * 60_000);
+    }
+  }, [preferences.sleepTimerMinutes]);
+
+  const sleepRemainingSec =
+    sleepDeadlineMs !== null ? Math.max(0, Math.round((sleepDeadlineMs - nowMs) / 1000)) : null;
+
   const [customBouquets, setCustomBouquets] = useState<CustomBouquet[]>(() => {
     try {
       const raw = localStorage.getItem('luma.bouquets.v1');
@@ -166,7 +216,6 @@ export function App() {
     }
   }, []);
 
-  // Dexie IndexedDB Multi-Playlist & XMLTV State
   const [activeSourceId, setActiveSourceId] = useState<string>('builtin-reference');
   const [persistedSources, setPersistedSources] = useState<StoredPlaylistSource[]>([]);
   const [persistedChannels, setPersistedChannels] = useState<StoredChannel[]>([]);
@@ -300,11 +349,30 @@ export function App() {
 
   const [numericBuffer, setNumericBuffer] = useState<string>('');
   const numericTimerRef = useRef<number | null>(null);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   useEffect(() => {
-    const timer = window.setInterval(() => setNowMs(Date.now()), 1000);
+    const timer = window.setInterval(() => {
+      const current = Date.now();
+      setNowMs(current);
+    }, 1000);
     return () => window.clearInterval(timer);
   }, []);
+
+  // Trigger Sleep Timer Pause when countdown hits zero
+  useEffect(() => {
+    if (sleepRemainingSec === 0 && sleepDeadlineMs !== null) {
+      document.querySelectorAll('video').forEach((v) => v.pause());
+      handleUpdatePreferences({ ...preferences, sleepTimerMinutes: 0 });
+      setSleepDeadlineMs(null);
+      setToastMessage(
+        preferences.locale === 'de'
+          ? 'Sleep-Timer abgelaufen — Wiedergabe pausiert.'
+          : 'Sleep Timer reached — playback paused.'
+      );
+      window.setTimeout(() => setToastMessage(null), 4000);
+    }
+  }, [sleepRemainingSec, sleepDeadlineMs, preferences, handleUpdatePreferences]);
 
   const toggleFavorite = useCallback((channelId: string) => {
     setFavoriteIds((prev) => {
@@ -665,7 +733,6 @@ export function App() {
     await refreshActiveSourceBundle(activeSourceId);
   };
 
-  // EPG Broadcast Reminders (macOS / Android / PWA Notification + In-App Toast)
   const [reminders, setReminders] = useState<EpgReminder[]>(() => {
     try {
       const raw = localStorage.getItem('luma.reminders.v1');
@@ -675,7 +742,6 @@ export function App() {
     }
     return [];
   });
-  const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   const reminderProgramIds = useMemo(
     () => new Set(reminders.map((r) => r.programId)),
@@ -716,9 +782,18 @@ export function App() {
     }
   }, []);
 
-  // Universal Gamepad / Android TV Remote D-Pad Controls
   const sectionOrder: NavigationSection[] = useMemo(
-    () => ['home', 'live-epg', 'multiview', 'vod', 'series', 'catchup', 'studio', 'sources'],
+    () => [
+      'home',
+      'live-epg',
+      'multiview',
+      'vod',
+      'series',
+      'catchup',
+      'studio',
+      'sources',
+      'settings',
+    ],
     []
   );
 
@@ -742,7 +817,12 @@ export function App() {
   );
   useUniversalGamepadControls(gamepadHandlers);
 
-  // OS File Association & Global .m3u / .m3u8 / .xml.gz Drag-and-Drop Receiver
+  // 10-Foot Spatial Arrow Focus Engine
+  useSpatialDpadFocus(
+    preferences.spatialDpadEnabled,
+    Boolean(commandBarOpen || pendingPinGroup || shortcutsOpen || inspectMedia)
+  );
+
   const fileDropHandlers = useMemo(
     () => ({
       onImportM3uFile: (name: string, content: string) => {
@@ -768,10 +848,16 @@ export function App() {
         return;
       }
 
-      if (commandBarOpen || pendingPinGroup) return;
-
       const targetTag = (e.target as HTMLElement | null)?.tagName;
       if (targetTag === 'INPUT' || targetTag === 'TEXTAREA') return;
+
+      if (e.key === '?') {
+        e.preventDefault();
+        setShortcutsOpen((v) => !v);
+        return;
+      }
+
+      if (commandBarOpen || pendingPinGroup || shortcutsOpen || inspectMedia) return;
 
       if (activeSection === 'multiview' && ['1', '2', '3', '4'].includes(e.key)) {
         e.preventDefault();
@@ -815,7 +901,16 @@ export function App() {
 
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [commandBarOpen, pendingPinGroup, activeSection, zapRelative, channels, selectLiveChannel]);
+  }, [
+    commandBarOpen,
+    pendingPinGroup,
+    shortcutsOpen,
+    inspectMedia,
+    activeSection,
+    zapRelative,
+    channels,
+    selectLiveChannel,
+  ]);
 
   const numericPreviewChannel = numericBuffer
     ? channels.find((c) => c.number === Number(numericBuffer))
@@ -829,11 +924,14 @@ export function App() {
     activeSection === 'series' ||
     activeSection === 'catchup' ||
     activeSection === 'studio' ||
-    activeSection === 'sources';
+    activeSection === 'sources' ||
+    activeSection === 'settings';
 
   const showFloatingInAppPip =
     (activeSection === 'live-epg' && detachedPipInEpg) ||
     (isBrowsingSecondarySection && autoPipWhenBrowsing);
+
+  const t = TRANSLATIONS[preferences.locale];
 
   return (
     <div
@@ -857,6 +955,14 @@ export function App() {
       <CustomTitlebar
         designMode={designMode}
         onChangeDesignMode={setDesignMode}
+        locale={preferences.locale}
+        onToggleLocale={() =>
+          handleUpdatePreferences({
+            ...preferences,
+            locale: preferences.locale === 'de' ? 'en' : 'de',
+          })
+        }
+        sleepRemainingSec={sleepRemainingSec}
         sidebarCollapsed={sidebarCollapsed}
         onToggleSidebar={() => setSidebarCollapsed((v) => !v)}
         onOpenCommandBar={() => setCommandBarOpen(true)}
@@ -881,6 +987,7 @@ export function App() {
       <div className="relative z-10 flex min-h-0 flex-1 overflow-hidden">
         <Sidebar
           designMode={designMode}
+          locale={preferences.locale}
           collapsed={sidebarCollapsed}
           activeSection={activeSection}
           onSelectSection={(sec) => {
@@ -1018,6 +1125,7 @@ export function App() {
               designMode={designMode}
               vodCatalog={combinedVodCatalog}
               onPlayVod={(vod) => handlePlayVod(vod)}
+              onInspectVod={(vod) => setInspectMedia({ kind: 'vod', vod })}
             />
           )}
 
@@ -1028,6 +1136,7 @@ export function App() {
               initialSeriesId={focusedSeriesId}
               watchHistory={watchHistory}
               onPlayEpisode={handlePlaySeriesEpisode}
+              onInspectSeries={(series) => setInspectMedia({ kind: 'series', series })}
             />
           )}
 
@@ -1079,10 +1188,31 @@ export function App() {
               onRestoreFromSync={handleRestoreFromSync}
             />
           )}
+
+          {activeSection === 'settings' && (
+            <SettingsHubView
+              designMode={designMode}
+              onChangeDesignMode={setDesignMode}
+              preferences={preferences}
+              onChangePreferences={handleUpdatePreferences}
+              sleepRemainingSec={sleepRemainingSec}
+              favoriteIds={favoriteIds}
+              customBouquets={customBouquets}
+              parentalConfig={parentalConfig}
+              onImportFullBackup={(backup) => {
+                if (backup.favorites) setFavoriteIds(new Set(backup.favorites));
+                if (backup.bouquets) handleUpdateBouquets(backup.bouquets);
+                if (backup.parental) handleUpdateParental(backup.parental);
+                if (backup.preferences) handleUpdatePreferences(backup.preferences);
+                setToastMessage('Backup erfolgreich wiederhergestellt!');
+                window.setTimeout(() => setToastMessage(null), 3200);
+              }}
+              onOpenShortcutsModal={() => setShortcutsOpen(true)}
+            />
+          )}
         </main>
       </div>
 
-      {/* Floating Draggable In-App Picture-in-Picture Window */}
       {showFloatingInAppPip && (
         <InAppPipWindow
           designMode={designMode}
@@ -1117,7 +1247,6 @@ export function App() {
         </div>
       )}
 
-      {/* Parental Control 4-Digit PIN Modal */}
       {pendingPinGroup && (
         <ParentalPinModal
           designMode={designMode}
@@ -1133,15 +1262,100 @@ export function App() {
         />
       )}
 
+      {inspectMedia && (
+        <MediaDetailModal
+          designMode={designMode}
+          target={inspectMedia}
+          onClose={() => setInspectMedia(null)}
+          onPlayPrimary={() => {
+            if (inspectMedia.vod) {
+              handlePlayVod(inspectMedia.vod);
+            } else if (inspectMedia.series) {
+              const s1 = inspectMedia.series.seasons[0];
+              const ep1 = s1?.episodes[0];
+              if (s1 && ep1) handlePlaySeriesEpisode(inspectMedia.series, s1.seasonNumber, ep1);
+            }
+            setInspectMedia(null);
+          }}
+          onPlayTrailer={() => {
+            setActiveOnDemand({
+              title: `Trailer · ${inspectMedia.vod?.title ?? inspectMedia.series?.title ?? 'Preview'}`,
+              subtitle: 'Offizieller 4K HDR Studio-Trailer',
+              streamUrl: VERIFIED_HLS_STREAMS.tearsOfSteel,
+            });
+            setInspectMedia(null);
+            setDetachedPipInEpg(false);
+            setActiveSection('live-epg');
+          }}
+        />
+      )}
+
+      {/* Cross-Platform Shortcuts, Touch & Remote Cheat-Sheet Modal */}
+      {shortcutsOpen && (
+        <div
+          onClick={() => setShortcutsOpen(false)}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 p-4 backdrop-blur-md"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className={`w-full max-w-lg p-6 text-xs ${
+              isM3
+                ? 'rounded-[28px] bg-[#1E2536] shadow-2xl ring-1 ring-white/10'
+                : 'lg-modal rounded-[26px]'
+            }`}
+          >
+            <div className="mb-4 flex items-center justify-between">
+              <h3 className="text-sm font-semibold text-white">{t.shortcutsHelpTitle}</h3>
+              <button
+                type="button"
+                onClick={() => setShortcutsOpen(false)}
+                className="rounded-full px-2.5 py-1 text-slate-300 hover:bg-white/10"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="space-y-2.5 text-slate-200">
+              <div className="flex justify-between border-b border-white/10 pb-2">
+                <span>Globale Suche (Kanäle, EPG, VOD, Serien)</span>
+                <kbd className="rounded bg-white/10 px-2 py-0.5 font-mono">⌘K / Ctrl+K</kbd>
+              </div>
+              <div className="flex justify-between border-b border-white/10 pb-2">
+                <span>Sofort-Zapping (Vorheriger / Nächster Kanal)</span>
+                <kbd className="rounded bg-white/10 px-2 py-0.5 font-mono">Alt + ↑ / ↓</kbd>
+              </div>
+              <div className="flex justify-between border-b border-white/10 pb-2">
+                <span>10-Foot Spatial TV / Remote Fokus starten</span>
+                <kbd className="rounded bg-white/10 px-2 py-0.5 font-mono">Shift + Pfeiltasten</kbd>
+              </div>
+              <div className="flex justify-between border-b border-white/10 pb-2">
+                <span>Direkte Kanalnummernwahl im Live-TV</span>
+                <kbd className="rounded bg-white/10 px-2 py-0.5 font-mono">0 – 9</kbd>
+              </div>
+              <div className="flex justify-between border-b border-white/10 pb-2">
+                <span>Multiview Tonfokus wechseln</span>
+                <kbd className="rounded bg-white/10 px-2 py-0.5 font-mono">1 – 4</kbd>
+              </div>
+              <div className="flex justify-between">
+                <span>Android / Tablet Touch-Zapping</span>
+                <span className="text-sky-300">Vertikal auf Player wischen</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {commandBarOpen && (
         <CommandBar
           designMode={designMode}
           onClose={() => setCommandBarOpen(false)}
           channels={channels}
           vodCatalog={combinedVodCatalog}
+          seriesCatalog={DEMO_SERIES_CATALOG}
           nowMs={nowMs}
           onSelectChannel={(ch) => selectLiveChannel(ch)}
           onSelectVod={(vod) => handlePlayVod(vod)}
+          onSelectSeriesEpisode={(ser, sNum, ep) => handlePlaySeriesEpisode(ser, sNum, ep)}
           onTriggerAction={(act) => {
             if (act === 'multiview') {
               setActiveSection((prev) => (prev === 'multiview' ? 'live-epg' : 'multiview'));

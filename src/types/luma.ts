@@ -1,5 +1,5 @@
-export const LUMA_APP_VERSION = '0.2.0-beta.1';
-export const LUMA_RELEASE_BADGE = '0.2 beta';
+export const LUMA_APP_VERSION = '0.3.0-beta.1';
+export const LUMA_RELEASE_BADGE = '0.3 beta';
 
 export interface EpgReminder {
   programId: string;
@@ -19,7 +19,8 @@ export type NavigationSection =
   | 'series'
   | 'catchup'
   | 'studio'
-  | 'sources';
+  | 'sources'
+  | 'settings';
 
 export type AspectRatioMode = '16:9' | 'cover' | '21:9';
 

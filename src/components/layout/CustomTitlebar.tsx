@@ -3,11 +3,13 @@ import {
   Apple,
   Grid2x2,
   Layers,
+  Moon,
   PanelLeft,
   Search,
   Smartphone,
   Sparkles,
 } from 'lucide-react';
+import { TRANSLATIONS, type LumaLocale } from '../../i18n/translations';
 import { invokeNativeWindowControl } from '../../services/universalInput';
 import {
   LUMA_RELEASE_BADGE,
@@ -19,6 +21,9 @@ import { LumaLogo } from '../brand/LumaLogo';
 interface CustomTitlebarProps {
   designMode: PlatformDesignMode;
   onChangeDesignMode: (mode: PlatformDesignMode) => void;
+  locale: LumaLocale;
+  onToggleLocale: () => void;
+  sleepRemainingSec: number | null;
   sidebarCollapsed: boolean;
   onToggleSidebar: () => void;
   onOpenCommandBar: () => void;
@@ -35,6 +40,9 @@ interface CustomTitlebarProps {
 export const CustomTitlebar: React.FC<CustomTitlebarProps> = ({
   designMode,
   onChangeDesignMode,
+  locale,
+  onToggleLocale,
+  sleepRemainingSec,
   sidebarCollapsed,
   onToggleSidebar,
   onOpenCommandBar,
@@ -48,8 +56,9 @@ export const CustomTitlebar: React.FC<CustomTitlebarProps> = ({
   nowMs,
 }) => {
   const isM3 = designMode === 'm3-expressive';
+  const t = TRANSLATIONS[locale];
 
-  const formattedClock = new Intl.DateTimeFormat('de-DE', {
+  const formattedClock = new Intl.DateTimeFormat(locale === 'de' ? 'de-DE' : 'en-GB', {
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit',
@@ -64,30 +73,27 @@ export const CustomTitlebar: React.FC<CustomTitlebarProps> = ({
           : 'app-drag-region lg-pane relative z-30 mx-2.5 mt-2 flex h-12 shrink-0 items-center justify-between gap-3 rounded-[20px] px-3.5'
       }
     >
-      {/* Left Region: Traffic Lights (macOS Liquid Glass) + Sidebar Toggle + Brand */}
+      {/* Left Region */}
       <div className="app-no-drag flex items-center gap-2.5">
         {!isM3 && (
-          <div
-            className="mr-1.5 flex items-center gap-2 pl-0.5"
-            title="macOS Window Controls"
-          >
+          <div className="mr-1.5 flex items-center gap-2 pl-0.5" title="macOS Window Controls">
             <button
               type="button"
               onClick={() => invokeNativeWindowControl('close')}
               className="h-3 w-3 rounded-full bg-[#FF5F57] shadow-[inset_0_0_0_0.5px_rgba(0,0,0,0.35)]"
-              aria-label="Fenster schließen"
+              aria-label="Close"
             />
             <button
               type="button"
               onClick={() => invokeNativeWindowControl('minimize')}
               className="h-3 w-3 rounded-full bg-[#FEBC2E] shadow-[inset_0_0_0_0.5px_rgba(0,0,0,0.35)]"
-              aria-label="Minimieren"
+              aria-label="Minimize"
             />
             <button
               type="button"
               onClick={() => invokeNativeWindowControl('toggle-maximize')}
               className="h-3 w-3 rounded-full bg-[#28C840] shadow-[inset_0_0_0_0.5px_rgba(0,0,0,0.35)]"
-              aria-label="Vollbild / Zoom"
+              aria-label="Zoom"
             />
           </div>
         )}
@@ -101,7 +107,15 @@ export const CustomTitlebar: React.FC<CustomTitlebarProps> = ({
               ? 'm3-spring flex h-10 w-10 items-center justify-center rounded-full text-slate-200 hover:bg-[#232B3D]'
               : 'lg-capsule flex h-8 w-8 items-center justify-center rounded-full text-slate-200 hover:text-white'
           }
-          title={sidebarCollapsed ? 'Navigation einblenden' : 'Navigation einklappen'}
+          title={
+            sidebarCollapsed
+              ? locale === 'de'
+                ? 'Navigation einblenden'
+                : 'Expand sidebar'
+              : locale === 'de'
+                ? 'Navigation einklappen'
+                : 'Collapse sidebar'
+          }
         >
           <PanelLeft className="h-4 w-4" />
         </button>
@@ -125,11 +139,11 @@ export const CustomTitlebar: React.FC<CustomTitlebarProps> = ({
               : 'lg-capsule hidden rounded-full px-2.5 py-0.5 text-[10px] font-medium text-slate-200 xl:inline-block luma-tabular'
           }
         >
-          {totalChannels.toLocaleString('de-DE')} Kanäle
+          {totalChannels.toLocaleString(locale === 'de' ? 'de-DE' : 'en-US')} {t.channelsUnit}
         </span>
       </div>
 
-      {/* Center Region: M3 Expressive Pill Search Bar OR macOS Liquid Glass Spotlight Capsule */}
+      {/* Center Search Trigger */}
       <div className="app-no-drag flex max-w-md flex-1 justify-center">
         <button
           id="btn-open-command-bar"
@@ -148,7 +162,7 @@ export const CustomTitlebar: React.FC<CustomTitlebarProps> = ({
               }`}
             />
             <span className="truncate text-slate-300 group-hover:text-white">
-              Sender, EPG oder 4K-Stream suchen…
+              {t.searchPlaceholder}
             </span>
           </span>
           <kbd
@@ -163,8 +177,15 @@ export const CustomTitlebar: React.FC<CustomTitlebarProps> = ({
         </button>
       </div>
 
-      {/* Right Region: Platform Design Switcher (M3 Expressive <-> macOS Liquid Glass) + Quick Toggles */}
+      {/* Right Region */}
       <div className="app-no-drag flex items-center gap-2">
+        {sleepRemainingSec !== null && (
+          <span className="hidden items-center gap-1 rounded-full bg-amber-400/20 px-2.5 py-1 text-[11px] font-semibold text-amber-200 md:inline-flex luma-tabular">
+            <Moon className="h-3 w-3" />
+            {Math.ceil(sleepRemainingSec / 60)}m
+          </span>
+        )}
+
         {/* Dual-Platform Design System Switcher */}
         <div
           id="platform-design-switcher"
@@ -174,38 +195,50 @@ export const CustomTitlebar: React.FC<CustomTitlebarProps> = ({
               : 'lg-capsule flex items-center rounded-full p-0.5'
           }
           role="group"
-          aria-label="Plattform-Design wechseln"
         >
           <button
             id="btn-mode-m3"
             type="button"
             onClick={() => onChangeDesignMode('m3-expressive')}
-            className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-semibold transition-all ${
+            className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold transition-all ${
               isM3
                 ? 'bg-[#7FD4FF] text-[#00354A] shadow-sm'
                 : 'text-slate-300 hover:text-white'
             }`}
-            title="Googlebook / Android: Material 3 Expressive"
           >
             <Smartphone className="h-3.5 w-3.5" />
-            <span>GoogleOS · M3</span>
+            <span>M3</span>
           </button>
 
           <button
             id="btn-mode-liquid-glass"
             type="button"
             onClick={() => onChangeDesignMode('liquid-glass')}
-            className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-semibold transition-all ${
+            className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold transition-all ${
               !isM3
                 ? 'lg-pill-active text-white'
                 : 'text-slate-300 hover:text-white'
             }`}
-            title="macOS: Apple Liquid Glass"
           >
             <Apple className="h-3.5 w-3.5" />
-            <span>macOS · Liquid Glass</span>
+            <span>Liquid Glass</span>
           </button>
         </div>
+
+        {/* DE / EN Language Quick Toggle */}
+        <button
+          id="btn-toggle-locale"
+          type="button"
+          onClick={onToggleLocale}
+          className={
+            isM3
+              ? 'm3-secondary-tonal hidden rounded-full px-2.5 py-1.5 text-[11px] font-bold sm:inline-flex'
+              : 'lg-capsule hidden rounded-full px-2.5 py-1 text-[11px] font-semibold text-white sm:inline-flex'
+          }
+          title="Sprache wechseln / Switch language"
+        >
+          {locale.toUpperCase()}
+        </button>
 
         {/* 20k EPG Stress-Test */}
         <button
@@ -215,18 +248,15 @@ export const CustomTitlebar: React.FC<CustomTitlebarProps> = ({
           className={
             isM3
               ? `m3-spring hidden items-center gap-1.5 rounded-full px-3 py-1.5 text-[11px] font-semibold lg:inline-flex luma-tabular ${
-                  stressMode20k
-                    ? 'm3-tonal-active'
-                    : 'm3-secondary-tonal'
+                  stressMode20k ? 'm3-tonal-active' : 'm3-secondary-tonal'
                 }`
-              : ` hidden items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium lg:inline-flex luma-tabular ${
+              : `hidden items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium lg:inline-flex luma-tabular ${
                   stressMode20k ? 'lg-pill-active' : 'lg-capsule text-slate-200'
                 }`
           }
-          title="2D-Virtualisierung mit 20.400 Kanälen testen"
         >
           <Layers className="h-3.5 w-3.5" />
-          <span>{stressMode20k ? '20.4k Aktiv' : '20k EPG'}</span>
+          <span>{stressMode20k ? '20.4k' : '20k EPG'}</span>
         </button>
 
         {/* Multiview */}
@@ -245,7 +275,6 @@ export const CustomTitlebar: React.FC<CustomTitlebarProps> = ({
                   activeSection === 'multiview' ? 'lg-pill-active' : 'lg-capsule text-slate-200'
                 }`
           }
-          title="Luma Multiview (4x Sport-Modus)"
         >
           <Grid2x2 className="h-3.5 w-3.5" />
           <span className="hidden xl:inline">Multiview</span>
@@ -265,12 +294,11 @@ export const CustomTitlebar: React.FC<CustomTitlebarProps> = ({
                   ambilightEnabled ? 'lg-pill-active' : 'lg-capsule text-slate-400'
                 }`
           }
-          title="Dynamic Ambient Glow umschalten"
+          title="Dynamic Ambient Glow"
         >
           <Sparkles className="h-3.5 w-3.5" />
         </button>
 
-        {/* Clock */}
         <div
           className={
             isM3
@@ -280,24 +308,6 @@ export const CustomTitlebar: React.FC<CustomTitlebarProps> = ({
         >
           {formattedClock}
         </div>
-
-        {/* ChromeOS Window Controls Overlay Caption Buttons (in GoogleOS M3 Mode) */}
-        {isM3 && (
-          <div
-            className="hidden items-center gap-1 pl-1 text-slate-400 md:flex"
-            title="ChromeOS Window Controls Overlay"
-          >
-            <span className="flex h-7 w-7 items-center justify-center rounded-full hover:bg-white/10 text-xs">
-              ─
-            </span>
-            <span className="flex h-7 w-7 items-center justify-center rounded-full hover:bg-white/10 text-[11px]">
-              ▢
-            </span>
-            <span className="flex h-7 w-7 items-center justify-center rounded-full hover:bg-rose-500/30 text-xs">
-              ✕
-            </span>
-          </div>
-        )}
       </div>
     </header>
   );

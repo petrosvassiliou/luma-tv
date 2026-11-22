@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Clapperboard,
   CornerDownLeft,
   Film,
   Grid2x2,
@@ -11,22 +12,34 @@ import {
   Zap,
 } from 'lucide-react';
 import { getCurrentAndNextProgram } from '../../data/mockCatalog';
-import type { Channel, PlatformDesignMode, VodItem } from '../../types/luma';
+import type {
+  Channel,
+  PlatformDesignMode,
+  SeriesEpisode,
+  SeriesItem,
+  VodItem,
+} from '../../types/luma';
 
 interface CommandBarProps {
   designMode: PlatformDesignMode;
   onClose: () => void;
   channels: Channel[];
   vodCatalog: VodItem[];
+  seriesCatalog?: SeriesItem[];
   nowMs: number;
   onSelectChannel: (channel: Channel) => void;
   onSelectVod: (vod: VodItem) => void;
+  onSelectSeriesEpisode?: (
+    series: SeriesItem,
+    seasonNum: number,
+    episode: SeriesEpisode
+  ) => void;
   onTriggerAction: (action: 'multiview' | 'ambilight' | 'stress20k' | 'toggleDesign') => void;
 }
 
 interface SearchHit {
   id: string;
-  kind: 'channel' | 'epg' | 'vod' | 'action';
+  kind: 'channel' | 'epg' | 'vod' | 'series' | 'action';
   title: string;
   subtitle: string;
   badge: string;
@@ -38,9 +51,11 @@ export const CommandBar: React.FC<CommandBarProps> = ({
   onClose,
   channels,
   vodCatalog,
+  seriesCatalog = [],
   nowMs,
   onSelectChannel,
   onSelectVod,
+  onSelectSeriesEpisode,
   onTriggerAction,
 }) => {
   const isM3 = designMode === 'm3-expressive';
@@ -57,7 +72,7 @@ export const CommandBar: React.FC<CommandBarProps> = ({
     const q = query.trim().toLowerCase();
     const results: SearchHit[] = [];
 
-    for (let i = 0; i < channels.length && results.length < 10; i++) {
+    for (let i = 0; i < channels.length && results.length < 8; i++) {
       const ch = channels[i];
       if (
         !q ||
@@ -71,7 +86,7 @@ export const CommandBar: React.FC<CommandBarProps> = ({
           id: `ch-${ch.id}`,
           kind: 'channel',
           title: `#${ch.number} · ${ch.name}`,
-          subtitle: `Jetzt: ${current.title} (${ch.groupName})`,
+          subtitle: `Live: ${current.title} (${ch.groupName})`,
           badge: ch.resolution,
           onExecute: () => {
             onSelectChannel(ch);
@@ -82,7 +97,7 @@ export const CommandBar: React.FC<CommandBarProps> = ({
     }
 
     if (q.length >= 2) {
-      for (let i = 0; i < Math.min(channels.length, 60) && results.length < 16; i++) {
+      for (let i = 0; i < Math.min(channels.length, 60) && results.length < 13; i++) {
         const ch = channels[i];
         const { current } = getCurrentAndNextProgram(ch, nowMs);
         if (
@@ -93,7 +108,7 @@ export const CommandBar: React.FC<CommandBarProps> = ({
             id: `epg-${ch.id}`,
             kind: 'epg',
             title: current.title,
-            subtitle: `Läuft live auf ${ch.name} · ${current.subtitle}`,
+            subtitle: `EPG Live · ${ch.name}`,
             badge: 'EPG LIVE',
             onExecute: () => {
               onSelectChannel(ch);
@@ -101,6 +116,32 @@ export const CommandBar: React.FC<CommandBarProps> = ({
             },
           });
         }
+      }
+    }
+
+    // Xtream Series & Episodes Search
+    for (const ser of seriesCatalog) {
+      const seriesMatch =
+        !q || ser.title.toLowerCase().includes(q) || ser.genre.toLowerCase().includes(q);
+      for (const sea of ser.seasons) {
+        for (const ep of sea.episodes) {
+          const epMatch = ep.title.toLowerCase().includes(q);
+          if (seriesMatch || epMatch) {
+            results.push({
+              id: `ser-${ep.id}`,
+              kind: 'series',
+              title: `${ser.title.split('·')[0].trim()} · S${String(sea.seasonNumber).padStart(2, '0')}E${String(ep.episodeNumber).padStart(2, '0')} ${ep.title}`,
+              subtitle: `${ser.genre} · ${ep.durationMin} Min.`,
+              badge: `SERIE ${ep.resolution}`,
+              onExecute: () => {
+                onSelectSeriesEpisode?.(ser, sea.seasonNumber, ep);
+                onClose();
+              },
+            });
+            if (!q) break; // Show 1 representative episode per series when query is empty
+          }
+        }
+        if (!q) break;
       }
     }
 
@@ -164,8 +205,20 @@ export const CommandBar: React.FC<CommandBarProps> = ({
       }
     }
 
-    return results.slice(0, 14);
-  }, [query, channels, vodCatalog, nowMs, isM3, onSelectChannel, onSelectVod, onTriggerAction, onClose]);
+    return results.slice(0, 16);
+  }, [
+    query,
+    channels,
+    vodCatalog,
+    seriesCatalog,
+    nowMs,
+    isM3,
+    onSelectChannel,
+    onSelectVod,
+    onSelectSeriesEpisode,
+    onTriggerAction,
+    onClose,
+  ]);
 
   const safeSelected = hits.length > 0 ? Math.min(selectedIndex, hits.length - 1) : 0;
 
@@ -193,6 +246,8 @@ export const CommandBar: React.FC<CommandBarProps> = ({
         return <Radio className="h-4 w-4 text-emerald-300" />;
       case 'vod':
         return <Film className="h-4 w-4 text-indigo-300" />;
+      case 'series':
+        return <Clapperboard className="h-4 w-4 text-cyan-300" />;
       case 'action':
         return <Sparkles className="h-4 w-4 text-amber-300" />;
     }
@@ -225,7 +280,7 @@ export const CommandBar: React.FC<CommandBarProps> = ({
               setQuery(e.target.value);
               setSelectedIndex(0);
             }}
-            placeholder="Suche in 20.000+ Kanälen, EPG-Sendungen, Filmen oder Aktionen…"
+            placeholder="Suche in 20.000+ Kanälen, EPG, 4K-Filmen oder Xtream-Serien…"
             className="flex-1 bg-transparent text-sm text-white placeholder:text-slate-400 focus:outline-none"
           />
           <span className="inline-flex items-center gap-1 rounded-full bg-emerald-400/15 px-2.5 py-0.5 text-[10px] font-semibold text-emerald-300 luma-tabular">
@@ -290,12 +345,12 @@ export const CommandBar: React.FC<CommandBarProps> = ({
         <div className="flex items-center justify-between border-t border-white/10 bg-black/25 px-5 py-2.5 text-[11px] text-slate-300/80">
           <div className="flex items-center gap-3">
             <span>↑↓ Navigieren</span>
-            <span>↵ Umschalten</span>
+            <span>↵ Umschalten / Abspielen</span>
           </div>
           <span className="hidden sm:inline-flex items-center gap-1.5 opacity-75">
             <Grid2x2 className="h-3 w-3" />
             <Layers className="h-3 w-3" />
-            {isM3 ? 'Material 3 Search Sheet' : 'macOS Liquid Glass Spotlight'}
+            {isM3 ? 'Material 3 Global Index' : 'macOS Liquid Glass Spotlight'}
           </span>
         </div>
       </div>
