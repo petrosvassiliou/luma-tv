@@ -37,6 +37,10 @@ export const TRANSLATIONS = {
     fullscreen: 'Vollbild',
     sleepActive: 'Sleep',
     shortcutsHelpTitle: 'Steuerung · Tastatur, Touch & TV-Remote',
+    mpvLaunchBtn: 'MPV',
+    mpvLaunchTitle: 'Im externen MPV Hardware-Player öffnen (VideoToolbox / HEVC / AC3)',
+    localRustProxyBadge: 'RUST LOKAL-PROXY',
+    cloudCorsProxyBadge: 'CORS PROXY',
   },
   en: {
     searchPlaceholder: 'Search channels, EPG, movies, or series…',
@@ -60,5 +64,9 @@ export const TRANSLATIONS = {
     fullscreen: 'Fullscreen',
     sleepActive: 'Sleep',
     shortcutsHelpTitle: 'Controls · Keyboard, Touch & TV Remote',
+    mpvLaunchBtn: 'MPV',
+    mpvLaunchTitle: 'Open in external MPV hardware player (VideoToolbox / HEVC / AC3)',
+    localRustProxyBadge: 'RUST LOCAL PROXY',
+    cloudCorsProxyBadge: 'CORS PROXY',
   },
 } as const;

@@ -62,7 +62,7 @@ const MultiviewTile: React.FC<MultiviewTileProps> = ({
   useEffect(() => {
     const engine = new LumaPlayerEngine((t) => {
       setState(t.state);
-      setEngineBadge(t.engine.startsWith('MPEG-TS') ? 'MPEG-TS' : 'HLS');
+      setEngineBadge(t.engine.includes('MPEG-TS') ? 'MPEG-TS' : 'HLS');
     });
     engineRef.current = engine;
     return () => {

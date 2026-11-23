@@ -9,7 +9,12 @@ import {
   Sliders,
 } from 'lucide-react';
 import type { BufferProfile, LumaLocale, LumaPreferences } from '../../i18n/translations';
-import type { CustomBouquet, ParentalControlConfig, PlatformDesignMode } from '../../types/luma';
+import {
+  LUMA_APP_VERSION,
+  type CustomBouquet,
+  type ParentalControlConfig,
+  type PlatformDesignMode,
+} from '../../types/luma';
 
 interface SettingsHubViewProps {
   designMode: PlatformDesignMode;
@@ -57,7 +62,7 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
   const exportBackupJson = () => {
     const bundle = {
       app: 'app.lumatv.client',
-      version: '0.3.0-beta.1',
+      version: LUMA_APP_VERSION,
       exportedAt: new Date().toISOString(),
       favorites: Array.from(favoriteIds),
       bouquets: customBouquets,

@@ -6,6 +6,7 @@ import {
   ChevronUp,
   Circle,
   Expand,
+  ExternalLink,
   Maximize2,
   Minimize2,
   Pause,
@@ -29,6 +30,8 @@ import {
 } from '../../engine/audioProcessor';
 import { LumaDvrRecorder } from '../../engine/dvrRecorder';
 import { LumaPlayerEngine } from '../../engine/LumaPlayerEngine';
+import { launchNativeMpvStream } from '../../engine/tauriNativeBridge';
+import { TRANSLATIONS, type LumaLocale } from '../../i18n/translations';
 import type {
   AspectRatioMode,
   Channel,
@@ -57,6 +60,9 @@ interface PlayerStageProps {
   onToggleTheaterExpanded: () => void;
   proxyConfig: EngineProxyConfig;
   nowMs: number;
+  locale?: LumaLocale;
+  mpvAvailable?: boolean;
+  onToast?: (message: string) => void;
   onAmbientRgbChange?: (rgb: string) => void;
 }
 
@@ -78,9 +84,13 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
   onToggleTheaterExpanded,
   proxyConfig,
   nowMs,
+  locale = 'de',
+  mpvAvailable = false,
+  onToast,
   onAmbientRgbChange,
 }) => {
   const isM3 = designMode === 'm3-expressive';
+  const t = TRANSLATIONS[locale];
   const stageRef = useRef<HTMLDivElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const synthCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -309,6 +319,21 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
     }
   };
 
+  const handleLaunchMpv = async () => {
+    try {
+      engineRef.current?.markExternalMpvSession();
+      setIsPlaying(false);
+      const msg = await launchNativeMpvStream(
+        activeUrl,
+        `${channel.name} · ${displayTitle}`,
+        proxyConfig.customUserAgent
+      );
+      onToast?.(msg);
+    } catch (err) {
+      onToast?.(err instanceof Error ? err.message : 'MPV Start fehlgeschlagen');
+    }
+  };
+
   const handleFullscreen = async () => {
     const container = stageRef.current;
     if (!container) return;
@@ -508,7 +533,9 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
           {telemetry.proxyActive && (
             <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/20 px-2.5 py-1 text-[10px] font-semibold text-emerald-300 ring-1 ring-emerald-400/30">
               <ShieldCheck className="h-3 w-3" />
-              CORS PROXY
+              {telemetry.proxyMode === 'local-rust'
+                ? t.localRustProxyBadge
+                : t.cloudCorsProxyBadge}
             </span>
           )}
 
@@ -901,6 +928,24 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
                   </div>
                 )}
               </div>
+
+              {/* Native MPV Hardware Handoff (macOS / Desktop Tauri) */}
+              {mpvAvailable && (
+                <button
+                  id="btn-launch-mpv"
+                  type="button"
+                  onClick={handleLaunchMpv}
+                  className={
+                    isM3
+                      ? 'm3-secondary-tonal hidden h-10 items-center gap-1.5 rounded-full px-3 text-[11px] font-semibold text-[#C4E8FF] sm:inline-flex'
+                      : 'lg-capsule hidden h-9 items-center gap-1.5 rounded-full px-3 text-[11px] font-semibold text-sky-200 sm:inline-flex'
+                  }
+                  title={t.mpvLaunchTitle}
+                >
+                  <ExternalLink className="h-3.5 w-3.5" />
+                  <span>{t.mpvLaunchBtn}</span>
+                </button>
+              )}
 
               {/* In-App Floating PiP */}
               <button

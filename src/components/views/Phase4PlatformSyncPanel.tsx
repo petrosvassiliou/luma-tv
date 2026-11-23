@@ -340,6 +340,24 @@ export const Phase4PlatformSyncPanel: React.FC<Phase4PlatformSyncPanelProps> = (
               <div className="mt-1 text-[10px] text-slate-400">
                 Codecs: {nativeProbe.supportedCodecs.join(' · ')}
               </div>
+              {nativeProbe.available && (
+                <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[10px]">
+                  <span
+                    className={`rounded-full px-2 py-0.5 font-medium ${
+                      nativeProbe.mpvAvailable
+                        ? 'bg-emerald-500/20 text-emerald-300'
+                        : 'bg-white/10 text-slate-300'
+                    }`}
+                  >
+                    MPV: {nativeProbe.mpvAvailable ? 'Hardware bereit' : 'Nicht installiert'}
+                  </span>
+                  {nativeProbe.localProxyUrl && (
+                    <span className="rounded-full bg-sky-400/20 px-2 py-0.5 font-medium text-sky-200">
+                      Loopback-Proxy: 127.0.0.1 aktiv
+                    </span>
+                  )}
+                </div>
+              )}
             </div>
           )}
 

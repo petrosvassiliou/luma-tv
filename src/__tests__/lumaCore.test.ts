@@ -7,7 +7,10 @@ import { AUDIO_DSP_PRESETS } from '../engine/audioProcessor';
 import {
   buildProxiedStreamUrl,
   detectStreamDriver,
+  isLocalRustProxyEndpoint,
+  resolveBufferProfileSettings,
   rewriteHlsManifestUrls,
+  shouldProactivelyProxyStream,
 } from '../engine/corsProxy';
 import { selectSupportedRecorderMimeType } from '../engine/dvrRecorder';
 import { TRANSLATIONS } from '../i18n/translations';
@@ -127,6 +130,61 @@ describe('Luma TV v0.1 beta — Stream Driver Detection & CORS Manifest Proxy', 
     expect(alreadyProxied).toBe(
       'https://luma-tv-app.web.app/api/stream-proxy?url=https%3A%2F%2Ffoo.bar'
     );
+  });
+
+  it('routes cleartext HTTP IPTV streams through Tauri Rust loopback proxy and tunes MSE buffer profiles', () => {
+    const rustProxyUrl = 'http://127.0.0.1:54321/luma-proxy/a1b2c3d4/stream';
+    const cloudProxyUrl = 'https://luma-tv-app.web.app/api/stream-proxy';
+
+    expect(isLocalRustProxyEndpoint(rustProxyUrl)).toBe(true);
+    expect(isLocalRustProxyEndpoint(cloudProxyUrl)).toBe(false);
+
+    // Cleartext HTTP IPTV stream is proactively routed via local Rust proxy
+    expect(
+      shouldProactivelyProxyStream('http://xtream.example.tv:8080/live/u/p/101.ts', {
+        enabled: false,
+        endpointUrl: rustProxyUrl,
+        autoFallbackOnCors: true,
+      })
+    ).toBe(true);
+
+    // Public HTTPS CDN stream loads directly first unless always-proxy is enabled
+    expect(
+      shouldProactivelyProxyStream('https://cdn.example.com/live/master.m3u8', {
+        enabled: false,
+        endpointUrl: rustProxyUrl,
+        autoFallbackOnCors: true,
+      })
+    ).toBe(false);
+
+    // Cleartext HTTP stream on HTTPS PWA origin proactively uses cloud proxy to avoid mixed-content block
+    expect(
+      shouldProactivelyProxyStream(
+        'http://xtream.example.tv:8080/live/u/p/101.m3u8',
+        {
+          enabled: false,
+          endpointUrl: cloudProxyUrl,
+          autoFallbackOnCors: true,
+        },
+        'https:'
+      )
+    ).toBe(true);
+
+    // Respects explicit opt-out
+    expect(
+      shouldProactivelyProxyStream('http://xtream.example.tv:8080/live/u/p/101.ts', {
+        enabled: false,
+        endpointUrl: rustProxyUrl,
+        autoFallbackOnCors: false,
+      })
+    ).toBe(false);
+
+    const lowLat = resolveBufferProfileSettings('low-latency');
+    const balanced = resolveBufferProfileSettings('balanced');
+    const cinema = resolveBufferProfileSettings('cinema-max');
+    expect(lowLat.hlsMaxBufferLength).toBeLessThan(balanced.hlsMaxBufferLength);
+    expect(cinema.hlsMaxBufferLength).toBeGreaterThan(balanced.hlsMaxBufferLength);
+    expect(cinema.mpegtsMaxLatency).toBeGreaterThan(lowLat.mpegtsMaxLatency);
   });
 });
 

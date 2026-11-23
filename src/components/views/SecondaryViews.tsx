@@ -18,7 +18,10 @@ import {
 } from 'lucide-react';
 import type { StoredChannel, StoredPlaylistSource } from '../../db/lumaDb';
 import { getChannelProgramsInRange } from '../../data/mockCatalog';
-import { probeCorsStreamProxy } from '../../engine/corsProxy';
+import {
+  isLocalRustProxyEndpoint,
+  probeCorsStreamProxy,
+} from '../../engine/corsProxy';
 import type {
   LumaSyncPlainPayload,
   WatchHistoryEntry,
@@ -255,6 +258,7 @@ interface SourcesEngineViewProps {
   onChangeEpgOffset: (hours: number) => void;
   proxyConfig: EngineProxyConfig;
   onChangeProxyConfig: (next: EngineProxyConfig) => void;
+  localRustProxyUrl?: string | null;
   favoriteIds: Set<string>;
   watchHistory: WatchHistoryEntry[];
   onRestoreFromSync: (payload: LumaSyncPlainPayload) => void;
@@ -278,6 +282,7 @@ export const SourcesEngineView: React.FC<SourcesEngineViewProps> = ({
   onChangeEpgOffset,
   proxyConfig,
   onChangeProxyConfig,
+  localRustProxyUrl = null,
   favoriteIds,
   watchHistory,
   onRestoreFromSync,
@@ -781,7 +786,11 @@ export const SourcesEngineView: React.FC<SourcesEngineViewProps> = ({
           <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-2 text-xs font-semibold text-white">
               <ShieldCheck className="h-4 w-4 text-sky-400" />
-              <span>Firebase / Edge Stream-Proxy (CORS &amp; Manifest-Rewriter)</span>
+              <span>
+                {isLocalRustProxyEndpoint(proxyConfig.endpointUrl)
+                  ? 'Tauri Rust Loopback-Proxy (127.0.0.1 · HLS & TS)'
+                  : 'Firebase / Edge Stream-Proxy (CORS & Manifest-Rewriter)'}
+              </span>
             </div>
             <button
               type="button"
@@ -797,6 +806,51 @@ export const SourcesEngineView: React.FC<SourcesEngineViewProps> = ({
               Proxy prüfen
             </button>
           </div>
+
+          {localRustProxyUrl && (
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() =>
+                  onChangeProxyConfig({
+                    ...proxyConfig,
+                    endpointUrl: localRustProxyUrl,
+                  })
+                }
+                className={`rounded-full px-3 py-1 text-[11px] font-semibold transition ${
+                  isLocalRustProxyEndpoint(proxyConfig.endpointUrl)
+                    ? isM3
+                      ? 'm3-primary-pill'
+                      : 'lg-pill-active'
+                    : isM3
+                      ? 'm3-secondary-tonal'
+                      : 'lg-capsule text-slate-200'
+                }`}
+              >
+                Lokal · Tauri Rust (0 ms)
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  onChangeProxyConfig({
+                    ...proxyConfig,
+                    endpointUrl: 'https://luma-tv-app.web.app/api/stream-proxy',
+                  })
+                }
+                className={`rounded-full px-3 py-1 text-[11px] font-semibold transition ${
+                  !isLocalRustProxyEndpoint(proxyConfig.endpointUrl)
+                    ? isM3
+                      ? 'm3-primary-pill'
+                      : 'lg-pill-active'
+                    : isM3
+                      ? 'm3-secondary-tonal'
+                      : 'lg-capsule text-slate-200'
+                }`}
+              >
+                Cloud · Firebase Edge
+              </button>
+            </div>
+          )}
 
           <div className="flex flex-wrap items-center gap-4">
             <label className="flex items-center gap-2 text-xs text-slate-200">

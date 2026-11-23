@@ -5,6 +5,8 @@ export interface NativeEngineProbe {
   arch: string;
   hwDecoder: string;
   mpvAvailable: boolean;
+  mpvPath?: string | null;
+  localProxyUrl?: string | null;
   corsFreeNetwork: boolean;
   supportedCodecs: string[];
 }
@@ -25,7 +27,11 @@ export function isTauriDesktopOrMobile(): boolean {
   return getTauriInvoke() !== null;
 }
 
-export async function probeTauriNativeEngine(): Promise<NativeEngineProbe> {
+let cachedNativeProbePromise: Promise<NativeEngineProbe> | null = null;
+
+export async function probeTauriNativeEngine(
+  forceRefresh = false
+): Promise<NativeEngineProbe> {
   const invoke = getTauriInvoke();
   if (!invoke) {
     return {
@@ -35,31 +41,43 @@ export async function probeTauriNativeEngine(): Promise<NativeEngineProbe> {
       arch: 'wasm-mse',
       hwDecoder: 'WebCodecs / MSE Hardware Accelerated',
       mpvAvailable: false,
+      mpvPath: null,
+      localProxyUrl: null,
       corsFreeNetwork: false,
       supportedCodecs: ['H.264 / AVC', 'HEVC (Platform GPU)', 'AAC / MP3', 'HLS + MPEG-TS'],
     };
   }
 
-  try {
-    const res = await invoke<Omit<NativeEngineProbe, 'available'>>(
-      'luma_native_probe_engine'
-    );
-    return {
-      available: true,
-      ...res,
-    };
-  } catch {
-    return {
-      available: true,
-      bundleId: 'app.lumatv.client',
-      platform: 'tauri-native',
-      arch: 'native',
-      hwDecoder: 'Hardware Accelerated',
-      mpvAvailable: false,
-      corsFreeNetwork: true,
-      supportedCodecs: ['HEVC 10-bit', 'H.264', 'MPEG-TS', 'MKV', 'AC3/EAC3'],
-    };
+  if (!forceRefresh && cachedNativeProbePromise) {
+    return cachedNativeProbePromise;
   }
+
+  cachedNativeProbePromise = (async () => {
+    try {
+      const res = await invoke<Omit<NativeEngineProbe, 'available'>>(
+        'luma_native_probe_engine'
+      );
+      return {
+        available: true,
+        ...res,
+      };
+    } catch {
+      return {
+        available: true,
+        bundleId: 'app.lumatv.client',
+        platform: 'tauri-native',
+        arch: 'native',
+        hwDecoder: 'Hardware Accelerated',
+        mpvAvailable: false,
+        mpvPath: null,
+        localProxyUrl: null,
+        corsFreeNetwork: true,
+        supportedCodecs: ['HEVC 10-bit', 'H.264', 'MPEG-TS', 'MKV', 'AC3/EAC3'],
+      };
+    }
+  })();
+
+  return cachedNativeProbePromise;
 }
 
 export async function launchNativeMpvStream(

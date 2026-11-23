@@ -13,6 +13,11 @@ import {
   getCurrentAndNextProgram,
   VERIFIED_HLS_STREAMS,
 } from './data/mockCatalog';
+import { isLocalRustProxyEndpoint } from './engine/corsProxy';
+import {
+  probeTauriNativeEngine,
+  type NativeEngineProbe,
+} from './engine/tauriNativeBridge';
 import {
   detectSystemLocale,
   TRANSLATIONS,
@@ -153,12 +158,46 @@ export function App() {
 
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
   const [epgOffsetHours, setEpgOffsetHours] = useState<number>(0);
+  const [nativeProbe, setNativeProbe] = useState<NativeEngineProbe | null>(null);
   const [proxyConfig, setProxyConfig] = useState<EngineProxyConfig>({
     enabled: false,
     endpointUrl: 'https://luma-tv-app.web.app/api/stream-proxy',
-    customUserAgent: 'LumaTV/0.3-beta (TiviMate-Compatible)',
+    customUserAgent: 'LumaTV/0.4-beta (TiviMate-Compatible)',
     autoFallbackOnCors: true,
   });
+
+  useEffect(() => {
+    let cancelled = false;
+    probeTauriNativeEngine()
+      .then((probe) => {
+        if (cancelled) return;
+        setNativeProbe(probe);
+        if (probe.available && probe.localProxyUrl) {
+          setProxyConfig((prev) => {
+            const cur = prev.endpointUrl.trim();
+            const isDefaultOrStaleLoopback =
+              !cur ||
+              cur === 'https://luma-tv-app.web.app/api/stream-proxy' ||
+              isLocalRustProxyEndpoint(cur);
+            return isDefaultOrStaleLoopback
+              ? { ...prev, endpointUrl: probe.localProxyUrl! }
+              : prev;
+          });
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const effectiveProxyConfig = useMemo<EngineProxyConfig>(
+    () => ({
+      ...proxyConfig,
+      bufferProfile: preferences.bufferProfile,
+    }),
+    [proxyConfig, preferences.bufferProfile]
+  );
 
   // Sync Sleep Timer Deadline
   useEffect(() => {
@@ -621,6 +660,11 @@ export function App() {
     }
   };
 
+  const resolveIngestProxyEndpoint = () =>
+    proxyConfig.enabled || isLocalRustProxyEndpoint(proxyConfig.endpointUrl)
+      ? proxyConfig.endpointUrl
+      : undefined;
+
   const handleImportM3u = async (params: {
     name: string;
     url?: string;
@@ -631,7 +675,7 @@ export function App() {
     try {
       const source = await importM3uPlaylist({
         ...params,
-        proxyEndpoint: proxyConfig.enabled ? proxyConfig.endpointUrl : undefined,
+        proxyEndpoint: resolveIngestProxyEndpoint(),
         onProgress: (phase, percent) => setIngestState({ active: true, phase, percent }),
       });
       await reloadSourcesList();
@@ -665,7 +709,7 @@ export function App() {
     try {
       const source = await importXtreamSource({
         ...params,
-        proxyEndpoint: proxyConfig.enabled ? proxyConfig.endpointUrl : undefined,
+        proxyEndpoint: resolveIngestProxyEndpoint(),
         onProgress: (phase, percent) => setIngestState({ active: true, phase, percent }),
       });
       await reloadSourcesList();
@@ -1063,8 +1107,14 @@ export function App() {
                   ambilightEnabled={ambilightEnabled}
                   theaterExpanded={theaterExpanded}
                   onToggleTheaterExpanded={() => setTheaterExpanded((v) => !v)}
-                  proxyConfig={proxyConfig}
+                  proxyConfig={effectiveProxyConfig}
                   nowMs={nowMs}
+                  locale={preferences.locale}
+                  mpvAvailable={Boolean(nativeProbe?.mpvAvailable)}
+                  onToast={(msg) => {
+                    setToastMessage(msg);
+                    window.setTimeout(() => setToastMessage(null), 3200);
+                  }}
                   onAmbientRgbChange={setGlobalAmbientRgb}
                 />
               )}
@@ -1115,7 +1165,7 @@ export function App() {
                 });
               }}
               onExpandChannel={(ch) => selectLiveChannel(ch)}
-              proxyConfig={proxyConfig}
+              proxyConfig={effectiveProxyConfig}
               nowMs={nowMs}
             />
           )}
@@ -1183,6 +1233,7 @@ export function App() {
               onChangeEpgOffset={setEpgOffsetHours}
               proxyConfig={proxyConfig}
               onChangeProxyConfig={setProxyConfig}
+              localRustProxyUrl={nativeProbe?.localProxyUrl ?? null}
               favoriteIds={favoriteIds}
               watchHistory={watchHistory}
               onRestoreFromSync={handleRestoreFromSync}
@@ -1219,7 +1270,7 @@ export function App() {
           channel={activeChannel}
           overrideTitle={activeOnDemand?.title}
           overrideStreamUrl={activeOnDemand?.streamUrl}
-          proxyConfig={proxyConfig}
+          proxyConfig={effectiveProxyConfig}
           nowMs={nowMs}
           onPrevChannel={() => zapRelative(-1)}
           onNextChannel={() => zapRelative(1)}

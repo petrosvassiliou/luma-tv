@@ -1,6 +1,90 @@
+import type { BufferProfile } from '../i18n/translations';
 import type { EngineProxyConfig } from '../types/luma';
 
 export type StreamDriverKind = 'mpegts' | 'hls' | 'progressive';
+
+export interface BufferProfileTuning {
+  hlsLowLatencyMode: boolean;
+  hlsMaxBufferLength: number;
+  hlsBackBufferLength: number;
+  mpegtsMaxLatency: number;
+  mpegtsMinRemain: number;
+  mpegtsStashKB: number;
+}
+
+export function resolveBufferProfileSettings(
+  profile: BufferProfile = 'balanced'
+): BufferProfileTuning {
+  switch (profile) {
+    case 'low-latency':
+      return {
+        hlsLowLatencyMode: true,
+        hlsMaxBufferLength: 6,
+        hlsBackBufferLength: 15,
+        mpegtsMaxLatency: 1.5,
+        mpegtsMinRemain: 0.3,
+        mpegtsStashKB: 64,
+      };
+    case 'cinema-max':
+      return {
+        hlsLowLatencyMode: false,
+        hlsMaxBufferLength: 60,
+        hlsBackBufferLength: 120,
+        mpegtsMaxLatency: 6.0,
+        mpegtsMinRemain: 1.5,
+        mpegtsStashKB: 512,
+      };
+    case 'balanced':
+    default:
+      return {
+        hlsLowLatencyMode: true,
+        hlsMaxBufferLength: 24,
+        hlsBackBufferLength: 60,
+        mpegtsMaxLatency: 2.5,
+        mpegtsMinRemain: 0.5,
+        mpegtsStashKB: 128,
+      };
+  }
+}
+
+export function isLocalRustProxyEndpoint(endpointUrl: string): boolean {
+  const trimmed = endpointUrl.trim();
+  return trimmed.startsWith('http://127.0.0.1:') && trimmed.includes('/luma-proxy/');
+}
+
+export function shouldProactivelyProxyStream(
+  rawUrl: string,
+  proxy: EngineProxyConfig,
+  currentProtocol?: string
+): boolean {
+  const endpoint = proxy.endpointUrl.trim();
+  if (!endpoint) return false;
+  if (proxy.enabled) return true;
+  if (proxy.autoFallbackOnCors === false) return false;
+
+  try {
+    const parsed = new URL(rawUrl);
+    if (parsed.protocol === 'http:') {
+      const host = parsed.hostname.toLowerCase();
+      const isLoopback = host === '127.0.0.1' || host === 'localhost' || host === '[::1]';
+      if (!isLoopback) {
+        if (isLocalRustProxyEndpoint(endpoint)) {
+          return true;
+        }
+        const proto =
+          currentProtocol ??
+          (typeof window !== 'undefined' ? window.location?.protocol : '');
+        if (proto === 'https:') {
+          return true;
+        }
+      }
+    }
+  } catch {
+    // Fall through to standard direct load + on-error fallback
+  }
+
+  return false;
+}
 
 export function detectStreamDriver(
   rawUrl: string,
@@ -97,6 +181,20 @@ export async function probeCorsStreamProxy(
     });
     const latencyMs = Math.round(performance.now() - t0);
     if (res.ok) {
+      let service = '';
+      try {
+        const json = (await res.json()) as { service?: string };
+        service = json.service ?? '';
+      } catch {
+        // Non-JSON 200 OK
+      }
+      if (service === 'lumaNativeRustProxy') {
+        return {
+          ok: true,
+          latencyMs,
+          detail: `Tauri Rust Loopback-Proxy aktiv (${latencyMs} ms · CORS & HLS-Rewriter bereit)`,
+        };
+      }
       return {
         ok: true,
         latencyMs,

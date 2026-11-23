@@ -1,5 +1,7 @@
-export const LUMA_APP_VERSION = '0.3.0-beta.1';
-export const LUMA_RELEASE_BADGE = '0.3 beta';
+import type { BufferProfile } from '../i18n/translations';
+
+export const LUMA_APP_VERSION = '0.4.0-beta.1';
+export const LUMA_RELEASE_BADGE = '0.4 beta';
 
 export interface EpgReminder {
   programId: string;
@@ -172,6 +174,8 @@ export interface StreamTelemetry {
   engine:
     | 'WebHLS · MSE Worker'
     | 'MPEG-TS · MSE Worker'
+    | 'Tauri Rust · HLS MSE'
+    | 'Tauri Rust · MPEG-TS'
     | 'Native Safari HLS'
     | 'Tauri v2 Native MPV'
     | 'Luma Studio Synth';
@@ -188,6 +192,7 @@ export interface StreamTelemetry {
   subtitleTracks: SubtitleTrackOption[];
   currentSubtitleTrack: number;
   proxyActive: boolean;
+  proxyMode?: 'none' | 'local-rust' | 'cloud-edge';
   errorMessage?: string;
 }
 
@@ -196,4 +201,5 @@ export interface EngineProxyConfig {
   endpointUrl: string;
   customUserAgent?: string;
   autoFallbackOnCors?: boolean;
+  bufferProfile?: BufferProfile;
 }

@@ -1,6 +1,12 @@
 import Hls from 'hls.js';
 import mpegts from 'mpegts.js';
-import { buildProxiedStreamUrl, detectStreamDriver } from './corsProxy';
+import {
+  buildProxiedStreamUrl,
+  detectStreamDriver,
+  isLocalRustProxyEndpoint,
+  resolveBufferProfileSettings,
+  shouldProactivelyProxyStream,
+} from './corsProxy';
 import type {
   EngineProxyConfig,
   QualityLevelOption,
@@ -76,18 +82,23 @@ export class LumaPlayerEngine {
     this.destroyDriversOnly();
     this.video = video;
 
-    const effectiveProxy: EngineProxyConfig = forceProxy
+    const useProxy = forceProxy || shouldProactivelyProxyStream(rawStreamUrl, proxyConfig);
+    const effectiveProxy: EngineProxyConfig = useProxy
       ? { ...proxyConfig, enabled: true }
       : proxyConfig;
     const isProxied = Boolean(
       effectiveProxy.enabled && effectiveProxy.endpointUrl && effectiveProxy.endpointUrl.trim()
     );
+    const isRustLoopback =
+      isProxied && isLocalRustProxyEndpoint(effectiveProxy.endpointUrl);
     const finalUrl = buildProxiedStreamUrl(rawStreamUrl, effectiveProxy);
     const driver = detectStreamDriver(rawStreamUrl, explicitStreamType);
-    const nativeRuntime = isTauriNativeRuntime();
+    const bufferTuning = resolveBufferProfileSettings(effectiveProxy.bufferProfile);
 
-    const engineLabel: StreamTelemetry['engine'] = nativeRuntime
-      ? 'Tauri v2 Native MPV'
+    const engineLabel: StreamTelemetry['engine'] = isRustLoopback
+      ? driver === 'mpegts'
+        ? 'Tauri Rust · MPEG-TS'
+        : 'Tauri Rust · HLS MSE'
       : driver === 'mpegts'
         ? 'MPEG-TS · MSE Worker'
         : 'WebHLS · MSE Worker';
@@ -97,6 +108,7 @@ export class LumaPlayerEngine {
       engine: engineLabel,
       state: 'connecting',
       proxyActive: isProxied,
+      proxyMode: isProxied ? (isRustLoopback ? 'local-rust' : 'cloud-edge') : 'none',
       errorMessage: undefined,
     });
 
@@ -154,11 +166,11 @@ export class LumaPlayerEngine {
         },
         {
           enableWorker: true,
-          enableStashBuffer: false,
-          stashInitialSize: 128 * 1024,
+          enableStashBuffer: bufferTuning.mpegtsStashKB >= 512,
+          stashInitialSize: bufferTuning.mpegtsStashKB * 1024,
           liveBufferLatencyChasing: true,
-          liveBufferLatencyMaxLatency: 2.5,
-          liveBufferLatencyMinRemain: 0.5,
+          liveBufferLatencyMaxLatency: bufferTuning.mpegtsMaxLatency,
+          liveBufferLatencyMinRemain: bufferTuning.mpegtsMinRemain,
         }
       );
 
@@ -218,8 +230,31 @@ export class LumaPlayerEngine {
       return;
     }
 
-    // 2. Progressive MP4 / WebM Driver
+    // 2. Progressive MP4 / WebM / MKV Driver
     if (driver === 'progressive') {
+      video.onerror = () => {
+        if (
+          !isProxied &&
+          !this.retriedWithProxy &&
+          proxyConfig.autoFallbackOnCors &&
+          proxyConfig.endpointUrl.trim()
+        ) {
+          this.retriedWithProxy = true;
+          this.loadInternal(
+            video,
+            rawStreamUrl,
+            proxyConfig,
+            autoPlay,
+            explicitStreamType,
+            true
+          );
+          return;
+        }
+        this.emit({
+          engine: 'Luma Studio Synth',
+          state: 'synth-fallback',
+        });
+      };
       video.src = finalUrl;
       if (autoPlay) {
         video.play().catch(() => {
@@ -236,9 +271,9 @@ export class LumaPlayerEngine {
       const customUa = effectiveProxy.customUserAgent?.trim();
       const hls = new Hls({
         enableWorker: true,
-        lowLatencyMode: true,
-        backBufferLength: 60,
-        maxBufferLength: 24,
+        lowLatencyMode: bufferTuning.hlsLowLatencyMode,
+        backBufferLength: bufferTuning.hlsBackBufferLength,
+        maxBufferLength: bufferTuning.hlsMaxBufferLength,
         startLevel: -1,
         xhrSetup: (xhr) => {
           if (isProxied && customUa) {
@@ -452,6 +487,20 @@ export class LumaPlayerEngine {
     }, 1000);
   }
 
+  public markExternalMpvSession() {
+    if (this.fallbackTimer !== null) {
+      window.clearTimeout(this.fallbackTimer);
+      this.fallbackTimer = null;
+    }
+    if (this.video) {
+      this.video.pause();
+    }
+    this.emit({
+      engine: 'Tauri v2 Native MPV',
+      state: 'synth-fallback',
+    });
+  }
+
   private destroyDriversOnly() {
     if (this.fallbackTimer !== null) {
       window.clearTimeout(this.fallbackTimer);
@@ -475,6 +524,7 @@ export class LumaPlayerEngine {
       this.video.onplaying = null;
       this.video.onloadeddata = null;
       this.video.onwaiting = null;
+      this.video.onerror = null;
     }
   }
 
