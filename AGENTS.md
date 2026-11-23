@@ -1,0 +1,35 @@
+# Luma TV (`app.lumatv.client`) — Antigravity Workspace Context
+
+**Luma TV** (System/Dock short name: **Luma**, Bundle ID: `app.lumatv.client`, current version: `0.3.0-beta.1`) is a cross-platform M3U/M3U_Plus, Xtream Codes & XMLTV streaming player targeting:
+1. **macOS (Apple Silicon & Intel)** via **Tauri v2** — native **Apple Liquid Glass** (`data-design="liquid-glass"`) design language, traffic-light titlebar overlay, CORS-free Rust `reqwest` ingestion, and hardware `MPV` handoff.
+2. **Android, Android TV & GoogleOS / Chromebook** via **Tauri v2 Mobile** — native **Google Material 3 Expressive** (`data-design="m3-expressive"`) tonal hierarchy, 10-foot D-Pad spatial focus engine, and freeform resizable windows.
+3. **ChromeOS / Web PWA** via **Vite 8 + Firebase Hosting & Cloud Functions** — standalone PWA with `window-controls-overlay`, offline Service Worker (`public/sw.js`), and optional `lumaStreamProxy` CORS/HLS rewriter (`functions/src/index.ts`).
+
+## Core Architectural Modules
+- **Dual Design System & 10-Foot Focus Rings:** `src/index.css` (`[data-design="m3-expressive"]` and `[data-design="liquid-glass"]`). Always preserve parity across both design modes when adding or restyling UI components.
+- **Playback, Audio DSP & DVR:**
+  - `src/engine/LumaPlayerEngine.ts` — `hls.js` + `mpegts.js` MSE Workers, audio/subtitle/ABR track switching, Tauri native bridge detection, and 3.4s fallback to `src/components/player/BroadcastSynthCanvas.tsx`.
+  - `src/engine/audioProcessor.ts` — WebAudio DSP (`Linear Direct`, `Vocal Boost`, `Cinema Bass`, `Night DRC`, pre-amp up to `160%`).
+  - `src/engine/dvrRecorder.ts` — Live stream clip recording (`MediaRecorder` MP4/WebM).
+  - `src/engine/tauriNativeBridge.ts` & `src-tauri/src/lib.rs` — Rust Tauri v2 commands (`luma_native_probe_engine`, `luma_native_fetch_text`, `luma_native_launch_mpv`).
+- **Off-Main-Thread Ingestion, Local DB & Zero-Knowledge Sync:**
+  - `src/workers/parsers.ts` & `src/workers/ingest.worker.ts` — M3U_Plus, Xtream Codes API, and XMLTV / `.xml.gz` (`DecompressionStream`) parsers.
+  - `src/db/lumaDb.ts` & `src/services/playlistService.ts` — Dexie.js IndexedDB persistence.
+  - `src/services/lumaCloudSync.ts` — Client-side `PBKDF2-SHA256` (150k iterations) + `AES-256-GCM` encrypted Firebase sync vault.
+- **Navigation, Views & Localization:**
+  - `src/services/spatialNavigation.ts` & `src/services/universalInput.ts` — 2D D-Pad raycasting, keyboard zapping, `?` Shortcut OSD, and W3C Gamepad polling.
+  - `src/i18n/translations.ts` — Live `DE` / `EN` dictionary (`useI18n`).
+  - `src/components/command/CommandBar.tsx` — `< 2ms` global search across Live TV, Live EPG, VOD Movies, Xtream Series/Episodes, and Actions (`Cmd+K` / `Ctrl+K`).
+  - `src/components/epg/VirtualizedEpgGrid.tsx` — Virtualized 2D EPG grid (20,000+ channels) with EPG reminders.
+  - `src/components/views/` — `HomeAndSeriesHub.tsx`, `ChannelStudioView.tsx`, `MediaDetailModal.tsx`, `SettingsHubView.tsx`, `SecondaryViews.tsx`, `Phase4PlatformSyncPanel.tsx`.
+
+## Local Development & Verification Commands
+- **Install dependencies:** `./scripts/setup-local.sh` (or `npm install`)
+- **Web / PWA Dev Server (`http://localhost:5173`):** `npm run dev`
+- **Lint (`oxlint` — keep at 0 warnings, 0 errors):** `npm run lint`
+- **Unit Tests (`vitest`):** `npm test`
+- **Production Web Build:** `npm run build`
+- **macOS Native Dev Window (Tauri v2):** `npm run tauri:dev`
+- **macOS Native Production `.app` / `.dmg`:** `npm run tauri:build`
+- **Android / Chromebook `.apk`:** `npm run tauri:android:init && npm run tauri:android:build`
+- **Rust Check:** `cargo check --manifest-path src-tauri/Cargo.toml`
