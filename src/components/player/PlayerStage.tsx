@@ -71,6 +71,11 @@ interface PlayerStageProps {
   ambilightEnabled: boolean;
   theaterExpanded: boolean;
   onToggleTheaterExpanded: () => void;
+  layoutVariant?: 'split' | 'cinema';
+  isMuted?: boolean;
+  onChangeMuted?: (muted: boolean) => void;
+  volume?: number;
+  onChangeVolume?: (volume: number) => void;
   proxyConfig: EngineProxyConfig;
   nowMs: number;
   locale?: LumaLocale;
@@ -101,6 +106,11 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
   ambilightEnabled,
   theaterExpanded,
   onToggleTheaterExpanded,
+  layoutVariant = 'split',
+  isMuted: controlledMuted,
+  onChangeMuted,
+  volume: controlledVolume,
+  onChangeVolume,
   proxyConfig,
   nowMs,
   locale = 'de',
@@ -136,8 +146,26 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
   });
 
   const [isPlaying, setIsPlaying] = useState(true);
-  const [isMuted, setIsMuted] = useState(true);
-  const [volume, setVolume] = useState(0.85);
+  const [fallbackMutedState, setFallbackMutedState] = useState(false);
+  const [fallbackVolumeState, setFallbackVolumeState] = useState(0.85);
+  const [autoplayForcedMute, setAutoplayForcedMute] = useState(false);
+  const [hudVisible, setHudVisible] = useState(true);
+  const [hudHovered, setHudHovered] = useState(false);
+  const hudHideTimerRef = useRef<number | null>(null);
+
+  const isMuted = controlledMuted ?? fallbackMutedState;
+  const volume = controlledVolume ?? fallbackVolumeState;
+  const effectiveMuted = isMuted || autoplayForcedMute;
+
+  const setMutedValue = (next: boolean) => {
+    setFallbackMutedState(next);
+    onChangeMuted?.(next);
+  };
+  const setVolumeValue = (next: number) => {
+    setFallbackVolumeState(next);
+    onChangeVolume?.(next);
+  };
+
   const [audioPreset, setAudioPreset] = useState<AudioDspPreset>('direct');
   const [preAmpBoost, setPreAmpBoost] = useState<number>(1.0);
   const [aspectMode, setAspectMode] = useState<AspectRatioMode>('16:9');
@@ -237,6 +265,8 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
     const video = videoRef.current;
     const engine = engineRef.current;
     if (!video || !engine) return;
+    video.muted = isMuted;
+    video.volume = volume;
     engine.load(
       video,
       activeUrl,
@@ -244,6 +274,8 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
       true,
       overrideStreamUrl ? undefined : channel.streamType
     );
+    // Intentionally omit isMuted/volume from reload deps so volume adjustments don't reload MSE
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeUrl, channel.streamType, overrideStreamUrl, proxyConfig]);
 
   useEffect(() => {
@@ -340,7 +372,38 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
     if (!video) return;
     video.muted = isMuted;
     video.volume = volume;
+    if (!isMuted) setAutoplayForcedMute(false);
+
+    const onVolumeChange = () => {
+      if (video.muted && !isMuted) {
+        setAutoplayForcedMute(true);
+      } else if (!video.muted) {
+        setAutoplayForcedMute(false);
+      }
+    };
+    video.addEventListener('volumechange', onVolumeChange);
+    return () => video.removeEventListener('volumechange', onVolumeChange);
   }, [isMuted, volume]);
+
+  const revealHud = () => {
+    setHudVisible(true);
+    if (hudHideTimerRef.current !== null) {
+      window.clearTimeout(hudHideTimerRef.current);
+    }
+    if (layoutVariant === 'cinema') {
+      hudHideTimerRef.current = window.setTimeout(() => {
+        setHudVisible(false);
+      }, 3200);
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      if (hudHideTimerRef.current !== null) {
+        window.clearTimeout(hudHideTimerRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -409,25 +472,30 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
 
   const toggleMute = () => {
     const video = videoRef.current;
-    const nextMuted = !isMuted;
+    const nextMuted = !effectiveMuted;
+    setAutoplayForcedMute(false);
     if (video) {
       video.muted = nextMuted;
       if (!nextMuted && volume === 0) {
-        video.volume = 0.8;
-        setVolume(0.8);
+        video.volume = 0.85;
+        setVolumeValue(0.85);
+      }
+      if (!nextMuted && video.paused) {
+        video.play().catch(() => undefined);
       }
     }
-    setIsMuted(nextMuted);
+    setMutedValue(nextMuted);
   };
 
   const handleVolumeChange = (nextVol: number) => {
     const video = videoRef.current;
-    setVolume(nextVol);
+    setAutoplayForcedMute(false);
+    setVolumeValue(nextVol);
     if (video) {
       video.volume = nextVol;
       video.muted = nextVol === 0;
     }
-    setIsMuted(nextVol === 0);
+    setMutedValue(nextVol === 0);
   };
 
   const toggleDvrRecording = () => {
@@ -577,19 +645,34 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
           : channel.resolution;
 
   const showSynthVisual = telemetry.state !== 'playing';
+  const showChrome =
+    layoutVariant !== 'cinema' ||
+    hudVisible ||
+    hudHovered ||
+    !isPlaying ||
+    showQualityMenu ||
+    isRecording;
 
   return (
     <section
       ref={stageRef}
       id="luma-player-stage"
-      onTouchStart={handleTouchStart}
+      onPointerMove={revealHud}
+      onTouchStart={(e) => {
+        revealHud();
+        handleTouchStart(e);
+      }}
       onTouchEnd={handleTouchEnd}
-      className={`relative shrink-0 overflow-hidden transition-all duration-300 ${
-        theaterExpanded ? 'h-[60vh] min-h-[350px]' : 'h-[37vh] min-h-[250px] max-h-[385px]'
+      className={`relative overflow-hidden transition-all duration-300 ${
+        layoutVariant === 'cinema'
+          ? 'h-full min-h-[320px] flex-1'
+          : theaterExpanded
+            ? 'mx-3 mt-1 mb-2 h-[60vh] min-h-[350px] shrink-0'
+            : 'mx-2.5 mt-2 h-[37vh] min-h-[250px] max-h-[385px] shrink-0'
       } ${
         isM3
-          ? 'mx-3 mt-1 mb-2 rounded-[28px] bg-[#0B0E14] ring-1 ring-white/[0.06]'
-          : 'mx-2.5 mt-2 rounded-[24px] bg-[#06080E] shadow-[0_20px_50px_-15px_rgba(0,0,0,0.85)] ring-1 ring-white/15'
+          ? 'rounded-[26px] bg-[#0B0E14] ring-1 ring-white/[0.06]'
+          : 'rounded-[22px] bg-[#06080E] shadow-[0_20px_50px_-15px_rgba(0,0,0,0.85)] ring-1 ring-white/15'
       }`}
     >
       {ambilightEnabled && (
@@ -616,7 +699,7 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
           crossOrigin="anonymous"
           playsInline
           autoPlay
-          muted={isMuted}
+          muted={effectiveMuted}
           onClick={togglePlay}
           className={`relative z-10 h-full w-full cursor-pointer transition-opacity duration-300 ${
             showSynthVisual ? 'opacity-0' : 'opacity-100'
@@ -638,15 +721,15 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
         <div className="pointer-events-none absolute inset-x-0 top-0 z-10 h-20 bg-gradient-to-b from-black/70 to-transparent" />
         <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 h-36 bg-gradient-to-t from-black/90 via-black/40 to-transparent" />
 
-        {isMuted && (
+        {effectiveMuted && (
           <button
             id="btn-quick-unmute"
             type="button"
             onClick={toggleMute}
             className={
               isM3
-                ? 'm3-primary-pill absolute top-3.5 right-4 z-20 flex items-center gap-2 rounded-full px-4 py-1.5 text-xs font-bold shadow-lg'
-                : 'lg-capsule absolute top-3.5 right-4 z-20 flex items-center gap-2 rounded-full px-3.5 py-1.5 text-xs font-medium text-white'
+                ? `m3-primary-pill absolute top-3.5 ${layoutVariant === 'cinema' ? 'right-28' : 'right-4'} z-20 flex items-center gap-2 rounded-full px-4 py-1.5 text-xs font-bold shadow-lg`
+                : `lg-capsule absolute top-3.5 ${layoutVariant === 'cinema' ? 'right-28' : 'right-4'} z-20 flex items-center gap-2 rounded-full px-3.5 py-1.5 text-xs font-medium text-white`
             }
           >
             <VolumeX className="h-3.5 w-3.5" />
@@ -654,13 +737,18 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
           </button>
         )}
 
-        {/* Top-Left Stream Telemetry + DVR + DSP Badges */}
-        <div className="absolute top-3.5 left-4 z-20 flex flex-wrap items-center gap-2">
+        {/* Decluttered Top-Left Stream Status */}
+        <div
+          className={`absolute top-3.5 left-4 z-20 flex flex-wrap items-center gap-2 transition-opacity duration-300 ${
+            showChrome ? 'opacity-100' : 'pointer-events-none opacity-0'
+          }`}
+        >
           <span
+            title={`${telemetry.engine}${telemetry.proxyActive ? ` · ${telemetry.proxyMode === 'local-rust' ? t.localRustProxyBadge : t.cloudCorsProxyBadge}` : ''}`}
             className={
               isM3
-                ? 'm3-tertiary-badge inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-bold tracking-wide'
-                : 'lg-capsule inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-semibold text-white'
+                ? 'm3-tertiary-badge inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-bold tracking-wide luma-tabular'
+                : 'lg-capsule inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-semibold text-white luma-tabular'
             }
           >
             <span
@@ -668,11 +756,18 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
                 timeshiftProgram ? 'bg-amber-300' : 'bg-sky-300 animate-luma-live'
               }`}
             />
-            {timeshiftProgram
-              ? t.catchupBadge
-              : overrideStreamUrl
-                ? t.onDemandBadge
-                : t.liveBadge}
+            <span>
+              {timeshiftProgram
+                ? t.catchupBadge
+                : overrideStreamUrl
+                  ? t.onDemandBadge
+                  : t.liveBadge}
+            </span>
+            <span className="opacity-40">·</span>
+            <span className="font-medium opacity-90">{resolutionLabel}</span>
+            {telemetry.proxyActive && (
+              <ShieldCheck className="ml-0.5 h-3 w-3 text-emerald-300" />
+            )}
           </span>
 
           {isRecording && (
@@ -680,46 +775,17 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
               type="button"
               onClick={toggleDvrRecording}
               className="inline-flex items-center gap-1.5 rounded-full bg-rose-500/90 px-3 py-1 text-[11px] font-bold text-white shadow-lg luma-tabular"
-              title="Aufnahme beenden & speichern"
+              title="Stop & save recording"
             >
               <span className="h-2 w-2 rounded-full bg-white animate-luma-live" />
               <span>REC {fmtRecTimer(recSeconds)}</span>
             </button>
           )}
 
-          <span
-            className={
-              isM3
-                ? 'hidden items-center gap-1.5 rounded-full bg-[#1A202E]/90 px-3 py-1 text-[11px] font-medium text-[#C4E8FF] sm:inline-flex luma-tabular'
-                : 'lg-capsule hidden items-center gap-1.5 rounded-full px-3 py-1 text-[11px] text-white/90 sm:inline-flex luma-tabular'
-            }
-          >
-            <span className="font-semibold">{resolutionLabel}</span>
-            <span className="opacity-35">·</span>
-            <span>{channel.streamType === 'mpegts' ? 'MPEG-TS' : channel.codec}</span>
-            {telemetry.bitrateKbps > 0 && (
-              <>
-                <span className="opacity-35">·</span>
-                <span>{(telemetry.bitrateKbps / 1000).toFixed(1)} Mbps</span>
-              </>
-            )}
-            <span className="opacity-35">·</span>
-            <span className="opacity-75">{telemetry.engine}</span>
-          </span>
-
           {audioPreset !== 'direct' && (
             <span className="hidden items-center gap-1 rounded-full bg-sky-400/20 px-2.5 py-1 text-[10px] font-semibold text-sky-200 ring-1 ring-sky-400/35 md:inline-flex">
               <Sliders className="h-3 w-3" />
               {AUDIO_DSP_PRESETS[audioPreset].label}
-            </span>
-          )}
-
-          {telemetry.proxyActive && (
-            <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/20 px-2.5 py-1 text-[10px] font-semibold text-emerald-300 ring-1 ring-emerald-400/30">
-              <ShieldCheck className="h-3 w-3" />
-              {telemetry.proxyMode === 'local-rust'
-                ? t.localRustProxyBadge
-                : t.cloudCorsProxyBadge}
             </span>
           )}
 
@@ -739,13 +805,19 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
           )}
         </div>
 
-        {/* Bottom HUD */}
+        {/* Bottom HUD (Auto-hides cleanly in Cinema Live TV mode when pointer is idle) */}
         <div
-          className={
+          onMouseEnter={() => setHudHovered(true)}
+          onMouseLeave={() => setHudHovered(false)}
+          className={`transition-all duration-300 ${
+            showChrome
+              ? 'translate-y-0 opacity-100'
+              : 'pointer-events-none translate-y-2 opacity-0'
+          } ${
             isM3
               ? 'absolute inset-x-3 bottom-3 z-20 rounded-[24px] bg-[#161B28]/95 px-4 py-3 shadow-xl ring-1 ring-white/[0.06]'
               : 'lg-pane absolute inset-x-3.5 bottom-3 z-20 rounded-[22px] px-4 py-2.5'
-          }
+          }`}
         >
           {isSeekable ? (
             <div className="mb-2.5 flex items-center gap-3 text-[10px] text-slate-200 luma-tabular">
@@ -986,7 +1058,7 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
                   className="text-slate-100 hover:text-white"
                   title="Stummschalten"
                 >
-                  {isMuted ? (
+                  {effectiveMuted ? (
                     <VolumeX className="h-4 w-4 text-[#7FD4FF]" />
                   ) : (
                     <Volume2 className="h-4 w-4" />
@@ -998,7 +1070,7 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
                   min={0}
                   max={1}
                   step={0.05}
-                  value={isMuted ? 0 : volume}
+                  value={effectiveMuted ? 0 : volume}
                   onChange={(e) => handleVolumeChange(Number(e.target.value))}
                   className="hidden h-1 w-16 cursor-pointer accent-sky-400 md:block"
                   aria-label="Lautstärke"
@@ -1235,24 +1307,26 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
                 <PictureInPicture2 className="h-3.5 w-3.5" />
               </button>
 
-              {/* Theater Toggle */}
-              <button
-                id="btn-theater-height"
-                type="button"
-                onClick={onToggleTheaterExpanded}
-                className={
-                  isM3
-                    ? 'm3-secondary-tonal flex h-10 w-10 items-center justify-center rounded-full'
-                    : 'lg-capsule flex h-9 w-9 items-center justify-center rounded-full text-white/90'
-                }
-                title={theaterExpanded ? 'EPG-Split vergrößern' : 'Kino-Stage vergrößern'}
-              >
-                {theaterExpanded ? (
-                  <Minimize2 className="h-3.5 w-3.5" />
-                ) : (
-                  <Maximize2 className="h-3.5 w-3.5" />
-                )}
-              </button>
+              {/* Theater Toggle (only in EPG split view) */}
+              {layoutVariant === 'split' && (
+                <button
+                  id="btn-theater-height"
+                  type="button"
+                  onClick={onToggleTheaterExpanded}
+                  className={
+                    isM3
+                      ? 'm3-secondary-tonal flex h-10 w-10 items-center justify-center rounded-full'
+                      : 'lg-capsule flex h-9 w-9 items-center justify-center rounded-full text-white/90'
+                  }
+                  title={theaterExpanded ? 'EPG-Split vergrößern' : 'Kino-Stage vergrößern'}
+                >
+                  {theaterExpanded ? (
+                    <Minimize2 className="h-3.5 w-3.5" />
+                  ) : (
+                    <Maximize2 className="h-3.5 w-3.5" />
+                  )}
+                </button>
+              )}
 
               {/* Fullscreen */}
               <button

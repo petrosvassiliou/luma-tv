@@ -479,3 +479,120 @@ export async function toggleHideStoredChannel(
 ): Promise<void> {
   await lumaDb.channels.update(channelId, { isHidden: hidden });
 }
+
+export async function bulkSetChannelsHidden(
+  channelIds: string[],
+  hidden: boolean
+): Promise<void> {
+  const chunkSize = 2500;
+  for (let i = 0; i < channelIds.length; i += chunkSize) {
+    const slice = channelIds.slice(i, i + chunkSize);
+    await lumaDb.channels.where('id').anyOf(slice).modify({ isHidden: hidden });
+  }
+}
+
+export async function renamePersistedSource(
+  sourceId: string,
+  nextName: string
+): Promise<void> {
+  const trimmed = nextName.trim();
+  if (!trimmed) return;
+  await lumaDb.sources.update(sourceId, { name: trimmed });
+}
+
+export async function updateSourceHiddenGroups(
+  sourceId: string,
+  hiddenGroupIds: string[]
+): Promise<void> {
+  await lumaDb.sources.update(sourceId, { hiddenGroupIds });
+}
+
+export async function resyncPersistedSource(params: {
+  source: StoredPlaylistSource;
+  proxyEndpoint?: string;
+  onProgress?: (phase: string, percent: number) => void;
+}): Promise<void> {
+  const { source, proxyEndpoint, onProgress } = params;
+  const existingChannels = await lumaDb.channels
+    .where('sourceId')
+    .equals(source.id)
+    .toArray();
+
+  const overridesByStream = new Map<
+    string,
+    { customName?: string; isHidden?: boolean }
+  >();
+  for (const ch of existingChannels) {
+    if (ch.customName || ch.isHidden) {
+      overridesByStream.set(ch.streamUrl, {
+        customName: ch.customName,
+        isHidden: ch.isHidden,
+      });
+    }
+  }
+
+  let res: Extract<WorkerIngestResponse, { type: 'm3u-result' }>;
+  if (
+    source.type === 'xtream' &&
+    source.rawUrlOrHost &&
+    source.username &&
+    source.password
+  ) {
+    res = await runWorkerTask(
+      {
+        type: 'ingest-xtream',
+        sourceId: source.id,
+        serverUrl: source.rawUrlOrHost,
+        username: source.username,
+        password: source.password,
+        outputFormat: source.outputFormat ?? 'm3u8',
+        proxyEndpoint,
+      },
+      'm3u-result',
+      onProgress
+    );
+  } else if (source.rawUrlOrHost && source.rawUrlOrHost.startsWith('http')) {
+    res = await runWorkerTask(
+      {
+        type: 'parse-m3u',
+        sourceId: source.id,
+        url: source.rawUrlOrHost,
+        proxyEndpoint,
+      },
+      'm3u-result',
+      onProgress
+    );
+  } else {
+    throw new Error('Lokale Datei-Quelle kann nicht per URL aktualisiert werden.');
+  }
+
+  const mergedChannels = res.channels.map((ch) => {
+    const prev = overridesByStream.get(ch.streamUrl);
+    if (!prev) return ch;
+    return {
+      ...ch,
+      customName: prev.customName,
+      name: prev.customName || ch.name,
+      isHidden: prev.isHidden,
+    };
+  });
+
+  await Promise.all([
+    lumaDb.channels.where('sourceId').equals(source.id).delete(),
+    lumaDb.vodItems.where('sourceId').equals(source.id).delete(),
+    lumaDb.seriesItems.where('sourceId').equals(source.id).delete(),
+  ]);
+
+  await bulkSaveChannelsChunked(mergedChannels);
+  if (res.vodItems.length > 0) await bulkSaveVodChunked(res.vodItems);
+  if (res.seriesItems && res.seriesItems.length > 0) {
+    await bulkSaveSeriesChunked(res.seriesItems);
+  }
+
+  await lumaDb.sources.update(source.id, {
+    channelCount: mergedChannels.length,
+    vodCount: res.vodItems.length,
+    seriesCount: res.seriesItems?.length ?? 0,
+    lastUpdated: `${res.elapsedMs} ms Sync`,
+  });
+}

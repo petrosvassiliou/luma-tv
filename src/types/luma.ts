@@ -1,7 +1,7 @@
 import type { BufferProfile } from '../i18n/translations';
 
-export const LUMA_APP_VERSION = '0.5.0-beta.1';
-export const LUMA_RELEASE_BADGE = '0.5 beta';
+export const LUMA_APP_VERSION = '0.6.0-beta.1';
+export const LUMA_RELEASE_BADGE = '0.6 beta';
 
 export interface EpgReminder {
   programId: string;
@@ -14,8 +14,9 @@ export interface EpgReminder {
 export type PlatformDesignMode = 'm3-expressive' | 'liquid-glass';
 
 export type NavigationSection =
-  | 'home'
+  | 'live'
   | 'live-epg'
+  | 'home'
   | 'multiview'
   | 'vod'
   | 'series'

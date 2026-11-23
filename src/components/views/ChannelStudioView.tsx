@@ -12,6 +12,7 @@ import {
   ShieldAlert,
   Trash2,
 } from 'lucide-react';
+import { searchChannelsRanked } from '../../services/channelSearch';
 import { exportChannelsToM3uPlus } from '../../workers/parsers';
 import type {
   Channel,
@@ -67,22 +68,9 @@ export const ChannelStudioView: React.FC<ChannelStudioViewProps> = ({
   }, [activeBouquet, channels]);
 
   const candidateChannels = useMemo(() => {
-    const q = channelSearch.trim().toLowerCase();
     const existing = new Set(activeBouquet?.channelIds ?? []);
-    const out: Channel[] = [];
-    for (let i = 0; i < channels.length && out.length < 24; i++) {
-      const ch = channels[i];
-      if (existing.has(ch.id)) continue;
-      if (
-        !q ||
-        ch.name.toLowerCase().includes(q) ||
-        ch.groupName.toLowerCase().includes(q) ||
-        String(ch.number) === q
-      ) {
-        out.push(ch);
-      }
-    }
-    return out;
+    const matched = searchChannelsRanked(channels, channelSearch, 120).items;
+    return matched.filter((ch) => !existing.has(ch.id)).slice(0, 48);
   }, [channels, channelSearch, activeBouquet]);
 
   const handleCreateBouquet = () => {
@@ -340,8 +328,8 @@ export const ChannelStudioView: React.FC<ChannelStudioViewProps> = ({
                   />
                 </div>
 
-                <div className="flex flex-wrap gap-1.5">
-                  {candidateChannels.slice(0, 10).map((c) => (
+                <div className="luma-scroll flex max-h-48 flex-wrap gap-1.5 overflow-y-auto pr-1">
+                  {candidateChannels.map((c) => (
                     <button
                       key={c.id}
                       type="button"

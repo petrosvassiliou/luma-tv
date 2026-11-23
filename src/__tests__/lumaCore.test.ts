@@ -26,6 +26,11 @@ import {
   TRANSLATIONS,
 } from '../i18n/translations';
 import {
+  isProviderDividerChannel,
+  normalizeSearchText,
+  searchChannelsRanked,
+} from '../services/channelSearch';
+import {
   decryptSyncVault,
   encryptSyncVault,
   type LumaSyncPlainPayload,
@@ -340,5 +345,51 @@ describe('Luma TV v0.1 beta — Zero-Knowledge AES-256-GCM Sync Vault & 20k EPG 
     // 4. Scrubber timecodes
     expect(formatPlaybackClock(65)).toBe('01:05');
     expect(formatPlaybackClock(5049)).toBe('1:24:09');
+  });
+
+  it('normalizes IPTV Unicode superscripts and finds all matches across 54,000+ channels', () => {
+    expect(normalizeSearchText('4K: ELEVEN ᴾᴸ ᵁᴴᴰ ³⁸⁴⁰ᴾ')).toBe('4k eleven pl uhd 3840p');
+    expect(normalizeSearchText('4K: SKY SPORTS F1 ᵁᴴᴰ ³⁸⁴⁰ᴾ')).toBe(
+      '4k sky sports f1 uhd 3840p'
+    );
+    expect(normalizeSearchText('VIP | CINEMA ᶠᴴᴰ')).toBe('vip cinema fhd');
+
+    expect(isProviderDividerChannel('##### 4K ᵁᴴᴰ ³⁸⁴⁰ᴾ #####')).toBe(true);
+    expect(isProviderDividerChannel('4K: V SPORT ᵁᴴᴰ ³⁸⁴⁰ᴾ')).toBe(false);
+
+    const { channels } = buildChannelCatalog(54_200);
+    // Inject target channels at the start, middle, and very end (>54,000)
+    channels[10] = {
+      ...channels[10],
+      id: 'xt-11',
+      number: 11,
+      name: '4K: SKY SPORTS F1 ᵁᴴᴰ ³⁸⁴⁰ᴾ',
+      groupName: 'UK | UHD SPORT',
+    };
+    channels[28_500] = {
+      ...channels[28_500],
+      id: 'xt-28501',
+      number: 28501,
+      name: 'DE: SKY SPORT F1 ᶠᴴᴰ',
+      groupName: 'DE | SPORT',
+    };
+    channels[54_140] = {
+      ...channels[54_140],
+      id: 'xt-54141',
+      number: 54141,
+      name: 'IT: SKY SPORT F1 ᵁᴴᴰ',
+      groupName: 'IT | SPORT',
+    };
+
+    const res = searchChannelsRanked(channels, 'sky f1 uhd', 100);
+    expect(res.totalMatches).toBeGreaterThanOrEqual(2);
+    const ids = res.items.map((c) => c.id);
+    expect(ids).toContain('xt-11');
+    expect(ids).toContain('xt-54141');
+
+    const allSkyF1 = searchChannelsRanked(channels, 'sky f1', 100);
+    expect(allSkyF1.items.map((c) => c.id)).toEqual(
+      expect.arrayContaining(['xt-11', 'xt-28501', 'xt-54141'])
+    );
   });
 });

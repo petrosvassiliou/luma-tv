@@ -1,15 +1,20 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
   Database,
   Eye,
   EyeOff,
   FileUp,
   History,
+  Layers,
   Loader2,
   Pencil,
   Play,
   Plus,
+  RefreshCw,
+  Search,
   Server,
   ShieldCheck,
   Sliders,
@@ -31,6 +36,12 @@ import {
   TRANSLATIONS,
   type LumaLocale,
 } from '../../i18n/translations';
+import {
+  isProviderDividerChannel,
+  matchesNormalizedQuery,
+  searchChannelsRanked,
+  tokenizeSearchQuery,
+} from '../../services/channelSearch';
 import type {
   LumaSyncPlainPayload,
   WatchHistoryEntry,
@@ -308,6 +319,11 @@ interface SourcesEngineViewProps {
     outputFormat: 'm3u8' | 'ts';
   }) => void;
   onUploadXmltvBuffer: (buffer: ArrayBuffer) => void;
+  onRenameSource?: (sourceId: string, nextName: string) => void;
+  onResyncSource?: (source: StoredPlaylistSource) => void;
+  onUpdateHiddenGroups?: (sourceId: string, hiddenGroupIds: string[]) => void;
+  onBulkSetChannelsHidden?: (channelIds: string[], hidden: boolean) => void;
+  onPlayChannel?: (channel: Channel) => void;
   onRenameChannel: (channelId: string, nextName: string) => void;
   onToggleHideChannel: (channelId: string, hidden: boolean) => void;
   epgOffsetHours: number;
@@ -332,6 +348,11 @@ export const SourcesEngineView: React.FC<SourcesEngineViewProps> = ({
   onImportM3u,
   onImportXtream,
   onUploadXmltvBuffer,
+  onRenameSource,
+  onResyncSource,
+  onUpdateHiddenGroups,
+  onBulkSetChannelsHidden,
+  onPlayChannel,
   onRenameChannel,
   onToggleHideChannel,
   epgOffsetHours,
@@ -363,6 +384,75 @@ export const SourcesEngineView: React.FC<SourcesEngineViewProps> = ({
   const [xtUser, setXtUser] = useState('');
   const [xtPass, setXtPass] = useState('');
   const [xtFormat, setXtFormat] = useState<'m3u8' | 'ts'>('m3u8');
+
+  // Playlist & 54k+ Channel / Group Organization state
+  const [editingSourceId, setEditingSourceId] = useState<string | null>(null);
+  const [editingSourceName, setEditingSourceName] = useState('');
+  const [orgMode, setOrgMode] = useState<'groups' | 'channels'>('groups');
+  const [groupFilterQuery, setGroupFilterQuery] = useState('');
+  const [chFilterQuery, setChFilterQuery] = useState('');
+  const [chGroupFilter, setChGroupFilter] = useState<string>('all');
+  const [chVisFilter, setChVisFilter] = useState<
+    'all' | 'visible' | 'hidden' | 'dividers'
+  >('all');
+  const [chPage, setChPage] = useState(0);
+  const CH_PAGE_SIZE = 60;
+
+  const activeStoredSource = useMemo(
+    () => persistedSources.find((s) => s.id === activeSourceId) ?? null,
+    [persistedSources, activeSourceId]
+  );
+
+  const hiddenGroupSet = useMemo(
+    () => new Set(activeStoredSource?.hiddenGroupIds ?? []),
+    [activeStoredSource]
+  );
+
+  const derivedSourceGroups = useMemo(() => {
+    const map = new Map<string, { id: string; name: string; count: number }>();
+    for (let i = 0; i < storedChannelsForActive.length; i++) {
+      const ch = storedChannelsForActive[i];
+      const existing = map.get(ch.groupId);
+      if (existing) existing.count += 1;
+      else map.set(ch.groupId, { id: ch.groupId, name: ch.groupName, count: 1 });
+    }
+    return Array.from(map.values());
+  }, [storedChannelsForActive]);
+
+  const filteredSourceGroups = useMemo(() => {
+    const tokens = tokenizeSearchQuery(groupFilterQuery);
+    if (tokens.length === 0) return derivedSourceGroups;
+    return derivedSourceGroups.filter((g) => matchesNormalizedQuery(g.name, tokens));
+  }, [derivedSourceGroups, groupFilterQuery]);
+
+  const filteredStoredChannels = useMemo(() => {
+    let base = storedChannelsForActive;
+    if (chGroupFilter !== 'all') {
+      base = base.filter((c) => c.groupId === chGroupFilter);
+    }
+    if (chVisFilter === 'visible') {
+      base = base.filter((c) => !c.isHidden && !hiddenGroupSet.has(c.groupId));
+    } else if (chVisFilter === 'hidden') {
+      base = base.filter((c) => Boolean(c.isHidden) || hiddenGroupSet.has(c.groupId));
+    } else if (chVisFilter === 'dividers') {
+      base = base.filter((c) => isProviderDividerChannel(c.name));
+    }
+    if (!chFilterQuery.trim()) return base;
+    return searchChannelsRanked(base, chFilterQuery, base.length).items;
+  }, [
+    storedChannelsForActive,
+    chGroupFilter,
+    chVisFilter,
+    chFilterQuery,
+    hiddenGroupSet,
+  ]);
+
+  const totalChPages = Math.max(1, Math.ceil(filteredStoredChannels.length / CH_PAGE_SIZE));
+  const safeChPage = Math.min(chPage, totalChPages - 1);
+  const pagedStoredChannels = filteredStoredChannels.slice(
+    safeChPage * CH_PAGE_SIZE,
+    (safeChPage + 1) * CH_PAGE_SIZE
+  );
 
   // Channel organization editing
   const [editingChannelId, setEditingChannelId] = useState<string | null>(null);
@@ -498,10 +588,17 @@ export const SourcesEngineView: React.FC<SourcesEngineViewProps> = ({
           {/* IndexedDB Stored Playlists */}
           {persistedSources.map((src) => {
             const isActive = activeSourceId === src.id;
+            const isRenamingSource = editingSourceId === src.id;
+            const canResync =
+              (src.type === 'xtream' && Boolean(src.username && src.password)) ||
+              Boolean(src.rawUrlOrHost && src.rawUrlOrHost.startsWith('http'));
             return (
               <div
                 key={src.id}
-                onClick={() => onSelectSourceId(src.id)}
+                onClick={() => {
+                  onSelectSourceId(src.id);
+                  setChPage(0);
+                }}
                 className={`cursor-pointer p-3.5 transition ${
                   isM3 ? 'rounded-[20px]' : 'rounded-[18px]'
                 } ${
@@ -515,16 +612,66 @@ export const SourcesEngineView: React.FC<SourcesEngineViewProps> = ({
                 }`}
               >
                 <div className="flex items-center justify-between gap-2">
-                  <span className="truncate text-xs font-semibold text-white">{src.name}</span>
-                  <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
-                    <span className="text-[10px] font-bold uppercase text-sky-300">
+                  {isRenamingSource ? (
+                    <input
+                      type="text"
+                      value={editingSourceName}
+                      onChange={(e) => setEditingSourceName(e.target.value)}
+                      onClick={(e) => e.stopPropagation()}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          onRenameSource?.(src.id, editingSourceName);
+                          setEditingSourceId(null);
+                        } else if (e.key === 'Escape') {
+                          setEditingSourceId(null);
+                        }
+                      }}
+                      autoFocus
+                      className="flex-1 rounded-full bg-black/35 px-3 py-0.5 text-xs font-semibold text-sky-200 focus:outline-none"
+                    />
+                  ) : (
+                    <span className="truncate text-xs font-semibold text-white">
+                      {src.name}
+                    </span>
+                  )}
+                  <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                    <span className="mr-1 text-[10px] font-bold uppercase text-sky-300">
                       {src.type}
                     </span>
+                    {onRenameSource && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (isRenamingSource) {
+                            onRenameSource(src.id, editingSourceName);
+                            setEditingSourceId(null);
+                          } else {
+                            setEditingSourceId(src.id);
+                            setEditingSourceName(src.name);
+                          }
+                        }}
+                        className="rounded-full p-1 text-slate-300 hover:bg-white/10 hover:text-white"
+                        title="Rename playlist"
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                    {canResync && onResyncSource && (
+                      <button
+                        type="button"
+                        disabled={ingestState.active}
+                        onClick={() => onResyncSource(src)}
+                        className="rounded-full p-1 text-slate-300 hover:bg-white/10 hover:text-sky-200 disabled:opacity-40"
+                        title="Re-sync playlist from server"
+                      >
+                        <RefreshCw className="h-3.5 w-3.5" />
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={() => onDeleteSource(src.id)}
                       className="rounded-full p-1 text-slate-300 hover:bg-rose-500/25 hover:text-rose-200"
-                      title="Playlist aus IndexedDB löschen"
+                      title="Delete playlist"
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                     </button>
@@ -535,7 +682,11 @@ export const SourcesEngineView: React.FC<SourcesEngineViewProps> = ({
                 </div>
                 <div className="mt-1 flex items-center justify-between text-[11px] opacity-80 luma-tabular">
                   <span>
-                    {src.channelCount.toLocaleString('de-DE')} Kanäle · {src.vodCount} VOD
+                    {src.channelCount.toLocaleString()} Channels · {src.vodCount} VOD
+                    {src.seriesCount ? ` · ${src.seriesCount} Series` : ''}
+                    {src.hiddenGroupIds.length > 0
+                      ? ` · ${src.hiddenGroupIds.length} groups hidden`
+                      : ''}
                   </span>
                   <span>{src.lastUpdated}</span>
                 </div>
@@ -747,92 +898,372 @@ export const SourcesEngineView: React.FC<SourcesEngineViewProps> = ({
         </div>
       </div>
 
-      {/* TiviMate-Parity Channel Organization (for Persisted Playlists) */}
+      {/* Scalable 50,000+ Group & Channel Manager (for Persisted Playlists) */}
       {activeSourceId !== 'builtin-reference' && storedChannelsForActive.length > 0 && (
-        <div className={`${panelClass} space-y-3`}>
-          <div className="flex items-center justify-between">
+        <div className={`${panelClass} space-y-4`}>
+          <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <h3 className="text-xs font-semibold text-white">
-                Kanal-Organisation (Umbenennen &amp; Ein-/Ausblenden in IndexedDB)
+              <h3 className="text-sm font-semibold text-white">
+                Playlist Manager · {activeStoredSource?.name}
               </h3>
-              <p className="text-[11px] text-slate-400">
-                Änderungen werden sofort lokal in Dexie.js gespeichert und im 2D-EPG angewendet.
+              <p className="text-xs text-slate-400 luma-tabular">
+                {
+                  storedChannelsForActive.filter(
+                    (c) => !c.isHidden && !hiddenGroupSet.has(c.groupId)
+                  ).length
+                }{' '}
+                active / {storedChannelsForActive.length.toLocaleString()} total channels ·{' '}
+                {derivedSourceGroups.length - hiddenGroupSet.size} /{' '}
+                {derivedSourceGroups.length} groups visible
               </p>
             </div>
-            <span className="text-xs text-slate-300 luma-tabular">
-              {storedChannelsForActive.filter((c) => !c.isHidden).length} sichtbar /{' '}
-              {storedChannelsForActive.length} gesamt
-            </span>
+
+            <div
+              className={`flex items-center rounded-full p-1 ${
+                isM3 ? 'bg-[#232B3D]' : 'lg-capsule'
+              }`}
+            >
+              <button
+                type="button"
+                onClick={() => setOrgMode('groups')}
+                className={`inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-xs font-semibold transition ${
+                  orgMode === 'groups'
+                    ? isM3
+                      ? 'm3-primary-pill'
+                      : 'lg-pill-active'
+                    : 'text-slate-300 hover:text-white'
+                }`}
+              >
+                <Layers className="h-3.5 w-3.5" />
+                <span>Groups / Countries ({derivedSourceGroups.length})</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setOrgMode('channels')}
+                className={`inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-xs font-semibold transition ${
+                  orgMode === 'channels'
+                    ? isM3
+                      ? 'm3-primary-pill'
+                      : 'lg-pill-active'
+                    : 'text-slate-300 hover:text-white'
+                }`}
+              >
+                <Eye className="h-3.5 w-3.5" />
+                <span>All Channels ({storedChannelsForActive.length.toLocaleString()})</span>
+              </button>
+            </div>
           </div>
 
-          <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
-            {storedChannelsForActive.slice(0, 24).map((ch) => {
-              const isEditing = editingChannelId === ch.id;
-              return (
-                <div
-                  key={ch.id}
-                  className={`flex items-center justify-between gap-2 px-3.5 py-2 ${
-                    isM3 ? 'rounded-full bg-[#232B3D]' : 'lg-capsule rounded-[16px]'
-                  } ${ch.isHidden ? 'opacity-50' : ''}`}
-                >
-                  {isEditing ? (
-                    <input
-                      type="text"
-                      value={editingName}
-                      onChange={(e) => setEditingName(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          onRenameChannel(ch.id, editingName);
-                          setEditingChannelId(null);
-                        }
-                      }}
-                      className="flex-1 bg-transparent text-xs font-semibold text-sky-300 focus:outline-none"
-                      autoFocus
-                    />
-                  ) : (
-                    <div className="min-w-0 flex-1">
-                      <span className="mr-2 font-mono text-[11px] text-slate-400 luma-tabular">
-                        #{ch.number}
-                      </span>
-                      <span className="truncate text-xs font-medium text-white">{ch.name}</span>
-                    </div>
-                  )}
+          {orgMode === 'groups' ? (
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="relative min-w-[220px] flex-1">
+                  <Search className="pointer-events-none absolute left-3.5 top-2.5 h-4 w-4 text-slate-400" />
+                  <input
+                    type="text"
+                    value={groupFilterQuery}
+                    onChange={(e) => setGroupFilterQuery(e.target.value)}
+                    placeholder="Filter groups / countries (e.g. DE, UK, GR, Sport, 4K)…"
+                    className={`${inputClass} pl-10`}
+                  />
+                </div>
 
-                  <div className="flex items-center gap-1">
+                {onUpdateHiddenGroups && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => onUpdateHiddenGroups(activeSourceId, [])}
+                      className={`rounded-full px-3.5 py-1.5 text-xs font-semibold ${
+                        isM3 ? 'm3-secondary-tonal' : 'lg-capsule text-slate-200'
+                      }`}
+                    >
+                      Show All Groups
+                    </button>
+                    {groupFilterQuery.trim() && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const keepIds = new Set(filteredSourceGroups.map((g) => g.id));
+                          const nextHidden = derivedSourceGroups
+                            .filter((g) => !keepIds.has(g.id))
+                            .map((g) => g.id);
+                          onUpdateHiddenGroups(activeSourceId, nextHidden);
+                        }}
+                        className={`rounded-full px-3.5 py-1.5 text-xs font-bold ${
+                          isM3 ? 'm3-primary-pill' : 'lg-pill-active'
+                        }`}
+                        title="Hides every group except the ones matching your current search"
+                      >
+                        Keep Only Matching ({filteredSourceGroups.length})
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={() => {
-                        if (isEditing) {
-                          onRenameChannel(ch.id, editingName);
-                          setEditingChannelId(null);
-                        } else {
-                          setEditingChannelId(ch.id);
-                          setEditingName(ch.name);
-                        }
+                        const next = new Set(hiddenGroupSet);
+                        for (const g of filteredSourceGroups) next.add(g.id);
+                        onUpdateHiddenGroups(activeSourceId, Array.from(next));
                       }}
-                      className="rounded-full p-1.5 text-slate-300 hover:bg-white/10 hover:text-white"
-                      title="Kanal umbenennen"
+                      className="rounded-full bg-white/[0.07] px-3.5 py-1.5 text-xs font-semibold text-amber-200 hover:bg-amber-500/20"
                     >
-                      <Pencil className="h-3.5 w-3.5" />
+                      Hide Shown ({filteredSourceGroups.length})
                     </button>
+                  </>
+                )}
+              </div>
 
+              <div className="luma-scroll grid max-h-[380px] grid-cols-1 gap-2 overflow-y-auto pr-1 sm:grid-cols-2 lg:grid-cols-3">
+                {filteredSourceGroups.map((grp) => {
+                  const isHidden = hiddenGroupSet.has(grp.id);
+                  return (
                     <button
+                      key={grp.id}
                       type="button"
-                      onClick={() => onToggleHideChannel(ch.id, !ch.isHidden)}
-                      className="rounded-full p-1.5 text-slate-300 hover:bg-white/10 hover:text-white"
-                      title={ch.isHidden ? 'Kanal einblenden' : 'Kanal ausblenden'}
+                      onClick={() => {
+                        if (!onUpdateHiddenGroups) return;
+                        const next = new Set(hiddenGroupSet);
+                        if (next.has(grp.id)) next.delete(grp.id);
+                        else next.add(grp.id);
+                        onUpdateHiddenGroups(activeSourceId, Array.from(next));
+                      }}
+                      className={`flex items-center justify-between gap-2 px-3.5 py-2 text-left text-xs transition ${
+                        isM3 ? 'rounded-full' : 'rounded-[14px]'
+                      } ${
+                        isHidden
+                          ? 'bg-white/[0.03] text-slate-500 opacity-60 hover:opacity-90'
+                          : isM3
+                            ? 'bg-[#232B3D] text-white hover:bg-[#2E384F]'
+                            : 'lg-capsule text-white'
+                      }`}
                     >
-                      {ch.isHidden ? (
-                        <EyeOff className="h-3.5 w-3.5 text-amber-300" />
-                      ) : (
-                        <Eye className="h-3.5 w-3.5" />
-                      )}
+                      <span className="truncate font-medium">{grp.name}</span>
+                      <span className="flex shrink-0 items-center gap-1.5 text-[11px] luma-tabular">
+                        <span className="opacity-70">{grp.count.toLocaleString()}</span>
+                        {isHidden ? (
+                          <EyeOff className="h-3.5 w-3.5 text-amber-300" />
+                        ) : (
+                          <Eye className="h-3.5 w-3.5 text-emerald-300" />
+                        )}
+                      </span>
                     </button>
-                  </div>
+                  );
+                })}
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {/* Search + Group + Visibility Filters + Bulk Actions */}
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="relative min-w-[220px] flex-1">
+                  <Search className="pointer-events-none absolute left-3.5 top-2.5 h-4 w-4 text-slate-400" />
+                  <input
+                    type="text"
+                    value={chFilterQuery}
+                    onChange={(e) => {
+                      setChFilterQuery(e.target.value);
+                      setChPage(0);
+                    }}
+                    placeholder="Search all 50,000+ channels (e.g. Sky F1, UHD, ERT, Rai)…"
+                    className={`${inputClass} pl-10`}
+                  />
                 </div>
-              );
-            })}
-          </div>
+
+                <select
+                  value={chGroupFilter}
+                  onChange={(e) => {
+                    setChGroupFilter(e.target.value);
+                    setChPage(0);
+                  }}
+                  className={`h-9 max-w-[220px] rounded-full px-3.5 text-xs text-white focus:outline-none ${
+                    isM3 ? 'bg-[#232B3D]' : 'lg-capsule bg-[#121826]'
+                  }`}
+                >
+                  <option value="all">All Groups ({derivedSourceGroups.length})</option>
+                  {derivedSourceGroups.map((g) => (
+                    <option key={g.id} value={g.id}>
+                      {g.name} ({g.count})
+                    </option>
+                  ))}
+                </select>
+
+                <div className="flex flex-wrap items-center gap-1 text-[11px]">
+                  {(
+                    [
+                      ['all', 'All'],
+                      ['visible', 'Visible'],
+                      ['hidden', 'Hidden'],
+                      ['dividers', '### Dividers'],
+                    ] as const
+                  ).map(([mode, label]) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      onClick={() => {
+                        setChVisFilter(mode);
+                        setChPage(0);
+                      }}
+                      className={`rounded-full px-3 py-1.5 font-semibold transition ${
+                        chVisFilter === mode
+                          ? isM3
+                            ? 'm3-primary-pill'
+                            : 'lg-pill-active'
+                          : 'bg-white/[0.06] text-slate-300 hover:text-white'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Bulk Channel Actions + Pagination Header */}
+              <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-300">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="luma-tabular">
+                    <strong>{filteredStoredChannels.length.toLocaleString()}</strong> matching
+                    channels
+                  </span>
+                  {onBulkSetChannelsHidden && filteredStoredChannels.length > 0 && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onBulkSetChannelsHidden(
+                            filteredStoredChannels.map((c) => c.id),
+                            true
+                          )
+                        }
+                        className="rounded-full bg-white/[0.07] px-3 py-1 text-[11px] font-semibold text-amber-200 hover:bg-amber-500/20"
+                      >
+                        Hide Filtered ({filteredStoredChannels.length.toLocaleString()})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onBulkSetChannelsHidden(
+                            filteredStoredChannels.map((c) => c.id),
+                            false
+                          )
+                        }
+                        className="rounded-full bg-white/[0.07] px-3 py-1 text-[11px] font-semibold text-emerald-200 hover:bg-emerald-500/20"
+                      >
+                        Show Filtered
+                      </button>
+                    </>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-1.5 luma-tabular">
+                  <button
+                    type="button"
+                    disabled={safeChPage === 0}
+                    onClick={() => setChPage((p) => Math.max(0, p - 1))}
+                    className="rounded-full bg-white/10 p-1.5 text-white disabled:opacity-30"
+                  >
+                    <ChevronLeft className="h-3.5 w-3.5" />
+                  </button>
+                  <span>
+                    Page {safeChPage + 1} / {totalChPages.toLocaleString()}
+                  </span>
+                  <button
+                    type="button"
+                    disabled={safeChPage >= totalChPages - 1}
+                    onClick={() => setChPage((p) => Math.min(totalChPages - 1, p + 1))}
+                    className="rounded-full bg-white/10 p-1.5 text-white disabled:opacity-30"
+                  >
+                    <ChevronRight className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              </div>
+
+              <div className="luma-scroll grid max-h-[420px] grid-cols-1 gap-2 overflow-y-auto pr-1 md:grid-cols-2">
+                {pagedStoredChannels.map((ch) => {
+                  const isEditing = editingChannelId === ch.id;
+                  const groupHidden = hiddenGroupSet.has(ch.groupId);
+                  return (
+                    <div
+                      key={ch.id}
+                      className={`flex items-center justify-between gap-2 px-3.5 py-2 ${
+                        isM3 ? 'rounded-full bg-[#232B3D]' : 'lg-capsule rounded-[15px]'
+                      } ${ch.isHidden || groupHidden ? 'opacity-50' : ''}`}
+                    >
+                      {isEditing ? (
+                        <input
+                          type="text"
+                          value={editingName}
+                          onChange={(e) => setEditingName(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              onRenameChannel(ch.id, editingName);
+                              setEditingChannelId(null);
+                            } else if (e.key === 'Escape') {
+                              setEditingChannelId(null);
+                            }
+                          }}
+                          className="flex-1 bg-transparent text-xs font-semibold text-sky-300 focus:outline-none"
+                          autoFocus
+                        />
+                      ) : (
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate">
+                            <span className="mr-2 font-mono text-[11px] text-slate-400 luma-tabular">
+                              #{ch.number}
+                            </span>
+                            <span className="text-xs font-medium text-white">{ch.name}</span>
+                          </div>
+                          <div className="truncate text-[10px] text-slate-400">
+                            {ch.groupName}
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="flex shrink-0 items-center gap-1">
+                        {onPlayChannel && (
+                          <button
+                            type="button"
+                            onClick={() => onPlayChannel(ch)}
+                            className="rounded-full p-1.5 text-sky-300 hover:bg-sky-400/20 hover:text-white"
+                            title="Play channel"
+                          >
+                            <Play className="h-3.5 w-3.5 fill-current" />
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (isEditing) {
+                              onRenameChannel(ch.id, editingName);
+                              setEditingChannelId(null);
+                            } else {
+                              setEditingChannelId(ch.id);
+                              setEditingName(ch.name);
+                            }
+                          }}
+                          className="rounded-full p-1.5 text-slate-300 hover:bg-white/10 hover:text-white"
+                          title="Rename channel"
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => onToggleHideChannel(ch.id, !ch.isHidden)}
+                          className="rounded-full p-1.5 text-slate-300 hover:bg-white/10 hover:text-white"
+                          title={ch.isHidden ? 'Show channel' : 'Hide channel'}
+                        >
+                          {ch.isHidden ? (
+                            <EyeOff className="h-3.5 w-3.5 text-amber-300" />
+                          ) : (
+                            <Eye className="h-3.5 w-3.5" />
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </div>
       )}
 

@@ -19,6 +19,7 @@ import {
   TRANSLATIONS,
   type LumaLocale,
 } from '../../i18n/translations';
+import { searchChannelsRanked } from '../../services/channelSearch';
 import type { Channel, EpgProgram, PlatformDesignMode } from '../../types/luma';
 
 interface VirtualizedEpgGridProps {
@@ -84,14 +85,9 @@ export const VirtualizedEpgGrid: React.FC<VirtualizedEpgGridProps> = ({
   const timelineEndMs = timelineStartMs + totalMinutes * 60_000;
 
   const filteredChannels = useMemo(() => {
-    const q = quickFilter.trim().toLowerCase();
+    const q = quickFilter.trim();
     if (!q) return channels;
-    return channels.filter(
-      (c) =>
-        c.name.toLowerCase().includes(q) ||
-        String(c.number) === q ||
-        c.groupName.toLowerCase().includes(q)
-    );
+    return searchChannelsRanked(channels, q, channels.length).items;
   }, [channels, quickFilter]);
 
   useEffect(() => {

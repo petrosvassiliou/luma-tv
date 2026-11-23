@@ -1,6 +1,6 @@
 # Luma TV (`app.lumatv.client`) — Antigravity Workspace Context
 
-**Luma TV** (System/Dock short name: **Luma**, Bundle ID: `app.lumatv.client`, current version: `0.5.0-beta.1`) is a cross-platform M3U/M3U_Plus, Xtream Codes & XMLTV streaming player targeting:
+**Luma TV** (System/Dock short name: **Luma**, Bundle ID: `app.lumatv.client`, current version: `0.6.0-beta.1`) is a cross-platform M3U/M3U_Plus, Xtream Codes & XMLTV streaming player targeting:
 1. **macOS (Apple Silicon & Intel)** via **Tauri v2** — native **Apple Liquid Glass** (`data-design="liquid-glass"`) design language, traffic-light titlebar overlay, CORS-free Rust `reqwest` ingestion, and hardware `MPV` handoff.
 2. **Android, Android TV & GoogleOS / Chromebook** via **Tauri v2 Mobile** — native **Google Material 3 Expressive** (`data-design="m3-expressive"`) tonal hierarchy, 10-foot D-Pad spatial focus engine, and freeform resizable windows.
 3. **ChromeOS / Web PWA** via **Vite 8 + Firebase Hosting & Cloud Functions** — standalone PWA with `window-controls-overlay`, offline Service Worker (`public/sw.js`), and optional `lumaStreamProxy` CORS/HLS rewriter (`functions/src/index.ts`).
@@ -20,9 +20,9 @@
 - **Navigation, Views & Localization:**
   - `src/services/spatialNavigation.ts` & `src/services/universalInput.ts` — 2D D-Pad raycasting, keyboard zapping, `?` Shortcut OSD, and W3C Gamepad polling.
   - `src/i18n/translations.ts` — Live 6-language dictionary (`DE`, `EN`, `IT`, `FR`, `ES`, `GR`) with BCP-47 formatting.
-  - `src/components/command/CommandBar.tsx` — `< 2ms` global search across Live TV, Live EPG, VOD Movies, Xtream Series/Episodes, and Actions (`Cmd+K` / `Ctrl+K`).
-  - `src/components/epg/VirtualizedEpgGrid.tsx` — Virtualized 2D EPG grid (20,000+ channels) with EPG reminders.
-  - `src/components/views/` — `HomeAndSeriesHub.tsx`, `ChannelStudioView.tsx`, `MediaDetailModal.tsx`, `SettingsHubView.tsx`, `SecondaryViews.tsx`, `Phase4PlatformSyncPanel.tsx`.
+  - `src/services/channelSearch.ts` & `src/components/command/CommandBar.tsx` — NFKD + IPTV Unicode superscript normalized multi-token ranked search across 54,000+ channels, VOD Movies, and Xtream Series (`Cmd+K` / `Ctrl+K`).
+  - `src/components/views/LiveTvView.tsx` & `src/components/epg/VirtualizedEpgGrid.tsx` — Default clean Cinema Live TV view with 60fps virtualized channel drawer alongside the virtualized 2D EPG grid.
+  - `src/components/views/` — `LiveTvView.tsx`, `HomeAndSeriesHub.tsx`, `ChannelStudioView.tsx`, `MediaDetailModal.tsx`, `SettingsHubView.tsx`, `SecondaryViews.tsx`, `Phase4PlatformSyncPanel.tsx`.
 
 ## Local Development & Verification Commands
 - **Install dependencies:** `./scripts/setup-local.sh` (or `npm install`)

@@ -65,6 +65,7 @@ export interface TranslationDictionary {
   collapseSidebar: string;
   channelsUnit: string;
   navHome: string;
+  navLiveTv: string;
   navLive: string;
   navMultiview: string;
   navVod: string;
@@ -76,6 +77,8 @@ export interface TranslationDictionary {
   allChannels: string;
   favorites: string;
   bouquetsHeader: string;
+  filterGroupsPlaceholder: string;
+  channelListToggle: string;
   workspaceHeader: string;
   epgNow: string;
   epgFilter: string;
@@ -134,6 +137,7 @@ export const TRANSLATIONS: Record<LumaLocale, TranslationDictionary> = {
     collapseSidebar: 'Navigation einklappen',
     channelsUnit: 'Kanäle',
     navHome: 'Start & Weiterschauen',
+    navLiveTv: 'Live TV',
     navLive: 'Live TV & EPG',
     navMultiview: 'Multiview 4x',
     navVod: 'Cinema VOD',
@@ -145,6 +149,8 @@ export const TRANSLATIONS: Record<LumaLocale, TranslationDictionary> = {
     allChannels: 'Alle Kanäle',
     favorites: 'Favoriten',
     bouquetsHeader: 'Bouquets & Gruppen',
+    filterGroupsPlaceholder: 'Gruppen filtern…',
+    channelListToggle: 'Kanalliste',
     workspaceHeader: 'Mediathek',
     epgNow: 'Jetzt',
     epgFilter: 'Kanal im EPG filtern…',
@@ -204,6 +210,7 @@ export const TRANSLATIONS: Record<LumaLocale, TranslationDictionary> = {
     collapseSidebar: 'Collapse sidebar',
     channelsUnit: 'Channels',
     navHome: 'Home & Continue',
+    navLiveTv: 'Live TV',
     navLive: 'Live TV & EPG',
     navMultiview: 'Multiview 4x',
     navVod: 'Cinema VOD',
@@ -215,6 +222,8 @@ export const TRANSLATIONS: Record<LumaLocale, TranslationDictionary> = {
     allChannels: 'All Channels',
     favorites: 'Favorites',
     bouquetsHeader: 'Bouquets & Groups',
+    filterGroupsPlaceholder: 'Filter groups…',
+    channelListToggle: 'Channel List',
     workspaceHeader: 'Library',
     epgNow: 'Now',
     epgFilter: 'Filter EPG channels…',
@@ -274,6 +283,7 @@ export const TRANSLATIONS: Record<LumaLocale, TranslationDictionary> = {
     collapseSidebar: 'Comprimi barra laterale',
     channelsUnit: 'Canali',
     navHome: 'Home & Continua',
+    navLiveTv: 'TV Live',
     navLive: 'TV Live & EPG',
     navMultiview: 'Multiview 4x',
     navVod: 'Cinema VOD',
@@ -285,6 +295,8 @@ export const TRANSLATIONS: Record<LumaLocale, TranslationDictionary> = {
     allChannels: 'Tutti i canali',
     favorites: 'Preferiti',
     bouquetsHeader: 'Bouquet & Gruppi',
+    filterGroupsPlaceholder: 'Filtra gruppi…',
+    channelListToggle: 'Lista canali',
     workspaceHeader: 'Catalogo',
     epgNow: 'Ora',
     epgFilter: 'Filtra canali EPG…',
@@ -344,6 +356,7 @@ export const TRANSLATIONS: Record<LumaLocale, TranslationDictionary> = {
     collapseSidebar: 'Replier la barre latérale',
     channelsUnit: 'Chaînes',
     navHome: 'Accueil & Reprendre',
+    navLiveTv: 'TV en Direct',
     navLive: 'TV en Direct & EPG',
     navMultiview: 'Multiview 4x',
     navVod: 'Cinéma VOD',
@@ -355,6 +368,8 @@ export const TRANSLATIONS: Record<LumaLocale, TranslationDictionary> = {
     allChannels: 'Toutes les chaînes',
     favorites: 'Favoris',
     bouquetsHeader: 'Bouquets & Groupes',
+    filterGroupsPlaceholder: 'Filtrer les groupes…',
+    channelListToggle: 'Liste des chaînes',
     workspaceHeader: 'Médiathèque',
     epgNow: 'Maintenant',
     epgFilter: 'Filtrer les chaînes EPG…',
@@ -414,6 +429,7 @@ export const TRANSLATIONS: Record<LumaLocale, TranslationDictionary> = {
     collapseSidebar: 'Ocultar barra lateral',
     channelsUnit: 'Canales',
     navHome: 'Inicio y Continuar',
+    navLiveTv: 'TV en Vivo',
     navLive: 'TV en Vivo y EPG',
     navMultiview: 'Multiview 4x',
     navVod: 'Cine VOD',
@@ -425,6 +441,8 @@ export const TRANSLATIONS: Record<LumaLocale, TranslationDictionary> = {
     allChannels: 'Todos los canales',
     favorites: 'Favoritos',
     bouquetsHeader: 'Bouquets y Grupos',
+    filterGroupsPlaceholder: 'Filtrar grupos…',
+    channelListToggle: 'Lista de canales',
     workspaceHeader: 'Videoteca',
     epgNow: 'Ahora',
     epgFilter: 'Filtrar canales EPG…',
@@ -484,6 +502,7 @@ export const TRANSLATIONS: Record<LumaLocale, TranslationDictionary> = {
     collapseSidebar: 'Σύμπτυξη πλευρικής μπάρας',
     channelsUnit: 'Κανάλια',
     navHome: 'Αρχική & Συνέχεια',
+    navLiveTv: 'Live TV',
     navLive: 'Live TV & EPG',
     navMultiview: 'Multiview 4x',
     navVod: 'Cinema VOD',
@@ -495,6 +514,8 @@ export const TRANSLATIONS: Record<LumaLocale, TranslationDictionary> = {
     allChannels: 'Όλα τα κανάλια',
     favorites: 'Αγαπημένα',
     bouquetsHeader: 'Μπουκέτα & Ομάδες',
+    filterGroupsPlaceholder: 'Φίλτρο ομάδων…',
+    channelListToggle: 'Λίστα καναλιών',
     workspaceHeader: 'Ταινιοθήκη',
     epgNow: 'Τώρα',
     epgFilter: 'Φιλτράρισμα καναλιών EPG…',

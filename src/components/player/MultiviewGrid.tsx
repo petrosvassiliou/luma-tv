@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { getCurrentAndNextProgram } from '../../data/mockCatalog';
 import { LumaPlayerEngine } from '../../engine/LumaPlayerEngine';
+import { searchChannelsRanked } from '../../services/channelSearch';
 import type {
   Channel,
   EngineProxyConfig,
@@ -260,22 +261,10 @@ export const MultiviewGrid: React.FC<MultiviewGridProps> = ({
   const resolveChannel = (id: string, fallbackIndex: number) =>
     channels.find((c) => c.id === id) ?? channels[fallbackIndex % channels.length];
 
-  const pickerCandidates = useMemo(() => {
-    const q = pickerQuery.trim().toLowerCase();
-    const out: Channel[] = [];
-    for (let i = 0; i < channels.length && out.length < 30; i++) {
-      const c = channels[i];
-      if (
-        !q ||
-        c.name.toLowerCase().includes(q) ||
-        c.groupName.toLowerCase().includes(q) ||
-        String(c.number) === q
-      ) {
-        out.push(c);
-      }
-    }
-    return out;
-  }, [channels, pickerQuery]);
+  const pickerCandidates = useMemo(
+    () => searchChannelsRanked(channels, pickerQuery, 80).items,
+    [channels, pickerQuery]
+  );
 
   const activeSlots = layoutMode === 'dual-2x1' ? [0, 1] : [0, 1, 2, 3];
 

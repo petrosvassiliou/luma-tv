@@ -27,6 +27,7 @@ import {
   TRANSLATIONS,
   type LumaPreferences,
 } from './i18n/translations';
+import { isProviderDividerChannel } from './services/channelSearch';
 import type {
   LumaSyncPlainPayload,
   WatchHistoryEntry,
@@ -38,15 +39,19 @@ import {
   useUniversalGamepadControls,
 } from './services/universalInput';
 import {
+  bulkSetChannelsHidden,
   deletePersistedSource,
   fetchXtreamSeriesEpisodes,
   importM3uPlaylist,
   importXmltvForSource,
   importXtreamSource,
   loadPersistedSourceBundle,
+  renamePersistedSource,
   renameStoredChannel,
+  resyncPersistedSource,
   runEndToEndWorkerDemoImport,
   toggleHideStoredChannel,
+  updateSourceHiddenGroups,
   type IngestProgressState,
 } from './services/playlistService';
 import { CommandBar } from './components/command/CommandBar';
@@ -64,6 +69,7 @@ import {
   HomeHubView,
   SeriesBrowserView,
 } from './components/views/HomeAndSeriesHub';
+import { LiveTvView } from './components/views/LiveTvView';
 import {
   MediaDetailModal,
   type MediaInspectTarget,
@@ -157,7 +163,7 @@ export function App() {
   const [inspectMedia, setInspectMedia] = useState<MediaInspectTarget | null>(null);
 
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [activeSection, setActiveSection] = useState<NavigationSection>('live-epg');
+  const [activeSection, setActiveSection] = useState<NavigationSection>('live');
   const [selectedGroupId, setSelectedGroupId] = useState<string>('all');
   const [focusedSeriesId, setFocusedSeriesId] = useState<string | null>(null);
   const [stressMode20k, setStressMode20k] = useState<boolean>(false);
@@ -165,6 +171,47 @@ export function App() {
   const [theaterExpanded, setTheaterExpanded] = useState<boolean>(false);
   const [commandBarOpen, setCommandBarOpen] = useState<boolean>(false);
   const [globalAmbientRgb, setGlobalAmbientRgb] = useState<string>('56, 189, 248');
+
+  // Persistent Player Audio State (never resets to muted across view switches)
+  const [playerAudio, setPlayerAudio] = useState<{ muted: boolean; volume: number }>(() => {
+    try {
+      const raw = localStorage.getItem('luma.audio.v1');
+      if (raw) {
+        const parsed = JSON.parse(raw) as { muted?: boolean; volume?: number };
+        return {
+          muted: Boolean(parsed.muted ?? false),
+          volume: typeof parsed.volume === 'number' ? parsed.volume : 0.85,
+        };
+      }
+    } catch {
+      // Ignore
+    }
+    return { muted: false, volume: 0.85 };
+  });
+
+  const handleChangeMuted = useCallback((muted: boolean) => {
+    setPlayerAudio((prev) => {
+      const next = { ...prev, muted };
+      try {
+        localStorage.setItem('luma.audio.v1', JSON.stringify(next));
+      } catch {
+        // Ignore
+      }
+      return next;
+    });
+  }, []);
+
+  const handleChangeVolume = useCallback((volume: number) => {
+    setPlayerAudio((prev) => {
+      const next = { ...prev, volume };
+      try {
+        localStorage.setItem('luma.audio.v1', JSON.stringify(next));
+      } catch {
+        // Ignore
+      }
+      return next;
+    });
+  }, []);
 
   const [detachedPipInEpg, setDetachedPipInEpg] = useState<boolean>(false);
   const [autoPipWhenBrowsing, setAutoPipWhenBrowsing] = useState<boolean>(true);
@@ -175,7 +222,7 @@ export function App() {
   const [proxyConfig, setProxyConfig] = useState<EngineProxyConfig>({
     enabled: false,
     endpointUrl: 'https://luma-tv-app.web.app/api/stream-proxy',
-    customUserAgent: 'LumaTV/0.5-beta (TiviMate-Compatible)',
+    customUserAgent: 'LumaTV/0.6-beta (TiviMate-Compatible)',
     autoFallbackOnCors: true,
   });
 
@@ -331,12 +378,20 @@ export function App() {
     [stressMode20k]
   );
 
+  const activeStoredSource = useMemo(
+    () => persistedSources.find((s) => s.id === activeSourceId) ?? null,
+    [persistedSources, activeSourceId]
+  );
+
   const { channels, baseGroups }: { channels: Channel[]; baseGroups: ChannelGroup[] } =
     useMemo(() => {
       if (activeSourceId === 'builtin-reference') {
         return { channels: builtinCatalog.channels, baseGroups: builtinCatalog.groups };
       }
-      const visibleStored = persistedChannels.filter((c) => !c.isHidden);
+      const hiddenGroups = new Set(activeStoredSource?.hiddenGroupIds ?? []);
+      const visibleStored = persistedChannels.filter(
+        (c) => !c.isHidden && !hiddenGroups.has(c.groupId)
+      );
       const counts = new Map<string, { name: string; count: number }>();
       for (const ch of visibleStored) {
         const prev = counts.get(ch.groupId);
@@ -352,10 +407,15 @@ export function App() {
         })
       );
       return {
-        channels: visibleStored.length > 0 ? visibleStored : builtinCatalog.channels,
+        channels:
+          visibleStored.length > 0
+            ? visibleStored
+            : persistedChannels.length > 0
+              ? persistedChannels.slice(0, 1)
+              : builtinCatalog.channels,
         baseGroups: derivedGroups,
       };
-    }, [activeSourceId, persistedChannels, builtinCatalog]);
+    }, [activeSourceId, activeStoredSource, persistedChannels, builtinCatalog]);
 
   const groups: ChannelGroup[] = useMemo(() => {
     const bouquetGroups: ChannelGroup[] = customBouquets.map((bq) => ({
@@ -480,7 +540,10 @@ export function App() {
   }, [channels, selectedGroupId, favoriteIds, customBouquets]);
 
   const activeChannel: Channel = useMemo(
-    () => channels.find((c) => c.id === activeChannelId) ?? channels[0],
+    () =>
+      channels.find((c) => c.id === activeChannelId) ??
+      channels.find((c) => !isProviderDividerChannel(c.name)) ??
+      channels[0],
     [channels, activeChannelId]
   );
 
@@ -539,7 +602,7 @@ export function App() {
       setTimeshiftStreamUrl(null);
       setTimeshiftResumeSec(0);
       setDetachedPipInEpg(false);
-      setActiveSection('live-epg');
+      setActiveSection((cur) => (cur === 'live-epg' ? 'live-epg' : 'live'));
       recordHistory({
         itemId: ch.id,
         title: ch.name,
@@ -556,7 +619,7 @@ export function App() {
     (groupId: string) => {
       if (groupId === 'all' || groupId === 'favorites') {
         setSelectedGroupId(groupId);
-        setActiveSection('live-epg');
+        setActiveSection((cur) => (cur === 'live-epg' ? 'live-epg' : 'live'));
         return;
       }
       const grp = groups.find((g) => g.id === groupId);
@@ -565,7 +628,7 @@ export function App() {
         return;
       }
       setSelectedGroupId(groupId);
-      setActiveSection('live-epg');
+      setActiveSection((cur) => (cur === 'live-epg' ? 'live-epg' : 'live'));
     },
     [groups, unlockedGroupIds]
   );
@@ -591,7 +654,7 @@ export function App() {
         durationSec,
         updatedAt: Date.now(),
       });
-      setActiveSection('live-epg');
+      setActiveSection((cur) => (cur === 'live-epg' ? 'live-epg' : 'live'));
     },
     [recordHistory, watchHistory]
   );
@@ -616,7 +679,7 @@ export function App() {
       setTimeshiftProgram(null);
       setTimeshiftStreamUrl(null);
       setDetachedPipInEpg(false);
-      setActiveSection('live-epg');
+      setActiveSection('live');
       recordHistory({
         itemId: vod.id,
         title: vod.title,
@@ -692,7 +755,7 @@ export function App() {
       setTimeshiftProgram(null);
       setTimeshiftStreamUrl(null);
       setDetachedPipInEpg(false);
-      setActiveSection('live-epg');
+      setActiveSection('live');
       recordHistory({
         itemId: ep.id,
         title: fullTitle,
@@ -928,6 +991,64 @@ export function App() {
     await refreshActiveSourceBundle(activeSourceId);
   };
 
+  const handleBulkSetChannelsHidden = async (channelIds: string[], hidden: boolean) => {
+    if (channelIds.length === 0) return;
+    await bulkSetChannelsHidden(channelIds, hidden);
+    await refreshActiveSourceBundle(activeSourceId);
+    setToastMessage(
+      hidden
+        ? `${channelIds.length.toLocaleString()} channels hidden`
+        : `${channelIds.length.toLocaleString()} channels restored`
+    );
+    window.setTimeout(() => setToastMessage(null), 2800);
+  };
+
+  const handleRenameSource = async (sourceId: string, nextName: string) => {
+    if (!nextName.trim()) return;
+    await renamePersistedSource(sourceId, nextName);
+    await reloadSourcesList();
+  };
+
+  const handleUpdateHiddenGroups = async (sourceId: string, hiddenGroupIds: string[]) => {
+    await updateSourceHiddenGroups(sourceId, hiddenGroupIds);
+    await reloadSourcesList();
+    if (selectedGroupId !== 'all' && hiddenGroupIds.includes(selectedGroupId)) {
+      setSelectedGroupId('all');
+    }
+  };
+
+  const handleResyncSource = async (source: StoredPlaylistSource) => {
+    setIngestState({
+      active: true,
+      phase: `Syncing ${source.name}…`,
+      percent: 15,
+    });
+    try {
+      await resyncPersistedSource({
+        source,
+        proxyEndpoint: resolveIngestProxyEndpoint(),
+        onProgress: (phase, percent) => setIngestState({ active: true, phase, percent }),
+      });
+      await reloadSourcesList();
+      if (activeSourceId === source.id) {
+        await refreshActiveSourceBundle(source.id);
+      }
+      setIngestState({
+        active: false,
+        phase: '',
+        percent: 100,
+        lastSummary: `${source.name} updated.`,
+      });
+    } catch (err) {
+      setIngestState({
+        active: false,
+        phase: '',
+        percent: 0,
+        error: err instanceof Error ? err.message : 'Sync failed',
+      });
+    }
+  };
+
   const [reminders, setReminders] = useState<EpgReminder[]>(() => {
     try {
       const raw = localStorage.getItem('luma.reminders.v1');
@@ -979,12 +1100,13 @@ export function App() {
 
   const sectionOrder: NavigationSection[] = useMemo(
     () => [
-      'home',
+      'live',
       'live-epg',
-      'multiview',
+      'home',
       'vod',
       'series',
       'catchup',
+      'multiview',
       'studio',
       'sources',
       'settings',
@@ -1061,8 +1183,10 @@ export function App() {
         return;
       }
 
+      const isLiveStage = activeSection === 'live' || activeSection === 'live-epg';
+
       if (
-        activeSection === 'live-epg' &&
+        isLiveStage &&
         (e.key === 'ChannelUp' || (e.altKey && e.key === 'ArrowUp'))
       ) {
         e.preventDefault();
@@ -1070,7 +1194,7 @@ export function App() {
         return;
       }
       if (
-        activeSection === 'live-epg' &&
+        isLiveStage &&
         (e.key === 'ChannelDown' || (e.altKey && e.key === 'ArrowDown'))
       ) {
         e.preventDefault();
@@ -1078,7 +1202,7 @@ export function App() {
         return;
       }
 
-      if (activeSection === 'live-epg' && /^[0-9]$/.test(e.key) && !e.metaKey && !e.ctrlKey) {
+      if (isLiveStage && /^[0-9]$/.test(e.key) && !e.metaKey && !e.ctrlKey) {
         e.preventDefault();
         setNumericBuffer((prev) => {
           const next = (prev + e.key).slice(0, 5);
@@ -1122,11 +1246,106 @@ export function App() {
     activeSection === 'sources' ||
     activeSection === 'settings';
 
+  const isLiveSectionActive = activeSection === 'live' || activeSection === 'live-epg';
+
   const showFloatingInAppPip =
-    (activeSection === 'live-epg' && detachedPipInEpg) ||
+    (isLiveSectionActive && detachedPipInEpg) ||
     (isBrowsingSecondarySection && autoPipWhenBrowsing);
 
   const t = TRANSLATIONS[preferences.locale];
+
+  const activeGroupLabel = useMemo(() => {
+    if (selectedGroupId === 'all') return t.allChannels;
+    if (selectedGroupId === 'favorites') return t.favorites;
+    return groups.find((g) => g.id === selectedGroupId)?.name ?? t.allChannels;
+  }, [selectedGroupId, groups, t.allChannels, t.favorites]);
+
+  const renderMainPlayerStage = (layoutVariant: 'cinema' | 'split') => (
+    <PlayerStage
+      designMode={designMode}
+      channel={activeChannel}
+      overrideTitle={activeOnDemand?.title}
+      overrideSubtitle={activeOnDemand?.subtitle}
+      overrideStreamUrl={activeOnDemand?.streamUrl ?? timeshiftStreamUrl ?? undefined}
+      timeshiftProgram={timeshiftProgram}
+      onExitTimeshift={() => {
+        setActiveOnDemand(null);
+        setTimeshiftProgram(null);
+        setTimeshiftStreamUrl(null);
+        setTimeshiftResumeSec(0);
+      }}
+      sessionKey={
+        activeOnDemand?.itemId ??
+        timeshiftProgram?.id ??
+        `live-${activeChannel.id}`
+      }
+      initialResumeSec={
+        activeOnDemand?.initialResumeSec ??
+        (timeshiftProgram ? timeshiftResumeSec : 0)
+      }
+      fallbackDurationSec={
+        activeOnDemand?.fallbackDurationSec ??
+        (timeshiftProgram
+          ? Math.max(
+              60,
+              Math.round((timeshiftProgram.endMs - timeshiftProgram.startMs) / 1000)
+            )
+          : 0)
+      }
+      onPlaybackProgress={(curSec, durSec) => {
+        if (activeOnDemand) {
+          recordHistory({
+            itemId: activeOnDemand.itemId,
+            title: activeOnDemand.title,
+            kind: activeOnDemand.kind,
+            resumeSec: curSec,
+            durationSec: durSec,
+            updatedAt: Date.now(),
+          });
+        } else if (timeshiftProgram) {
+          recordHistory({
+            itemId: timeshiftProgram.id,
+            title: `${activeChannel.shortCode}: ${timeshiftProgram.title}`,
+            kind: 'catchup',
+            resumeSec: curSec,
+            durationSec: durSec,
+            updatedAt: Date.now(),
+          });
+        }
+      }}
+      nextEpisodeLabel={activeOnDemand?.nextEpisode?.label}
+      onPlayNextEpisode={
+        activeOnDemand?.nextEpisode
+          ? () => {
+              const ne = activeOnDemand.nextEpisode!;
+              handlePlaySeriesEpisode(ne.series, ne.seasonNumber, ne.episode, 0);
+            }
+          : undefined
+      }
+      isFavorite={favoriteIds.has(activeChannel.id)}
+      onToggleFavorite={toggleFavorite}
+      onPrevChannel={() => zapRelative(-1)}
+      onNextChannel={() => zapRelative(1)}
+      onDetachInAppPip={() => setDetachedPipInEpg(true)}
+      ambilightEnabled={ambilightEnabled}
+      theaterExpanded={theaterExpanded}
+      onToggleTheaterExpanded={() => setTheaterExpanded((v) => !v)}
+      layoutVariant={layoutVariant}
+      isMuted={playerAudio.muted}
+      onChangeMuted={handleChangeMuted}
+      volume={playerAudio.volume}
+      onChangeVolume={handleChangeVolume}
+      proxyConfig={effectiveProxyConfig}
+      nowMs={nowMs}
+      locale={preferences.locale}
+      mpvAvailable={Boolean(nativeProbe?.mpvAvailable)}
+      onToast={(msg) => {
+        setToastMessage(msg);
+        window.setTimeout(() => setToastMessage(null), 3200);
+      }}
+      onAmbientRgbChange={setGlobalAmbientRgb}
+    />
+  );
 
   return (
     <div
@@ -1149,7 +1368,6 @@ export function App() {
 
       <CustomTitlebar
         designMode={designMode}
-        onChangeDesignMode={setDesignMode}
         locale={preferences.locale}
         onToggleLocale={() =>
           handleUpdatePreferences({
@@ -1164,18 +1382,10 @@ export function App() {
         activeSection={activeSection}
         onSelectSection={(sec) => {
           setActiveSection(sec);
-          if (sec !== 'live-epg') {
+          if (sec !== 'live' && sec !== 'live-epg') {
             setAutoPipWhenBrowsing(true);
           }
         }}
-        ambilightEnabled={ambilightEnabled}
-        onToggleAmbilight={() => setAmbilightEnabled((v) => !v)}
-        stressMode20k={stressMode20k}
-        onToggleStressMode20k={() => {
-          setActiveSourceId('builtin-reference');
-          setStressMode20k((v) => !v);
-        }}
-        totalChannels={channels.length}
         nowMs={nowMs}
       />
 
@@ -1187,13 +1397,12 @@ export function App() {
           activeSection={activeSection}
           onSelectSection={(sec) => {
             setActiveSection(sec);
-            if (sec !== 'live-epg') {
+            if (sec !== 'live' && sec !== 'live-epg') {
               setAutoPipWhenBrowsing(true);
             }
           }}
           selectedGroupId={selectedGroupId}
           onSelectGroup={handleSelectSidebarGroup}
-          onOpenCommandBar={() => setCommandBarOpen(true)}
           groups={groups}
           totalChannelCount={channels.length}
           favoritesCount={favoriteIds.size}
@@ -1240,89 +1449,25 @@ export function App() {
             />
           )}
 
+          {activeSection === 'live' && (
+            <LiveTvView
+              designMode={designMode}
+              locale={preferences.locale}
+              channels={visibleChannels}
+              activeGroupLabel={activeGroupLabel}
+              activeChannelId={activeChannel.id}
+              favoriteIds={favoriteIds}
+              onSelectChannel={selectLiveChannel}
+              onToggleFavorite={toggleFavorite}
+              onOpenEpgView={() => setActiveSection('live-epg')}
+            >
+              {!detachedPipInEpg && renderMainPlayerStage('cinema')}
+            </LiveTvView>
+          )}
+
           {activeSection === 'live-epg' && (
             <>
-              {!detachedPipInEpg && (
-                <PlayerStage
-                  designMode={designMode}
-                  channel={activeChannel}
-                  overrideTitle={activeOnDemand?.title}
-                  overrideSubtitle={activeOnDemand?.subtitle}
-                  overrideStreamUrl={activeOnDemand?.streamUrl ?? timeshiftStreamUrl ?? undefined}
-                  timeshiftProgram={timeshiftProgram}
-                  onExitTimeshift={() => {
-                    setActiveOnDemand(null);
-                    setTimeshiftProgram(null);
-                    setTimeshiftStreamUrl(null);
-                    setTimeshiftResumeSec(0);
-                  }}
-                  sessionKey={
-                    activeOnDemand?.itemId ??
-                    timeshiftProgram?.id ??
-                    `live-${activeChannel.id}`
-                  }
-                  initialResumeSec={
-                    activeOnDemand?.initialResumeSec ??
-                    (timeshiftProgram ? timeshiftResumeSec : 0)
-                  }
-                  fallbackDurationSec={
-                    activeOnDemand?.fallbackDurationSec ??
-                    (timeshiftProgram
-                      ? Math.max(
-                          60,
-                          Math.round((timeshiftProgram.endMs - timeshiftProgram.startMs) / 1000)
-                        )
-                      : 0)
-                  }
-                  onPlaybackProgress={(curSec, durSec) => {
-                    if (activeOnDemand) {
-                      recordHistory({
-                        itemId: activeOnDemand.itemId,
-                        title: activeOnDemand.title,
-                        kind: activeOnDemand.kind,
-                        resumeSec: curSec,
-                        durationSec: durSec,
-                        updatedAt: Date.now(),
-                      });
-                    } else if (timeshiftProgram) {
-                      recordHistory({
-                        itemId: timeshiftProgram.id,
-                        title: `${activeChannel.shortCode}: ${timeshiftProgram.title}`,
-                        kind: 'catchup',
-                        resumeSec: curSec,
-                        durationSec: durSec,
-                        updatedAt: Date.now(),
-                      });
-                    }
-                  }}
-                  nextEpisodeLabel={activeOnDemand?.nextEpisode?.label}
-                  onPlayNextEpisode={
-                    activeOnDemand?.nextEpisode
-                      ? () => {
-                          const ne = activeOnDemand.nextEpisode!;
-                          handlePlaySeriesEpisode(ne.series, ne.seasonNumber, ne.episode, 0);
-                        }
-                      : undefined
-                  }
-                  isFavorite={favoriteIds.has(activeChannel.id)}
-                  onToggleFavorite={toggleFavorite}
-                  onPrevChannel={() => zapRelative(-1)}
-                  onNextChannel={() => zapRelative(1)}
-                  onDetachInAppPip={() => setDetachedPipInEpg(true)}
-                  ambilightEnabled={ambilightEnabled}
-                  theaterExpanded={theaterExpanded}
-                  onToggleTheaterExpanded={() => setTheaterExpanded((v) => !v)}
-                  proxyConfig={effectiveProxyConfig}
-                  nowMs={nowMs}
-                  locale={preferences.locale}
-                  mpvAvailable={Boolean(nativeProbe?.mpvAvailable)}
-                  onToast={(msg) => {
-                    setToastMessage(msg);
-                    window.setTimeout(() => setToastMessage(null), 3200);
-                  }}
-                  onAmbientRgbChange={setGlobalAmbientRgb}
-                />
-              )}
+              {!detachedPipInEpg && renderMainPlayerStage('split')}
 
               <VirtualizedEpgGrid
                 designMode={designMode}
@@ -1441,6 +1586,11 @@ export function App() {
               onImportM3u={handleImportM3u}
               onImportXtream={handleImportXtream}
               onUploadXmltvBuffer={handleUploadXmltvBuffer}
+              onRenameSource={handleRenameSource}
+              onResyncSource={handleResyncSource}
+              onUpdateHiddenGroups={handleUpdateHiddenGroups}
+              onBulkSetChannelsHidden={handleBulkSetChannelsHidden}
+              onPlayChannel={(ch) => selectLiveChannel(ch)}
               onRenameChannel={handleRenameChannel}
               onToggleHideChannel={handleToggleHideChannel}
               epgOffsetHours={epgOffsetHours}
@@ -1490,10 +1640,10 @@ export function App() {
           onNextChannel={() => zapRelative(1)}
           onRestoreStage={() => {
             setDetachedPipInEpg(false);
-            setActiveSection('live-epg');
+            setActiveSection('live');
           }}
           onClose={() => {
-            if (activeSection === 'live-epg') {
+            if (isLiveSectionActive) {
               setDetachedPipInEpg(false);
             } else {
               setAutoPipWhenBrowsing(false);
@@ -1521,7 +1671,7 @@ export function App() {
             setUnlockedGroupIds((prev) => new Set([...prev, pendingPinGroup.id]));
             setSelectedGroupId(pendingPinGroup.id);
             setPendingPinGroup(null);
-            setActiveSection('live-epg');
+            setActiveSection((cur) => (cur === 'live-epg' ? 'live-epg' : 'live'));
           }}
           onCancel={() => setPendingPinGroup(null)}
         />
@@ -1557,7 +1707,7 @@ export function App() {
             setTimeshiftStreamUrl(null);
             setInspectMedia(null);
             setDetachedPipInEpg(false);
-            setActiveSection('live-epg');
+            setActiveSection('live');
           }}
         />
       )}
@@ -1620,17 +1770,21 @@ export function App() {
       {commandBarOpen && (
         <CommandBar
           designMode={designMode}
+          locale={preferences.locale}
           onClose={() => setCommandBarOpen(false)}
           channels={channels}
           vodCatalog={combinedVodCatalog}
           seriesCatalog={combinedSeriesCatalog}
-          nowMs={nowMs}
           onSelectChannel={(ch) => selectLiveChannel(ch)}
           onSelectVod={(vod) => handlePlayVod(vod)}
+          onOpenSeries={(serId) => {
+            setFocusedSeriesId(serId);
+            setActiveSection('series');
+          }}
           onSelectSeriesEpisode={(ser, sNum, ep) => handlePlaySeriesEpisode(ser, sNum, ep)}
           onTriggerAction={(act) => {
             if (act === 'multiview') {
-              setActiveSection((prev) => (prev === 'multiview' ? 'live-epg' : 'multiview'));
+              setActiveSection((prev) => (prev === 'multiview' ? 'live' : 'multiview'));
             } else if (act === 'ambilight') {
               setAmbilightEnabled((v) => !v);
             } else if (act === 'stress20k') {
