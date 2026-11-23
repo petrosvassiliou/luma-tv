@@ -1,13 +1,18 @@
 import {
   bulkSaveChannelsChunked,
   bulkSaveEpgChunked,
+  bulkSaveSeriesChunked,
+  bulkSaveVodChunked,
   lumaDb,
   type StoredChannel,
   type StoredEpgProgram,
   type StoredPlaylistSource,
+  type StoredSeriesItem,
   type StoredVodItem,
 } from '../db/lumaDb';
 import { VERIFIED_HLS_STREAMS } from '../data/mockCatalog';
+import { parseXtreamLiveStreamUrl } from '../engine/catchupUrlBuilder';
+import type { SeriesEpisode, SeriesItem, SeriesSeason } from '../types/luma';
 import type { WorkerIngestRequest, WorkerIngestResponse } from '../workers/ingest.worker';
 
 export interface IngestProgressState {
@@ -83,7 +88,10 @@ export async function importM3uPlaylist(params: {
 
   await bulkSaveChannelsChunked(res.channels);
   if (res.vodItems.length > 0) {
-    await lumaDb.vodItems.bulkPut(res.vodItems);
+    await bulkSaveVodChunked(res.vodItems);
+  }
+  if (res.seriesItems && res.seriesItems.length > 0) {
+    await bulkSaveSeriesChunked(res.seriesItems);
   }
 
   const resolvedXmltv = params.xmltvUrl?.trim() || res.discoveredXmltvUrl;
@@ -96,6 +104,7 @@ export async function importM3uPlaylist(params: {
     xmltvUrl: resolvedXmltv,
     channelCount: res.channels.length,
     vodCount: res.vodItems.length,
+    seriesCount: res.seriesItems?.length ?? 0,
     epgStatus: 'synced',
     epgOffsetHours: 0,
     hiddenGroupIds: [],
@@ -147,11 +156,18 @@ export async function importXtreamSource(params: {
     params.onProgress
   );
 
+  const seriesItems = res.seriesItems ?? [];
   params.onProgress?.(
-    `Speichere ${res.channels.length.toLocaleString('de-DE')} Xtream-Streams in IndexedDB…`,
+    `Speichere ${res.channels.length.toLocaleString('de-DE')} Live, ${res.vodItems.length.toLocaleString('de-DE')} VOD & ${seriesItems.length.toLocaleString('de-DE')} Serien…`,
     92
   );
   await bulkSaveChannelsChunked(res.channels);
+  if (res.vodItems.length > 0) {
+    await bulkSaveVodChunked(res.vodItems);
+  }
+  if (seriesItems.length > 0) {
+    await bulkSaveSeriesChunked(seriesItems);
+  }
 
   const source: StoredPlaylistSource = {
     id: sourceId,
@@ -160,9 +176,12 @@ export async function importXtreamSource(params: {
     endpoint: params.serverUrl.trim(),
     rawUrlOrHost: params.serverUrl.trim(),
     username: params.username.trim(),
+    password: params.password,
+    outputFormat: params.outputFormat,
     xmltvUrl: res.discoveredXmltvUrl,
     channelCount: res.channels.length,
-    vodCount: 0,
+    vodCount: res.vodItems.length,
+    seriesCount: seriesItems.length,
     epgStatus: 'synced',
     epgOffsetHours: 0,
     hiddenGroupIds: [],
@@ -171,8 +190,128 @@ export async function importXtreamSource(params: {
   };
 
   await lumaDb.sources.put(source);
+
+  if (res.discoveredXmltvUrl && res.discoveredXmltvUrl.startsWith('http')) {
+    try {
+      await importXmltvForSource({
+        sourceId,
+        url: res.discoveredXmltvUrl,
+        proxyEndpoint: params.proxyEndpoint,
+        onProgress: params.onProgress,
+      });
+    } catch {
+      // Keep source active even if provider XMLTV endpoint times out
+    }
+  }
+
   params.onProgress?.('Abgeschlossen', 100);
   return source;
+}
+
+export async function fetchXtreamSeriesEpisodes(params: {
+  source?: StoredPlaylistSource | null;
+  series: SeriesItem;
+  fallbackChannelUrl?: string;
+  proxyEndpoint?: string;
+}): Promise<SeriesSeason[]> {
+  const { source, series, fallbackChannelUrl, proxyEndpoint } = params;
+  if (!series.xtreamSeriesId) {
+    return series.seasons;
+  }
+
+  let origin = source?.rawUrlOrHost?.trim().replace(/\/+$/, '') || '';
+  let username = source?.username?.trim() || '';
+  let password = source?.password ?? '';
+
+  if ((!origin || !username || !password) && fallbackChannelUrl) {
+    const parsed = parseXtreamLiveStreamUrl(fallbackChannelUrl);
+    if (parsed) {
+      origin = origin || parsed.origin;
+      username = username || decodeURIComponent(parsed.username);
+      password = password || decodeURIComponent(parsed.password);
+    }
+  }
+
+  if (!origin || !username || !password) {
+    return series.seasons;
+  }
+
+  const encUser = encodeURIComponent(username);
+  const encPass = encodeURIComponent(password);
+  const rawApiUrl = `${origin}/player_api.php?username=${encUser}&password=${encPass}&action=get_series_info&series_id=${series.xtreamSeriesId}`;
+  const finalUrl =
+    proxyEndpoint && proxyEndpoint.trim()
+      ? `${proxyEndpoint.trim().replace(/\/+$/, '')}?url=${encodeURIComponent(rawApiUrl)}`
+      : rawApiUrl;
+
+  const res = await fetch(finalUrl);
+  if (!res.ok) {
+    throw new Error(`Xtream get_series_info HTTP ${res.status}`);
+  }
+
+  const data = (await res.json()) as {
+    episodes?: Record<
+      string,
+      {
+        id: string | number;
+        episode_num?: number | string;
+        title?: string;
+        container_extension?: string;
+        info?: {
+          plot?: string;
+          duration_secs?: number;
+        };
+      }[]
+    >;
+  };
+
+  const episodesBySeason = data.episodes ?? {};
+  const seasonKeys = Object.keys(episodesBySeason).sort((a, b) => Number(a) - Number(b));
+
+  const seasons: SeriesSeason[] = seasonKeys
+    .map((seasonKey) => {
+      const seasonNum = Math.max(1, Number(seasonKey) || 1);
+      const rawEps = Array.isArray(episodesBySeason[seasonKey])
+        ? episodesBySeason[seasonKey]
+        : [];
+      const episodes: SeriesEpisode[] = rawEps.map((ep, idx) => {
+        const epNum = Number(ep.episode_num) || idx + 1;
+        const ext = (ep.container_extension || 'mp4').replace(/[^a-z0-9]/gi, '') || 'mp4';
+        const durSec = Number(ep.info?.duration_secs) || 0;
+        const durationMin = durSec > 60 ? Math.round(durSec / 60) : 45;
+        const epTitle = ep.title?.trim() || `Episode ${epNum}`;
+        const is4k = epTitle.toUpperCase().includes('4K') || series.badge.includes('4K');
+
+        return {
+          id: `${series.id}-s${seasonNum}e${ep.id}`,
+          episodeNumber: epNum,
+          title: epTitle,
+          durationMin,
+          synopsis: ep.info?.plot?.trim() || `${series.title} · S${seasonNum}E${epNum}`,
+          streamUrl: `${origin}/series/${encUser}/${encPass}/${ep.id}.${ext}`,
+          resolution: is4k ? '4K HDR' : '1080p',
+        };
+      });
+
+      return {
+        seasonNumber: seasonNum,
+        title: `Season ${seasonNum}`,
+        episodes,
+      };
+    })
+    .filter((s) => s.episodes.length > 0);
+
+  if (seasons.length > 0) {
+    await lumaDb.seriesItems
+      .update(series.id, {
+        seasons,
+        seasonsLoaded: true,
+      })
+      .catch(() => undefined);
+    return seasons;
+  }
+
+  return series.seasons;
 }
 
 export async function importXmltvForSource(params: {
@@ -294,11 +433,13 @@ export async function runEndToEndWorkerDemoImport(
 export async function loadPersistedSourceBundle(sourceId: string): Promise<{
   channels: StoredChannel[];
   vodItems: StoredVodItem[];
+  seriesItems: StoredSeriesItem[];
   epgByTvgId: Map<string, StoredEpgProgram[]>;
 }> {
-  const [channels, vodItems, epgList] = await Promise.all([
+  const [channels, vodItems, seriesItems, epgList] = await Promise.all([
     lumaDb.channels.where('sourceId').equals(sourceId).sortBy('sortOrder'),
     lumaDb.vodItems.where('sourceId').equals(sourceId).toArray(),
+    lumaDb.seriesItems.where('sourceId').equals(sourceId).toArray(),
     lumaDb.epgPrograms.where('sourceId').equals(sourceId).toArray(),
   ]);
 
@@ -312,7 +453,7 @@ export async function loadPersistedSourceBundle(sourceId: string): Promise<{
     bucket.sort((a, b) => a.startMs - b.startMs);
   }
 
-  return { channels, vodItems, epgByTvgId };
+  return { channels, vodItems, seriesItems, epgByTvgId };
 }
 
 export async function deletePersistedSource(sourceId: string): Promise<void> {
@@ -320,6 +461,7 @@ export async function deletePersistedSource(sourceId: string): Promise<void> {
     lumaDb.sources.delete(sourceId),
     lumaDb.channels.where('sourceId').equals(sourceId).delete(),
     lumaDb.vodItems.where('sourceId').equals(sourceId).delete(),
+    lumaDb.seriesItems.where('sourceId').equals(sourceId).delete(),
     lumaDb.epgPrograms.where('sourceId').equals(sourceId).delete(),
   ]);
 }

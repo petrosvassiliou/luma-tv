@@ -4,6 +4,7 @@ import {
   type StoredChannel,
   type StoredEpgProgram,
   type StoredPlaylistSource,
+  type StoredSeriesItem,
   type StoredVodItem,
 } from './db/lumaDb';
 import {
@@ -13,13 +14,16 @@ import {
   getCurrentAndNextProgram,
   VERIFIED_HLS_STREAMS,
 } from './data/mockCatalog';
+import { buildCatchupStreamUrl } from './engine/catchupUrlBuilder';
 import { isLocalRustProxyEndpoint } from './engine/corsProxy';
 import {
   probeTauriNativeEngine,
   type NativeEngineProbe,
 } from './engine/tauriNativeBridge';
 import {
+  cycleNextLocale,
   detectSystemLocale,
+  normalizeLocale,
   TRANSLATIONS,
   type LumaPreferences,
 } from './i18n/translations';
@@ -35,6 +39,7 @@ import {
 } from './services/universalInput';
 import {
   deletePersistedSource,
+  fetchXtreamSeriesEpisodes,
   importM3uPlaylist,
   importXmltvForSource,
   importXtreamSource,
@@ -118,7 +123,15 @@ export function App() {
   const [preferences, setPreferences] = useState<LumaPreferences>(() => {
     try {
       const raw = localStorage.getItem('luma.prefs.v3');
-      if (raw) return JSON.parse(raw) as LumaPreferences;
+      if (raw) {
+        const parsed = JSON.parse(raw) as Partial<LumaPreferences>;
+        return {
+          locale: normalizeLocale(parsed.locale ?? detectSystemLocale()),
+          bufferProfile: parsed.bufferProfile ?? 'balanced',
+          sleepTimerMinutes: parsed.sleepTimerMinutes ?? 0,
+          spatialDpadEnabled: parsed.spatialDpadEnabled ?? true,
+        };
+      }
     } catch {
       // Ignore
     }
@@ -162,7 +175,7 @@ export function App() {
   const [proxyConfig, setProxyConfig] = useState<EngineProxyConfig>({
     enabled: false,
     endpointUrl: 'https://luma-tv-app.web.app/api/stream-proxy',
-    customUserAgent: 'LumaTV/0.4-beta (TiviMate-Compatible)',
+    customUserAgent: 'LumaTV/0.5-beta (TiviMate-Compatible)',
     autoFallbackOnCors: true,
   });
 
@@ -259,6 +272,8 @@ export function App() {
   const [persistedSources, setPersistedSources] = useState<StoredPlaylistSource[]>([]);
   const [persistedChannels, setPersistedChannels] = useState<StoredChannel[]>([]);
   const [persistedVod, setPersistedVod] = useState<StoredVodItem[]>([]);
+  const [persistedSeries, setPersistedSeries] = useState<StoredSeriesItem[]>([]);
+  const [loadingSeriesIds, setLoadingSeriesIds] = useState<Set<string>>(() => new Set());
   const [xmltvMap, setXmltvMap] = useState<Map<string, StoredEpgProgram[]>>(() => new Map());
   const [ingestState, setIngestState] = useState<IngestProgressState>({
     active: false,
@@ -290,6 +305,7 @@ export function App() {
     const bundle = await loadPersistedSourceBundle(sourceId);
     setPersistedChannels(bundle.channels);
     setPersistedVod(bundle.vodItems);
+    setPersistedSeries(bundle.seriesItems);
     setXmltvMap(bundle.epgByTvgId);
   }, []);
 
@@ -301,6 +317,7 @@ export function App() {
         if (cancelled) return;
         setPersistedChannels(bundle.channels);
         setPersistedVod(bundle.vodItems);
+        setPersistedSeries(bundle.seriesItems);
         setXmltvMap(bundle.epgByTvgId);
       })
       .catch(() => undefined);
@@ -369,13 +386,33 @@ export function App() {
     [activeSourceId, persistedVod]
   );
 
+  const combinedSeriesCatalog: SeriesItem[] = useMemo(
+    () =>
+      activeSourceId === 'builtin-reference' || persistedSeries.length === 0
+        ? DEMO_SERIES_CATALOG
+        : [...persistedSeries, ...DEMO_SERIES_CATALOG],
+    [activeSourceId, persistedSeries]
+  );
+
   const [activeChannelId, setActiveChannelId] = useState<string>('ch-redbull-tv');
   const [activeOnDemand, setActiveOnDemand] = useState<{
+    itemId: string;
+    kind: 'vod' | 'catchup';
     title: string;
     subtitle: string;
     streamUrl: string;
+    initialResumeSec: number;
+    fallbackDurationSec: number;
+    nextEpisode?: {
+      label: string;
+      series: SeriesItem;
+      seasonNumber: number;
+      episode: SeriesEpisode;
+    };
   } | null>(null);
   const [timeshiftProgram, setTimeshiftProgram] = useState<EpgProgram | null>(null);
+  const [timeshiftStreamUrl, setTimeshiftStreamUrl] = useState<string | null>(null);
+  const [timeshiftResumeSec, setTimeshiftResumeSec] = useState<number>(0);
 
   const [multiviewSlotIds, setMultiviewSlotIds] = useState<string[]>([
     'ch-redbull-tv',
@@ -499,6 +536,8 @@ export function App() {
       setActiveChannelId(ch.id);
       setActiveOnDemand(null);
       setTimeshiftProgram(null);
+      setTimeshiftStreamUrl(null);
+      setTimeshiftResumeSec(0);
       setDetachedPipInEpg(false);
       setActiveSection('live-epg');
       recordHistory({
@@ -533,66 +572,178 @@ export function App() {
 
   const handleStartTimeshift = useCallback(
     (ch: Channel, program: EpgProgram) => {
+      const catchupUrl = buildCatchupStreamUrl(ch, program, Date.now());
+      const durationSec = Math.max(60, Math.round((program.endMs - program.startMs) / 1000));
+      const existingResume =
+        watchHistory.find((w) => w.itemId === program.id)?.resumeSec ?? 0;
+
       setActiveChannelId(ch.id);
       setActiveOnDemand(null);
       setTimeshiftProgram(program);
+      setTimeshiftStreamUrl(catchupUrl);
+      setTimeshiftResumeSec(existingResume);
       setDetachedPipInEpg(false);
       recordHistory({
         itemId: program.id,
         title: `${ch.shortCode}: ${program.title}`,
         kind: 'catchup',
-        resumeSec: 180,
-        durationSec: Math.round((program.endMs - program.startMs) / 1000),
+        resumeSec: existingResume,
+        durationSec,
         updatedAt: Date.now(),
       });
       setActiveSection('live-epg');
     },
-    [recordHistory]
+    [recordHistory, watchHistory]
   );
 
   const handlePlayVod = useCallback(
-    (vod: VodItem, resumeSec = 240) => {
+    (vod: VodItem, explicitResumeSec?: number) => {
+      const existingResume =
+        explicitResumeSec ??
+        watchHistory.find((w) => w.itemId === vod.id)?.resumeSec ??
+        0;
+      const durationSec = Math.max(60, vod.durationMin * 60);
+
       setActiveOnDemand({
+        itemId: vod.id,
+        kind: 'vod',
         title: vod.title,
-        subtitle: `${vod.genre} · ${vod.year} · ${vod.durationMin} Min.`,
+        subtitle: `${vod.genre} · ${vod.year} · ${vod.durationMin} min`,
         streamUrl: vod.streamUrl,
+        initialResumeSec: existingResume,
+        fallbackDurationSec: durationSec,
       });
       setTimeshiftProgram(null);
+      setTimeshiftStreamUrl(null);
       setDetachedPipInEpg(false);
       setActiveSection('live-epg');
       recordHistory({
         itemId: vod.id,
         title: vod.title,
         kind: 'vod',
-        resumeSec,
-        durationSec: vod.durationMin * 60,
+        resumeSec: existingResume,
+        durationSec,
         updatedAt: Date.now(),
       });
     },
-    [recordHistory]
+    [recordHistory, watchHistory]
   );
 
   const handlePlaySeriesEpisode = useCallback(
-    (series: SeriesItem, seasonNum: number, ep: SeriesEpisode, resumeSec = 420) => {
+    (
+      series: SeriesItem,
+      seasonNum: number,
+      ep: SeriesEpisode,
+      explicitResumeSec?: number
+    ) => {
+      const existingResume =
+        explicitResumeSec ??
+        watchHistory.find((w) => w.itemId === ep.id)?.resumeSec ??
+        0;
+      const durationSec = Math.max(60, ep.durationMin * 60);
       const code = `S${String(seasonNum).padStart(2, '0')}E${String(ep.episodeNumber).padStart(2, '0')}`;
+      const fullTitle = `${series.title.split('·')[0].trim()} · ${code} ${ep.title}`;
+
+      // Resolve next episode in current season or first episode of next season
+      let nextEpisode:
+        | {
+            label: string;
+            series: SeriesItem;
+            seasonNumber: number;
+            episode: SeriesEpisode;
+          }
+        | undefined;
+      const sIdx = series.seasons.findIndex((s) => s.seasonNumber === seasonNum);
+      if (sIdx >= 0) {
+        const curSeason = series.seasons[sIdx];
+        const eIdx = curSeason.episodes.findIndex((e) => e.id === ep.id);
+        if (eIdx >= 0 && eIdx + 1 < curSeason.episodes.length) {
+          const nextEp = curSeason.episodes[eIdx + 1];
+          nextEpisode = {
+            label: `S${String(seasonNum).padStart(2, '0')}E${String(nextEp.episodeNumber).padStart(2, '0')}`,
+            series,
+            seasonNumber: seasonNum,
+            episode: nextEp,
+          };
+        } else if (sIdx + 1 < series.seasons.length) {
+          const nextSea = series.seasons[sIdx + 1];
+          const firstEp = nextSea.episodes[0];
+          if (firstEp) {
+            nextEpisode = {
+              label: `S${String(nextSea.seasonNumber).padStart(2, '0')}E${String(firstEp.episodeNumber).padStart(2, '0')}`,
+              series,
+              seasonNumber: nextSea.seasonNumber,
+              episode: firstEp,
+            };
+          }
+        }
+      }
+
       setActiveOnDemand({
-        title: `${series.title.split('·')[0].trim()} · ${code} ${ep.title}`,
-        subtitle: `${series.genre} · ${ep.durationMin} Min. · ${ep.resolution}`,
+        itemId: ep.id,
+        kind: 'vod',
+        title: fullTitle,
+        subtitle: `${series.genre} · ${ep.durationMin} min · ${ep.resolution}`,
         streamUrl: ep.streamUrl,
+        initialResumeSec: existingResume,
+        fallbackDurationSec: durationSec,
+        nextEpisode,
       });
       setTimeshiftProgram(null);
+      setTimeshiftStreamUrl(null);
       setDetachedPipInEpg(false);
       setActiveSection('live-epg');
       recordHistory({
         itemId: ep.id,
-        title: `${series.title.split('·')[0].trim()} · ${code} ${ep.title}`,
+        title: fullTitle,
         kind: 'vod',
-        resumeSec,
-        durationSec: ep.durationMin * 60,
+        resumeSec: existingResume,
+        durationSec,
         updatedAt: Date.now(),
       });
     },
-    [recordHistory]
+    [recordHistory, watchHistory]
+  );
+
+  const handleEnsureSeriesLoaded = useCallback(
+    async (series: SeriesItem) => {
+      if (!series.xtreamSeriesId || series.seasonsLoaded) return;
+      let shouldFetch = false;
+      setLoadingSeriesIds((prev) => {
+        if (prev.has(series.id)) return prev;
+        shouldFetch = true;
+        return new Set([...prev, series.id]);
+      });
+      if (!shouldFetch) return;
+
+      try {
+        const src = persistedSources.find((s) => s.id === activeSourceId) ?? null;
+        const proxyEndpoint =
+          proxyConfig.enabled || isLocalRustProxyEndpoint(proxyConfig.endpointUrl)
+            ? proxyConfig.endpointUrl
+            : undefined;
+        const seasons = await fetchXtreamSeriesEpisodes({
+          source: src,
+          series,
+          fallbackChannelUrl: persistedChannels[0]?.streamUrl,
+          proxyEndpoint,
+        });
+        setPersistedSeries((prev) =>
+          prev.map((s) =>
+            s.id === series.id ? { ...s, seasons, seasonsLoaded: true } : s
+          )
+        );
+      } catch {
+        // Keep series card browsable even if provider series_info fails
+      } finally {
+        setLoadingSeriesIds((prev) => {
+          const next = new Set(prev);
+          next.delete(series.id);
+          return next;
+        });
+      }
+    },
+    [activeSourceId, persistedChannels, persistedSources, proxyConfig]
   );
 
   const zapRelative = useCallback(
@@ -1003,7 +1154,7 @@ export function App() {
         onToggleLocale={() =>
           handleUpdatePreferences({
             ...preferences,
-            locale: preferences.locale === 'de' ? 'en' : 'de',
+            locale: cycleNextLocale(preferences.locale),
           })
         }
         sleepRemainingSec={sleepRemainingSec}
@@ -1074,9 +1225,10 @@ export function App() {
               designMode={designMode}
               channels={channels}
               vodCatalog={combinedVodCatalog}
-              seriesCatalog={DEMO_SERIES_CATALOG}
+              seriesCatalog={combinedSeriesCatalog}
               watchHistory={watchHistory}
               nowMs={nowMs}
+              locale={preferences.locale}
               onSelectChannel={selectLiveChannel}
               onPlayVod={handlePlayVod}
               onPlaySeriesEpisode={handlePlaySeriesEpisode}
@@ -1096,9 +1248,62 @@ export function App() {
                   channel={activeChannel}
                   overrideTitle={activeOnDemand?.title}
                   overrideSubtitle={activeOnDemand?.subtitle}
-                  overrideStreamUrl={activeOnDemand?.streamUrl}
+                  overrideStreamUrl={activeOnDemand?.streamUrl ?? timeshiftStreamUrl ?? undefined}
                   timeshiftProgram={timeshiftProgram}
-                  onExitTimeshift={() => setTimeshiftProgram(null)}
+                  onExitTimeshift={() => {
+                    setActiveOnDemand(null);
+                    setTimeshiftProgram(null);
+                    setTimeshiftStreamUrl(null);
+                    setTimeshiftResumeSec(0);
+                  }}
+                  sessionKey={
+                    activeOnDemand?.itemId ??
+                    timeshiftProgram?.id ??
+                    `live-${activeChannel.id}`
+                  }
+                  initialResumeSec={
+                    activeOnDemand?.initialResumeSec ??
+                    (timeshiftProgram ? timeshiftResumeSec : 0)
+                  }
+                  fallbackDurationSec={
+                    activeOnDemand?.fallbackDurationSec ??
+                    (timeshiftProgram
+                      ? Math.max(
+                          60,
+                          Math.round((timeshiftProgram.endMs - timeshiftProgram.startMs) / 1000)
+                        )
+                      : 0)
+                  }
+                  onPlaybackProgress={(curSec, durSec) => {
+                    if (activeOnDemand) {
+                      recordHistory({
+                        itemId: activeOnDemand.itemId,
+                        title: activeOnDemand.title,
+                        kind: activeOnDemand.kind,
+                        resumeSec: curSec,
+                        durationSec: durSec,
+                        updatedAt: Date.now(),
+                      });
+                    } else if (timeshiftProgram) {
+                      recordHistory({
+                        itemId: timeshiftProgram.id,
+                        title: `${activeChannel.shortCode}: ${timeshiftProgram.title}`,
+                        kind: 'catchup',
+                        resumeSec: curSec,
+                        durationSec: durSec,
+                        updatedAt: Date.now(),
+                      });
+                    }
+                  }}
+                  nextEpisodeLabel={activeOnDemand?.nextEpisode?.label}
+                  onPlayNextEpisode={
+                    activeOnDemand?.nextEpisode
+                      ? () => {
+                          const ne = activeOnDemand.nextEpisode!;
+                          handlePlaySeriesEpisode(ne.series, ne.seasonNumber, ne.episode, 0);
+                        }
+                      : undefined
+                  }
                   isFavorite={favoriteIds.has(activeChannel.id)}
                   onToggleFavorite={toggleFavorite}
                   onPrevChannel={() => zapRelative(-1)}
@@ -1128,6 +1333,7 @@ export function App() {
                 reminderProgramIds={reminderProgramIds}
                 epgOffsetHours={epgOffsetHours}
                 nowMs={nowMs}
+                locale={preferences.locale}
                 onSelectChannel={selectLiveChannel}
                 onStartTimeshift={handleStartTimeshift}
                 onToggleFavorite={toggleFavorite}
@@ -1174,7 +1380,9 @@ export function App() {
             <VodCatalogView
               designMode={designMode}
               vodCatalog={combinedVodCatalog}
-              onPlayVod={(vod) => handlePlayVod(vod)}
+              watchHistory={watchHistory}
+              locale={preferences.locale}
+              onPlayVod={(vod, resumeSec) => handlePlayVod(vod, resumeSec)}
               onInspectVod={(vod) => setInspectMedia({ kind: 'vod', vod })}
             />
           )}
@@ -1182,9 +1390,12 @@ export function App() {
           {activeSection === 'series' && (
             <SeriesBrowserView
               designMode={designMode}
-              seriesCatalog={DEMO_SERIES_CATALOG}
+              seriesCatalog={combinedSeriesCatalog}
               initialSeriesId={focusedSeriesId}
               watchHistory={watchHistory}
+              locale={preferences.locale}
+              loadingSeriesIds={loadingSeriesIds}
+              onEnsureSeriesLoaded={handleEnsureSeriesLoaded}
               onPlayEpisode={handlePlaySeriesEpisode}
               onInspectSeries={(series) => setInspectMedia({ kind: 'series', series })}
             />
@@ -1194,7 +1405,10 @@ export function App() {
             <CatchupArchiveView
               designMode={designMode}
               channels={channels}
+              xmltvMap={activeSourceId === 'builtin-reference' ? undefined : xmltvMap}
+              epgOffsetHours={epgOffsetHours}
               nowMs={nowMs}
+              locale={preferences.locale}
               onStartTimeshift={handleStartTimeshift}
             />
           )}
@@ -1268,8 +1482,8 @@ export function App() {
         <InAppPipWindow
           designMode={designMode}
           channel={activeChannel}
-          overrideTitle={activeOnDemand?.title}
-          overrideStreamUrl={activeOnDemand?.streamUrl}
+          overrideTitle={activeOnDemand?.title ?? timeshiftProgram?.title}
+          overrideStreamUrl={activeOnDemand?.streamUrl ?? timeshiftStreamUrl ?? undefined}
           proxyConfig={effectiveProxyConfig}
           nowMs={nowMs}
           onPrevChannel={() => zapRelative(-1)}
@@ -1329,11 +1543,18 @@ export function App() {
             setInspectMedia(null);
           }}
           onPlayTrailer={() => {
+            const targetId = inspectMedia.vod?.id ?? inspectMedia.series?.id ?? 'preview';
             setActiveOnDemand({
+              itemId: `trailer-${targetId}`,
+              kind: 'vod',
               title: `Trailer · ${inspectMedia.vod?.title ?? inspectMedia.series?.title ?? 'Preview'}`,
               subtitle: 'Offizieller 4K HDR Studio-Trailer',
               streamUrl: VERIFIED_HLS_STREAMS.tearsOfSteel,
+              initialResumeSec: 0,
+              fallbackDurationSec: 734,
             });
+            setTimeshiftProgram(null);
+            setTimeshiftStreamUrl(null);
             setInspectMedia(null);
             setDetachedPipInEpg(false);
             setActiveSection('live-epg');
@@ -1402,7 +1623,7 @@ export function App() {
           onClose={() => setCommandBarOpen(false)}
           channels={channels}
           vodCatalog={combinedVodCatalog}
-          seriesCatalog={DEMO_SERIES_CATALOG}
+          seriesCatalog={combinedSeriesCatalog}
           nowMs={nowMs}
           onSelectChannel={(ch) => selectLiveChannel(ch)}
           onSelectVod={(vod) => handlePlayVod(vod)}

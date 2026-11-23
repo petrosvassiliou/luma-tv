@@ -81,6 +81,7 @@ export function parseM3uContent(
     const tvgLogo = extractM3uAttr(inf, 'tvg-logo');
     const groupTitle = extractM3uAttr(inf, 'group-title') || 'Allgemein';
     const catchupMode = extractM3uAttr(inf, 'catchup') || extractM3uAttr(inf, 'tvg-rec');
+    const catchupSource = extractM3uAttr(inf, 'catchup-source');
     const catchupDaysRaw = Number(extractM3uAttr(inf, 'catchup-days') || '0');
     const chNoRaw = Number(extractM3uAttr(inf, 'tvg-chno') || '0');
 
@@ -129,8 +130,11 @@ export function parseM3uContent(
         resolution: is4k ? '4K HDR' : upper.includes('720') ? '720p' : '1080p',
         audioBadge: is4k ? 'Dolby Atmos' : 'EAC3 5.1',
         codec: is4k || upper.includes('HEVC') ? 'HEVC' : 'H.264',
-        hasCatchup: Boolean(catchupMode) || catchupDaysRaw > 0,
-        catchupDays: catchupDaysRaw > 0 ? catchupDaysRaw : catchupMode ? 7 : 0,
+        hasCatchup: Boolean(catchupMode || catchupSource) || catchupDaysRaw > 0,
+        catchupDays:
+          catchupDaysRaw > 0 ? catchupDaysRaw : catchupMode || catchupSource ? 7 : 0,
+        catchupMode: catchupMode || undefined,
+        catchupSource: catchupSource || undefined,
         accentColor: ACCENT_PALETTE[idx % ACCENT_PALETTE.length],
         country: 'INT',
         epgArchetype: idx % 6,
@@ -156,7 +160,10 @@ export function exportChannelsToM3uPlus(bouquetName: string, channels: Channel[]
       `tvg-chno="${ch.number}"`,
       ch.tvgId ? `tvg-id="${ch.tvgId}"` : '',
       `group-title="${bouquetName}"`,
-      ch.hasCatchup ? `catchup="default" catchup-days="${ch.catchupDays}"` : '',
+      ch.hasCatchup
+        ? `catchup="${ch.catchupMode || 'default'}" catchup-days="${ch.catchupDays}"`
+        : '',
+      ch.catchupSource ? `catchup-source="${ch.catchupSource}"` : '',
     ]
       .filter(Boolean)
       .join(' ');

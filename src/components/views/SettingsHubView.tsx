@@ -8,7 +8,14 @@ import {
   Moon,
   Sliders,
 } from 'lucide-react';
-import type { BufferProfile, LumaLocale, LumaPreferences } from '../../i18n/translations';
+import {
+  LOCALE_META,
+  SUPPORTED_LOCALES,
+  TRANSLATIONS,
+  type BufferProfile,
+  type LumaLocale,
+  type LumaPreferences,
+} from '../../i18n/translations';
 import {
   LUMA_APP_VERSION,
   type CustomBouquet,
@@ -47,7 +54,7 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
   onOpenShortcutsModal,
 }) => {
   const isM3 = designMode === 'm3-expressive';
-  const isDe = preferences.locale === 'de';
+  const t = TRANSLATIONS[preferences.locale];
   const panelClass = isM3 ? 'rounded-[28px] bg-[#1A202E] p-5' : 'lg-pane rounded-[24px] p-5';
 
   const setLocale = (locale: LumaLocale) =>
@@ -96,16 +103,8 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
     <div className="luma-scroll flex-1 overflow-y-auto p-5 space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="text-base font-semibold text-white">
-            {isDe
-              ? 'Plattform-Einstellungen · Sprache, Decoder, Sleep-Timer & Backup'
-              : 'Platform Settings · Language, Decoder, Sleep Timer & Backup'}
-          </h2>
-          <p className="text-xs text-slate-400">
-            {isDe
-              ? 'Synchronisierte Einstellungen für macOS (Liquid Glass), Android / TV (Material 3) & ChromeOS PWA.'
-              : 'Unified preferences across macOS (Liquid Glass), Android / TV (Material 3) & ChromeOS PWA.'}
-          </p>
+          <h2 className="text-base font-semibold text-white">{t.settingsTitle}</h2>
+          <p className="text-xs text-slate-400">{t.settingsSubtitle}</p>
         </div>
 
         <button
@@ -116,37 +115,41 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
           }`}
         >
           <Keyboard className="h-4 w-4 text-sky-300" />
-          <span>{isDe ? 'Tasten & Remote-Hilfe (?)' : 'Shortcuts & Remote Guide (?)'}</span>
+          <span>{t.shortcutsGuideBtn}</span>
         </button>
       </div>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        {/* Language & Design Paradigm */}
+        {/* 6-Language Selector & Design Paradigm */}
         <div className={`${panelClass} space-y-4`}>
           <div className="flex items-center gap-2 text-xs font-semibold text-white">
             <Globe className="h-4 w-4 text-sky-400" />
-            <span>{isDe ? 'Sprache & Design-System' : 'Language & Design System'}</span>
+            <span>{t.langAndDesignTitle}</span>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            {(['de', 'en'] as LumaLocale[]).map((loc) => (
-              <button
-                key={loc}
-                type="button"
-                onClick={() => setLocale(loc)}
-                className={`rounded-full px-4 py-2 text-xs font-bold transition ${
-                  preferences.locale === loc
-                    ? isM3
-                      ? 'm3-primary-pill'
-                      : 'lg-pill-active'
-                    : isM3
-                      ? 'm3-secondary-tonal'
-                      : 'lg-capsule text-slate-200'
-                }`}
-              >
-                {loc === 'de' ? 'Deutsch (DE)' : 'English (EN)'}
-              </button>
-            ))}
+            {SUPPORTED_LOCALES.map((loc) => {
+              const meta = LOCALE_META[loc];
+              const active = preferences.locale === loc;
+              return (
+                <button
+                  key={loc}
+                  type="button"
+                  onClick={() => setLocale(loc)}
+                  className={`rounded-full px-3.5 py-2 text-xs font-bold transition ${
+                    active
+                      ? isM3
+                        ? 'm3-primary-pill'
+                        : 'lg-pill-active'
+                      : isM3
+                        ? 'm3-secondary-tonal'
+                        : 'lg-capsule text-slate-200'
+                  }`}
+                >
+                  {meta.nativeName} ({meta.badge})
+                </button>
+              );
+            })}
           </div>
 
           <div className="border-t border-white/10 pt-3 flex flex-wrap items-center gap-2">
@@ -176,7 +179,7 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2 text-xs font-semibold text-white">
               <Moon className="h-4 w-4 text-sky-400" />
-              <span>{isDe ? 'Einschlaf-Timer (Sleep Timer)' : 'Automatic Sleep Timer'}</span>
+              <span>{t.sleepTimerTitle}</span>
             </div>
             {sleepRemainingSec !== null && (
               <span className="rounded-full bg-amber-400/20 px-3 py-0.5 font-mono text-[11px] font-bold text-amber-200 luma-tabular">
@@ -201,7 +204,7 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
                       : 'lg-capsule text-slate-200'
                 }`}
               >
-                {mins === 0 ? (isDe ? 'Aus' : 'Off') : `${mins} min`}
+                {mins === 0 ? t.sleepOff : `${mins} min`}
               </button>
             ))}
           </div>
@@ -220,11 +223,7 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
                 className="h-4 w-4 accent-sky-400"
               />
               <Gamepad2 className="h-4 w-4 text-sky-300" />
-              <span>
-                {isDe
-                  ? '10-Foot Spatial D-Pad / Pfeiltasten-Fokus aktivieren (Android TV & Gamepad)'
-                  : 'Enable 10-Foot Spatial D-Pad / Arrow Focus Engine (Android TV & Gamepad)'}
-              </span>
+              <span>{t.dpadToggleLabel}</span>
             </label>
           </div>
         </div>
@@ -233,19 +232,15 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
         <div className={`${panelClass} space-y-3`}>
           <div className="flex items-center gap-2 text-xs font-semibold text-white">
             <Sliders className="h-4 w-4 text-sky-400" />
-            <span>
-              {isDe
-                ? 'Stream-Puffer & Latenz-Profil'
-                : 'Stream Buffer & Latency Profile'}
-            </span>
+            <span>{t.bufferProfileTitle}</span>
           </div>
 
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
             {(
               [
-                ['low-latency', 'Live Sport (1.5s)', 'Ultra-Low-Latency'],
-                ['balanced', 'Standard (12s)', 'Ausgewogen'],
-                ['cinema-max', 'Cinema 4K (36s)', 'Maximale Stabilität'],
+                ['low-latency', t.bufferSportLabel, t.bufferSportSub],
+                ['balanced', t.bufferBalancedLabel, t.bufferBalancedSub],
+                ['cinema-max', t.bufferCinemaLabel, t.bufferCinemaSub],
               ] as [BufferProfile, string, string][]
             ).map(([prof, title, sub]) => {
               const active = preferences.bufferProfile === prof;
@@ -276,16 +271,8 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
 
         {/* Cross-Platform JSON Backup Export & Restore */}
         <div className={`${panelClass} space-y-3`}>
-          <div className="text-xs font-semibold text-white">
-            {isDe
-              ? 'Plattformübergreifendes Backup (macOS ↔ Android ↔ PWA)'
-              : 'Cross-Platform Configuration Backup (macOS ↔ Android ↔ PWA)'}
-          </div>
-          <p className="text-[11px] text-slate-400">
-            {isDe
-              ? 'Sichert Favoriten, eigene Bouquets, Jugendschutz-PIN und Präferenzen als portables JSON.'
-              : 'Exports Favorites, Custom Bouquets, Parental PIN, and Preferences as a portable JSON file.'}
-          </p>
+          <div className="text-xs font-semibold text-white">{t.backupTitle}</div>
+          <p className="text-[11px] text-slate-400">{t.backupSubtitle}</p>
 
           <div className="flex flex-wrap items-center gap-2.5 pt-1">
             <button
@@ -296,7 +283,7 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
               }`}
             >
               <Download className="h-3.5 w-3.5" />
-              <span>{isDe ? 'Backup exportieren (.json)' : 'Export Backup (.json)'}</span>
+              <span>{t.exportBackupBtn}</span>
             </button>
 
             <label
@@ -305,7 +292,7 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
               }`}
             >
               <FileUp className="h-3.5 w-3.5" />
-              <span>{isDe ? 'Backup importieren' : 'Restore Backup'}</span>
+              <span>{t.importBackupBtn}</span>
               <input
                 type="file"
                 accept=".json"

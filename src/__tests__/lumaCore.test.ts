@@ -5,6 +5,11 @@ import {
 } from '../data/mockCatalog';
 import { AUDIO_DSP_PRESETS } from '../engine/audioProcessor';
 import {
+  buildCatchupStreamUrl,
+  formatPlaybackClock,
+  parseXtreamLiveStreamUrl,
+} from '../engine/catchupUrlBuilder';
+import {
   buildProxiedStreamUrl,
   detectStreamDriver,
   isLocalRustProxyEndpoint,
@@ -13,7 +18,13 @@ import {
   shouldProactivelyProxyStream,
 } from '../engine/corsProxy';
 import { selectSupportedRecorderMimeType } from '../engine/dvrRecorder';
-import { TRANSLATIONS } from '../i18n/translations';
+import {
+  cycleNextLocale,
+  LOCALE_META,
+  normalizeLocale,
+  SUPPORTED_LOCALES,
+  TRANSLATIONS,
+} from '../i18n/translations';
 import {
   decryptSyncVault,
   encryptSyncVault,
@@ -262,6 +273,72 @@ describe('Luma TV v0.1 beta — Zero-Knowledge AES-256-GCM Sync Vault & 20k EPG 
     expect(pickBestSpatialCandidate(origin, candidates, 'down')).toBe('btn-below');
     expect(pickBestSpatialCandidate(origin, candidates, 'left')).toBeNull();
 
-    expect(Object.keys(TRANSLATIONS.de)).toEqual(Object.keys(TRANSLATIONS.en));
+    // Verify 100% translation key parity across DE, EN, IT, FR, ES, and GR
+    expect(SUPPORTED_LOCALES).toEqual(['de', 'en', 'it', 'fr', 'es', 'gr']);
+    const baseKeys = Object.keys(TRANSLATIONS.de);
+    for (const loc of SUPPORTED_LOCALES) {
+      expect(Object.keys(TRANSLATIONS[loc])).toEqual(baseKeys);
+      expect(() => new Intl.DateTimeFormat(LOCALE_META[loc].bcp47).format(Date.now())).not.toThrow();
+    }
+    expect(normalizeLocale('el')).toBe('gr');
+    expect(normalizeLocale('IT')).toBe('it');
+    expect(cycleNextLocale('es')).toBe('gr');
+    expect(cycleNextLocale('gr')).toBe('de');
+  });
+
+  it('builds real Xtream timeshift, M3U catchup-source, Flussonic, and scrubber timecodes', () => {
+    const startMs = Date.UTC(2026, 10, 23, 18, 30, 0); // 2026-11-23 18:30:00 UTC
+    const endMs = startMs + 45 * 60_000;
+    const nowMs = startMs + 2 * 3600_000;
+
+    const { channels } = buildChannelCatalog(2);
+    const baseChannel = channels[0];
+    const program = {
+      id: 'prog-1',
+      channelId: baseChannel.id,
+      title: 'Evening Finals',
+      subtitle: 'Live Archive',
+      description: 'Catch-up test',
+      category: 'Live Sport' as const,
+      startMs,
+      endMs,
+      hasCatchup: true,
+    };
+
+    // 1. Xtream Codes /timeshift/{user}/{pass}/{duration}/{YYYY-MM-DD:HH-mm}/{id}.{ext}
+    const xtChannel = {
+      ...baseChannel,
+      streamUrl: 'http://xtream.provider.tv:8080/live/alice/secret99/4021.ts',
+    };
+    expect(parseXtreamLiveStreamUrl(xtChannel.streamUrl)?.streamId).toBe('4021');
+    expect(buildCatchupStreamUrl(xtChannel, program, nowMs)).toBe(
+      'http://xtream.provider.tv:8080/timeshift/alice/secret99/45/2026-11-23:18-30/4021.ts'
+    );
+
+    // 2. M3U_Plus catchup-source macro template + parser roundtrip
+    const m3uSample = [
+      '#EXTM3U',
+      '#EXTINF:-1 tvg-id="arte.tv" catchup="default" catchup-days="7" catchup-source="https://archive.example.tv/ch1/${start}-${duration}.m3u8?d={Y}-{m}-{d}",ARTE UHD',
+      'https://live.example.tv/ch1/index.m3u8',
+    ].join('\n');
+    const parsedM3u = parseM3uContent('src-cu', m3uSample);
+    expect(parsedM3u.channels[0].catchupSource).toContain('${start}-${duration}');
+    expect(buildCatchupStreamUrl(parsedM3u.channels[0], program, nowMs)).toBe(
+      `https://archive.example.tv/ch1/${Math.floor(startMs / 1000)}-2700.m3u8?d=2026-11-23`
+    );
+
+    // 3. Flussonic archive convention
+    const flussonicChannel = {
+      ...baseChannel,
+      streamUrl: 'https://flussonic.example.tv/sport1/mono.m3u8?token=abc',
+      catchupMode: 'flussonic',
+    };
+    expect(buildCatchupStreamUrl(flussonicChannel, program, nowMs)).toBe(
+      `https://flussonic.example.tv/sport1/index-${Math.floor(startMs / 1000)}-2700.m3u8?token=abc`
+    );
+
+    // 4. Scrubber timecodes
+    expect(formatPlaybackClock(65)).toBe('01:05');
+    expect(formatPlaybackClock(5049)).toBe('1:24:09');
   });
 });

@@ -14,6 +14,11 @@ import {
 } from 'lucide-react';
 import type { StoredChannel, StoredEpgProgram } from '../../db/lumaDb';
 import { getChannelProgramsInRange } from '../../data/mockCatalog';
+import {
+  LOCALE_META,
+  TRANSLATIONS,
+  type LumaLocale,
+} from '../../i18n/translations';
 import type { Channel, EpgProgram, PlatformDesignMode } from '../../types/luma';
 
 interface VirtualizedEpgGridProps {
@@ -25,6 +30,7 @@ interface VirtualizedEpgGridProps {
   reminderProgramIds?: Set<string>;
   epgOffsetHours: number;
   nowMs: number;
+  locale?: LumaLocale;
   onSelectChannel: (channel: Channel) => void;
   onStartTimeshift: (channel: Channel, program: EpgProgram) => void;
   onToggleFavorite: (channelId: string) => void;
@@ -45,12 +51,15 @@ export const VirtualizedEpgGrid: React.FC<VirtualizedEpgGridProps> = ({
   reminderProgramIds,
   epgOffsetHours,
   nowMs,
+  locale = 'de',
   onSelectChannel,
   onStartTimeshift,
   onToggleFavorite,
   onToggleReminder,
 }) => {
   const isM3 = designMode === 'm3-expressive';
+  const t = TRANSLATIONS[locale];
+  const bcp47 = LOCALE_META[locale].bcp47;
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const didInitialCenter = useRef(false);
 
@@ -170,24 +179,24 @@ export const VirtualizedEpgGrid: React.FC<VirtualizedEpgGridProps> = ({
       timelineStartMs,
       Math.floor(visibleWindowStartMs / stepMs) * stepMs
     );
-    const fmt = new Intl.DateTimeFormat('de-DE', {
+    const fmt = new Intl.DateTimeFormat(bcp47, {
       hour: '2-digit',
       minute: '2-digit',
     });
-    for (let t = firstTick; t <= Math.min(timelineEndMs, visibleWindowEndMs); t += stepMs) {
-      const leftPx = ((t - timelineStartMs) / 60_000) * pxPerMin;
+    for (let tTick = firstTick; tTick <= Math.min(timelineEndMs, visibleWindowEndMs); tTick += stepMs) {
+      const leftPx = ((tTick - timelineStartMs) / 60_000) * pxPerMin;
       ticks.push({
-        ms: t,
+        ms: tTick,
         leftPx,
-        label: fmt.format(t),
+        label: fmt.format(tTick),
       });
     }
     return ticks;
-  }, [timelineStartMs, timelineEndMs, visibleWindowStartMs, visibleWindowEndMs, pxPerMin]);
+  }, [timelineStartMs, timelineEndMs, visibleWindowStartMs, visibleWindowEndMs, pxPerMin, bcp47]);
 
   const nowLeftPx = ((nowMs - timelineStartMs) / 60_000) * pxPerMin;
   const fmtClock = (ms: number) =>
-    new Intl.DateTimeFormat('de-DE', { hour: '2-digit', minute: '2-digit' }).format(ms);
+    new Intl.DateTimeFormat(bcp47, { hour: '2-digit', minute: '2-digit' }).format(ms);
 
   const visibleRows: Channel[] = [];
   for (let r = startRow; r <= endRow; r++) {
@@ -220,7 +229,7 @@ export const VirtualizedEpgGrid: React.FC<VirtualizedEpgGridProps> = ({
               type="text"
               value={quickFilter}
               onChange={(e) => setQuickFilter(e.target.value)}
-              placeholder="Kanal im EPG filtern…"
+              placeholder={t.epgFilter}
               className={
                 isM3
                   ? 'h-8 w-48 rounded-full bg-[#232B3D] pl-8 pr-3 text-xs text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[#7FD4FF]/60 sm:w-56'
@@ -230,8 +239,8 @@ export const VirtualizedEpgGrid: React.FC<VirtualizedEpgGridProps> = ({
           </div>
 
           <span className="hidden text-[11px] text-slate-300/80 md:inline luma-tabular">
-            <strong className="font-semibold text-white">{visibleRows.length} Zeilen</strong> im
-            Viewport ({filteredChannels.length.toLocaleString('de-DE')} Kanäle gesamt)
+            <strong className="font-semibold text-white">{visibleRows.length}</strong> /{' '}
+            {filteredChannels.length.toLocaleString(bcp47)} {t.channelsUnit}
           </span>
         </div>
 
@@ -247,7 +256,7 @@ export const VirtualizedEpgGrid: React.FC<VirtualizedEpgGridProps> = ({
             }
           >
             <Crosshair className="h-3.5 w-3.5" />
-            <span>Jetzt</span>
+            <span>{t.epgNow}</span>
           </button>
 
           <div

@@ -14,8 +14,10 @@ import {
   Play,
   Radio,
   RotateCcw,
+  RotateCw,
   Settings2,
   ShieldCheck,
+  SkipForward,
   Sliders,
   Square,
   Star,
@@ -24,14 +26,19 @@ import {
 } from 'lucide-react';
 import { getCurrentAndNextProgram } from '../../data/mockCatalog';
 import {
-  AUDIO_DSP_PRESETS,
+   AUDIO_DSP_PRESETS,
   LumaAudioProcessor,
   type AudioDspPreset,
 } from '../../engine/audioProcessor';
+import { formatPlaybackClock } from '../../engine/catchupUrlBuilder';
 import { LumaDvrRecorder } from '../../engine/dvrRecorder';
 import { LumaPlayerEngine } from '../../engine/LumaPlayerEngine';
 import { launchNativeMpvStream } from '../../engine/tauriNativeBridge';
-import { TRANSLATIONS, type LumaLocale } from '../../i18n/translations';
+import {
+  LOCALE_META,
+  TRANSLATIONS,
+  type LumaLocale,
+} from '../../i18n/translations';
 import type {
   AspectRatioMode,
   Channel,
@@ -50,6 +57,12 @@ interface PlayerStageProps {
   overrideStreamUrl?: string;
   timeshiftProgram?: EpgProgram | null;
   onExitTimeshift?: () => void;
+  sessionKey?: string;
+  initialResumeSec?: number;
+  fallbackDurationSec?: number;
+  onPlaybackProgress?: (currentSec: number, durationSec: number) => void;
+  nextEpisodeLabel?: string;
+  onPlayNextEpisode?: () => void;
   isFavorite: boolean;
   onToggleFavorite: (channelId: string) => void;
   onPrevChannel: () => void;
@@ -74,6 +87,12 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
   overrideStreamUrl,
   timeshiftProgram,
   onExitTimeshift,
+  sessionKey,
+  initialResumeSec = 0,
+  fallbackDurationSec = 0,
+  onPlaybackProgress,
+  nextEpisodeLabel,
+  onPlayNextEpisode,
   isFavorite,
   onToggleFavorite,
   onPrevChannel,
@@ -128,12 +147,55 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
   const [isRecording, setIsRecording] = useState(false);
   const [recSeconds, setRecSeconds] = useState(0);
 
+  const activeUrl = overrideStreamUrl ?? channel.streamUrl;
+  const activeSessionId = sessionKey ?? `${activeUrl}::${timeshiftProgram?.id ?? 'live'}`;
+
+  const isSeekable = Boolean(overrideStreamUrl || timeshiftProgram);
+  const defaultSeekableDuration =
+    fallbackDurationSec > 0
+      ? fallbackDurationSec
+      : timeshiftProgram
+        ? Math.max(60, Math.round((timeshiftProgram.endMs - timeshiftProgram.startMs) / 1000))
+        : 0;
+  const initialResumeTarget =
+    isSeekable && initialResumeSec > 2 ? Math.round(initialResumeSec) : 0;
+
+  const [playbackTimeline, setPlaybackTimeline] = useState<{
+    sessionId: string;
+    positionSec: number;
+    durationSec: number;
+  }>(() => ({
+    sessionId: activeSessionId,
+    positionSec: initialResumeTarget,
+    durationSec: defaultSeekableDuration,
+  }));
+
+  const mediaPositionSec =
+    playbackTimeline.sessionId === activeSessionId
+      ? playbackTimeline.positionSec
+      : initialResumeTarget;
+  const mediaDurationSec =
+    playbackTimeline.sessionId === activeSessionId
+      ? playbackTimeline.durationSec
+      : defaultSeekableDuration;
+
+  const pendingResumeRef = useRef<number>(initialResumeTarget);
+  const lastReportedSecRef = useRef<number>(-1);
+  const onPlaybackProgressRef = useRef(onPlaybackProgress);
+
+  useEffect(() => {
+    onPlaybackProgressRef.current = onPlaybackProgress;
+  }, [onPlaybackProgress]);
+
+  useEffect(() => {
+    pendingResumeRef.current = initialResumeTarget;
+    lastReportedSecRef.current = -1;
+  }, [activeSessionId, initialResumeTarget]);
+
   const [sampledStreamState, setSampledStreamState] = useState<{
     url: string;
     rgb: string;
   } | null>(null);
-
-  const activeUrl = overrideStreamUrl ?? channel.streamUrl;
 
   const fallbackRgb = (() => {
     const clean = channel.accentColor.replace('#', '');
@@ -180,9 +242,98 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
       activeUrl,
       proxyConfig,
       true,
-      overrideStreamUrl ? 'hls' : channel.streamType
+      overrideStreamUrl ? undefined : channel.streamType
     );
   }, [activeUrl, channel.streamType, overrideStreamUrl, proxyConfig]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !isSeekable) return;
+
+    const onLoadedMetadata = () => {
+      const dur =
+        Number.isFinite(video.duration) && video.duration > 0
+          ? Math.round(video.duration)
+          : defaultSeekableDuration;
+      let nextPos = pendingResumeRef.current;
+
+      if (pendingResumeRef.current > 2) {
+        const target =
+          Number.isFinite(video.duration) && video.duration > 10
+            ? Math.min(pendingResumeRef.current, Math.floor(video.duration - 5))
+            : pendingResumeRef.current;
+        try {
+          video.currentTime = target;
+          nextPos = target;
+        } catch {
+          // Ignore seek before buffer ready
+        }
+        pendingResumeRef.current = 0;
+      }
+
+      setPlaybackTimeline((prev) => ({
+        sessionId: activeSessionId,
+        positionSec: nextPos > 0 ? nextPos : prev.sessionId === activeSessionId ? prev.positionSec : 0,
+        durationSec: dur,
+      }));
+    };
+
+    const onTimeUpdate = () => {
+      const cur = Math.max(0, Math.floor(video.currentTime || 0));
+      const dur =
+        Number.isFinite(video.duration) && video.duration > 0
+          ? Math.round(video.duration)
+          : defaultSeekableDuration;
+      setPlaybackTimeline({
+        sessionId: activeSessionId,
+        positionSec: cur,
+        durationSec: dur,
+      });
+
+      if (dur > 0 && cur > 0 && Math.abs(cur - lastReportedSecRef.current) >= 4) {
+        lastReportedSecRef.current = cur;
+        onPlaybackProgressRef.current?.(cur, dur);
+      }
+    };
+
+    video.addEventListener('loadedmetadata', onLoadedMetadata);
+    video.addEventListener('timeupdate', onTimeUpdate);
+    return () => {
+      video.removeEventListener('loadedmetadata', onLoadedMetadata);
+      video.removeEventListener('timeupdate', onTimeUpdate);
+    };
+  }, [isSeekable, activeSessionId, defaultSeekableDuration]);
+
+  // Keep seekable clock advancing smoothly when in Studio Synth fallback mode
+  useEffect(() => {
+    if (!isSeekable || telemetry.state !== 'synth-fallback' || !isPlaying) return;
+    const effectiveDur = mediaDurationSec > 0 ? mediaDurationSec : defaultSeekableDuration || 3600;
+    const timer = window.setInterval(() => {
+      setPlaybackTimeline((prev) => {
+        const curBase =
+          prev.sessionId === activeSessionId ? prev.positionSec : initialResumeTarget;
+        const next = Math.min(effectiveDur, curBase + 1);
+        if (Math.abs(next - lastReportedSecRef.current) >= 4) {
+          lastReportedSecRef.current = next;
+          onPlaybackProgressRef.current?.(next, effectiveDur);
+        }
+        return {
+          sessionId: activeSessionId,
+          positionSec: next,
+          durationSec: effectiveDur,
+        };
+      });
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [
+    isSeekable,
+    telemetry.state,
+    isPlaying,
+    mediaDurationSec,
+    defaultSeekableDuration,
+    activeSessionId,
+    initialResumeTarget,
+  ]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -378,8 +529,37 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
       ? `Catch-Up Archiv · ${timeshiftProgram.subtitle}`
       : `${current.subtitle} · Danach: ${next.title}`);
 
+  const effectiveDurationSec =
+    mediaDurationSec > 0 ? mediaDurationSec : defaultSeekableDuration || 3600;
+
+  const seekToSeconds = (targetSec: number) => {
+    const clamped = Math.max(0, Math.min(effectiveDurationSec, Math.round(targetSec)));
+    setPlaybackTimeline({
+      sessionId: activeSessionId,
+      positionSec: clamped,
+      durationSec: effectiveDurationSec,
+    });
+    const video = videoRef.current;
+    if (video && telemetry.state === 'playing') {
+      try {
+        video.currentTime = clamped;
+      } catch {
+        // Ignore unbuffered range error
+      }
+    }
+    lastReportedSecRef.current = clamped;
+    onPlaybackProgressRef.current?.(clamped, effectiveDurationSec);
+  };
+
+  const skipRelativeSeconds = (deltaSec: number) => {
+    seekToSeconds(mediaPositionSec + deltaSec);
+  };
+
   const fmtTime = (ms: number) =>
-    new Intl.DateTimeFormat('de-DE', { hour: '2-digit', minute: '2-digit' }).format(ms);
+    new Intl.DateTimeFormat(LOCALE_META[locale].bcp47, {
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(ms);
 
   const fmtRecTimer = (secs: number) => {
     const m = String(Math.floor(secs / 60)).padStart(2, '0');
@@ -470,7 +650,7 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
             }
           >
             <VolumeX className="h-3.5 w-3.5" />
-            <span>Ton aktivieren</span>
+            <span>{t.unmute}</span>
           </button>
         )}
 
@@ -488,7 +668,11 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
                 timeshiftProgram ? 'bg-amber-300' : 'bg-sky-300 animate-luma-live'
               }`}
             />
-            {timeshiftProgram ? 'CATCH-UP' : overrideStreamUrl ? 'ON DEMAND' : 'LIVE'}
+            {timeshiftProgram
+              ? t.catchupBadge
+              : overrideStreamUrl
+                ? t.onDemandBadge
+                : t.liveBadge}
           </span>
 
           {isRecording && (
@@ -539,7 +723,7 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
             </span>
           )}
 
-          {timeshiftProgram && onExitTimeshift && (
+          {isSeekable && onExitTimeshift && (
             <button
               type="button"
               onClick={onExitTimeshift}
@@ -550,7 +734,7 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
               }
             >
               <RotateCcw className="h-3 w-3" />
-              <span>Zurück zu Live</span>
+              <span>{t.backToLive}</span>
             </button>
           )}
         </div>
@@ -563,22 +747,45 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
               : 'lg-pane absolute inset-x-3.5 bottom-3 z-20 rounded-[22px] px-4 py-2.5'
           }
         >
-          <div className="mb-2.5 flex items-center gap-2.5 text-[10px] text-slate-300 luma-tabular">
-            <span>{fmtTime(current.startMs)}</span>
-            <div
-              className={`relative flex-1 overflow-hidden rounded-full ${
-                isM3 ? 'h-2 bg-[#29354D]' : 'h-1 bg-white/15'
-              }`}
-            >
-              <div
-                className={`h-full rounded-full transition-all duration-500 ${
-                  isM3 ? 'bg-[#7FD4FF]' : 'luma-accent-gradient'
-                }`}
-                style={{ width: `${progressPct}%` }}
+          {isSeekable ? (
+            <div className="mb-2.5 flex items-center gap-3 text-[10px] text-slate-200 luma-tabular">
+              <span className="font-semibold text-sky-300">
+                {formatPlaybackClock(mediaPositionSec)}
+              </span>
+              <input
+                id="slider-vod-scrubber"
+                type="range"
+                min={0}
+                max={Math.max(1, effectiveDurationSec)}
+                step={1}
+                value={Math.min(mediaPositionSec, Math.max(1, effectiveDurationSec))}
+                onChange={(e) => seekToSeconds(Number(e.target.value))}
+                className="h-1.5 flex-1 cursor-pointer accent-sky-400"
+                aria-label="Timeline Scrubber"
               />
+              <span className="text-slate-300/90">
+                -{formatPlaybackClock(Math.max(0, effectiveDurationSec - mediaPositionSec))} /{' '}
+                {formatPlaybackClock(effectiveDurationSec)}
+              </span>
             </div>
-            <span>{fmtTime(current.endMs)}</span>
-          </div>
+          ) : (
+            <div className="mb-2.5 flex items-center gap-2.5 text-[10px] text-slate-300 luma-tabular">
+              <span>{fmtTime(current.startMs)}</span>
+              <div
+                className={`relative flex-1 overflow-hidden rounded-full ${
+                  isM3 ? 'h-2 bg-[#29354D]' : 'h-1 bg-white/15'
+                }`}
+              >
+                <div
+                  className={`h-full rounded-full transition-all duration-500 ${
+                    isM3 ? 'bg-[#7FD4FF]' : 'luma-accent-gradient'
+                  }`}
+                  style={{ width: `${progressPct}%` }}
+                />
+              </div>
+              <span>{fmtTime(current.endMs)}</span>
+            </div>
+          )}
 
           <div className="flex flex-wrap items-center justify-between gap-3">
             {/* Channel Identity */}
@@ -670,6 +877,23 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
                 </button>
               </div>
 
+              {isSeekable && (
+                <button
+                  id="btn-skip-back-10"
+                  type="button"
+                  onClick={() => skipRelativeSeconds(-10)}
+                  className={
+                    isM3
+                      ? 'm3-secondary-tonal flex h-10 items-center gap-1 rounded-full px-2.5 text-[11px] font-semibold luma-tabular'
+                      : 'lg-capsule flex h-9 items-center gap-1 rounded-full px-2.5 text-[11px] font-medium text-white/90 luma-tabular'
+                  }
+                  title={t.skipBack10}
+                >
+                  <RotateCcw className="h-3.5 w-3.5" />
+                  <span className="hidden sm:inline">10s</span>
+                </button>
+              )}
+
               <button
                 id="btn-play-pause"
                 type="button"
@@ -681,10 +905,44 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
                       }`
                     : 'lg-pill-active flex h-9 w-9 items-center justify-center rounded-full'
                 }
-                title={isPlaying ? 'Pause' : 'Wiedergabe'}
+                title={isPlaying ? 'Pause' : t.playNow}
               >
                 {isPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
               </button>
+
+              {isSeekable && (
+                <button
+                  id="btn-skip-fwd-10"
+                  type="button"
+                  onClick={() => skipRelativeSeconds(10)}
+                  className={
+                    isM3
+                      ? 'm3-secondary-tonal flex h-10 items-center gap-1 rounded-full px-2.5 text-[11px] font-semibold luma-tabular'
+                      : 'lg-capsule flex h-9 items-center gap-1 rounded-full px-2.5 text-[11px] font-medium text-white/90 luma-tabular'
+                  }
+                  title={t.skipFwd10}
+                >
+                  <span className="hidden sm:inline">10s</span>
+                  <RotateCw className="h-3.5 w-3.5" />
+                </button>
+              )}
+
+              {nextEpisodeLabel && onPlayNextEpisode && (
+                <button
+                  id="btn-next-episode"
+                  type="button"
+                  onClick={onPlayNextEpisode}
+                  className={
+                    isM3
+                      ? 'm3-secondary-tonal hidden h-10 items-center gap-1.5 rounded-full px-3 text-[11px] font-semibold text-[#C4E8FF] md:inline-flex'
+                      : 'lg-capsule hidden h-9 items-center gap-1.5 rounded-full px-3 text-[11px] font-semibold text-sky-200 md:inline-flex'
+                  }
+                  title={`${t.nextEpisode}: ${nextEpisodeLabel}`}
+                >
+                  <SkipForward className="h-3.5 w-3.5" />
+                  <span>{nextEpisodeLabel}</span>
+                </button>
+              )}
 
               {/* Live DVR Record Button */}
               <button
@@ -1007,7 +1265,7 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
                     : 'lg-capsule hidden h-9 items-center rounded-full px-3 text-[11px] font-medium text-white/90 lg:inline-flex'
                 }
               >
-                Vollbild
+                {t.fullscreen}
               </button>
             </div>
           </div>

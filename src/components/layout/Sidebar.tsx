@@ -105,7 +105,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           title="Ctrl+K"
         >
           <Search className="h-4 w-4 shrink-0" />
-          {!collapsed && <span>{locale === 'de' ? 'Schnellsuche & Zap' : 'Quick Search & Zap'}</span>}
+          {!collapsed && <span>{t.quickSearchZap}</span>}
         </button>
 
         <div className="w-full space-y-0.5">

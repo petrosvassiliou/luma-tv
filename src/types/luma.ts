@@ -1,7 +1,7 @@
 import type { BufferProfile } from '../i18n/translations';
 
-export const LUMA_APP_VERSION = '0.4.0-beta.1';
-export const LUMA_RELEASE_BADGE = '0.4 beta';
+export const LUMA_APP_VERSION = '0.5.0-beta.1';
+export const LUMA_RELEASE_BADGE = '0.5 beta';
 
 export interface EpgReminder {
   programId: string;
@@ -64,6 +64,9 @@ export interface Channel {
   codec: 'HEVC' | 'H.264';
   hasCatchup: boolean;
   catchupDays: number;
+  catchupMode?: string;
+  catchupSource?: string;
+  xtreamStreamId?: number;
   accentColor: string;
   country: string;
   epgArchetype: number;
@@ -108,6 +111,8 @@ export interface VodItem {
   synopsis: string;
   accentFrom: string;
   accentTo: string;
+  coverUrl?: string;
+  xtreamVodId?: number;
 }
 
 export interface SeriesEpisode {
@@ -136,6 +141,9 @@ export interface SeriesItem {
   synopsis: string;
   accentFrom: string;
   accentTo: string;
+  coverUrl?: string;
+  xtreamSeriesId?: number;
+  seasonsLoaded?: boolean;
   seasons: SeriesSeason[];
 }
 
@@ -146,6 +154,7 @@ export interface PlaylistSource {
   endpoint: string;
   channelCount: number;
   vodCount: number;
+  seriesCount?: number;
   epgStatus: 'synced' | 'syncing' | 'ready';
   epgOffsetHours: number;
   lastUpdated: string;

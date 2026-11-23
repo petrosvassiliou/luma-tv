@@ -9,7 +9,11 @@ import {
   Smartphone,
   Sparkles,
 } from 'lucide-react';
-import { TRANSLATIONS, type LumaLocale } from '../../i18n/translations';
+import {
+  LOCALE_META,
+  TRANSLATIONS,
+  type LumaLocale,
+} from '../../i18n/translations';
 import { invokeNativeWindowControl } from '../../services/universalInput';
 import {
   LUMA_RELEASE_BADGE,
@@ -58,7 +62,8 @@ export const CustomTitlebar: React.FC<CustomTitlebarProps> = ({
   const isM3 = designMode === 'm3-expressive';
   const t = TRANSLATIONS[locale];
 
-  const formattedClock = new Intl.DateTimeFormat(locale === 'de' ? 'de-DE' : 'en-GB', {
+  const bcp47 = LOCALE_META[locale].bcp47;
+  const formattedClock = new Intl.DateTimeFormat(bcp47, {
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit',
@@ -107,15 +112,7 @@ export const CustomTitlebar: React.FC<CustomTitlebarProps> = ({
               ? 'm3-spring flex h-10 w-10 items-center justify-center rounded-full text-slate-200 hover:bg-[#232B3D]'
               : 'lg-capsule flex h-8 w-8 items-center justify-center rounded-full text-slate-200 hover:text-white'
           }
-          title={
-            sidebarCollapsed
-              ? locale === 'de'
-                ? 'Navigation einblenden'
-                : 'Expand sidebar'
-              : locale === 'de'
-                ? 'Navigation einklappen'
-                : 'Collapse sidebar'
-          }
+          title={sidebarCollapsed ? t.expandSidebar : t.collapseSidebar}
         >
           <PanelLeft className="h-4 w-4" />
         </button>
@@ -139,7 +136,7 @@ export const CustomTitlebar: React.FC<CustomTitlebarProps> = ({
               : 'lg-capsule hidden rounded-full px-2.5 py-0.5 text-[10px] font-medium text-slate-200 xl:inline-block luma-tabular'
           }
         >
-          {totalChannels.toLocaleString(locale === 'de' ? 'de-DE' : 'en-US')} {t.channelsUnit}
+          {totalChannels.toLocaleString(bcp47)} {t.channelsUnit}
         </span>
       </div>
 
@@ -225,7 +222,7 @@ export const CustomTitlebar: React.FC<CustomTitlebarProps> = ({
           </button>
         </div>
 
-        {/* DE / EN Language Quick Toggle */}
+        {/* 6-Language Quick Cycle (DE · EN · IT · FR · ES · GR) */}
         <button
           id="btn-toggle-locale"
           type="button"
@@ -235,9 +232,9 @@ export const CustomTitlebar: React.FC<CustomTitlebarProps> = ({
               ? 'm3-secondary-tonal hidden rounded-full px-2.5 py-1.5 text-[11px] font-bold sm:inline-flex'
               : 'lg-capsule hidden rounded-full px-2.5 py-1 text-[11px] font-semibold text-white sm:inline-flex'
           }
-          title="Sprache wechseln / Switch language"
+          title={`${LOCALE_META[locale].nativeName} — DE / EN / IT / FR / ES / GR`}
         >
-          {locale.toUpperCase()}
+          {LOCALE_META[locale].badge}
         </button>
 
         {/* 20k EPG Stress-Test */}

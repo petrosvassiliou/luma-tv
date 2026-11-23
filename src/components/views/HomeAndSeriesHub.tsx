@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Clock,
   Grid2x2,
   Layers,
+  Loader2,
   Play,
   Radio,
   RotateCcw,
@@ -10,6 +11,7 @@ import {
   Tv,
 } from 'lucide-react';
 import { getCurrentAndNextProgram } from '../../data/mockCatalog';
+import { TRANSLATIONS, type LumaLocale } from '../../i18n/translations';
 import type { WatchHistoryEntry } from '../../services/lumaCloudSync';
 import type {
   Channel,
@@ -26,6 +28,7 @@ interface HomeHubViewProps {
   seriesCatalog: SeriesItem[];
   watchHistory: WatchHistoryEntry[];
   nowMs: number;
+  locale?: LumaLocale;
   onSelectChannel: (channel: Channel) => void;
   onPlayVod: (vod: VodItem, resumeSec?: number) => void;
   onPlaySeriesEpisode: (
@@ -45,6 +48,7 @@ export const HomeHubView: React.FC<HomeHubViewProps> = ({
   seriesCatalog,
   watchHistory,
   nowMs,
+  locale = 'de',
   onSelectChannel,
   onPlayVod,
   onPlaySeriesEpisode,
@@ -52,6 +56,7 @@ export const HomeHubView: React.FC<HomeHubViewProps> = ({
   onOpenSeriesHub,
 }) => {
   const isM3 = designMode === 'm3-expressive';
+  const t = TRANSLATIONS[locale];
   const heroChannel = channels[0];
   const { current: heroProg } = getCurrentAndNextProgram(heroChannel, nowMs);
 
@@ -129,7 +134,7 @@ export const HomeHubView: React.FC<HomeHubViewProps> = ({
               }`}
             >
               <Play className="h-4 w-4 fill-current" />
-              <span>Jetzt live einschalten</span>
+              <span>{t.playNow}</span>
             </button>
 
             <button
@@ -140,23 +145,23 @@ export const HomeHubView: React.FC<HomeHubViewProps> = ({
               }`}
             >
               <Grid2x2 className="h-4 w-4" />
-              <span>4x Sport Multiview</span>
+              <span>{t.navMultiview}</span>
             </button>
           </div>
         </div>
       </div>
 
-      {/* Continue Watching ("Weiterschauen") with Per-Episode / VOD Resume Bars */}
+      {/* Continue Watching with Per-Episode / VOD Resume Bars */}
       <section className="space-y-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <RotateCcw className="h-4 w-4 text-sky-400" />
             <h3 className="text-sm font-semibold text-white">
-              Weiterschauen &amp; Zuletzt gesehen
+              {t.continueWatchingHeader}
             </h3>
           </div>
           <span className="text-[11px] text-slate-400 luma-tabular">
-            Sync-fähig via Luma Vault
+            AES-256-GCM Sync Vault
           </span>
         </div>
 
@@ -263,19 +268,19 @@ export const HomeHubView: React.FC<HomeHubViewProps> = ({
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Layers className="h-4 w-4 text-sky-400" />
-            <h3 className="text-sm font-semibold text-white">Xtream Serien-Highlights</h3>
+            <h3 className="text-sm font-semibold text-white">{t.seriesHighlightsHeader}</h3>
           </div>
           <button
             type="button"
             onClick={() => onOpenSeriesHub()}
             className="text-xs font-semibold text-sky-300 hover:text-white"
           >
-            Alle Serien öffnen →
+            {t.openAllSeries}
           </button>
         </div>
 
         <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-          {seriesCatalog.map((ser) => (
+          {seriesCatalog.slice(0, 6).map((ser) => (
             <div
               key={ser.id}
               onClick={() => onOpenSeriesHub(ser.id)}
@@ -297,13 +302,17 @@ export const HomeHubView: React.FC<HomeHubViewProps> = ({
                 </div>
                 <div>
                   <div className="text-[11px] text-sky-200/90">{ser.genre}</div>
-                  <div className="text-sm font-semibold text-white">{ser.title}</div>
+                  <div className="truncate text-sm font-semibold text-white">{ser.title}</div>
                 </div>
               </div>
               <div className="flex items-center justify-between px-4 py-3 text-[11px] text-slate-400 luma-tabular">
-                <span>{ser.seasons.length} Staffeln</span>
                 <span>
-                  {ser.seasons.reduce((acc, s) => acc + s.episodes.length, 0)} Episoden
+                  {ser.seasons.length} {t.seasonsUnit}
+                </span>
+                <span>
+                  {ser.seasonsLoaded === false
+                    ? 'On-Demand API'
+                    : `${ser.seasons.reduce((acc, s) => acc + s.episodes.length, 0)} ${t.episodesUnit}`}
                 </span>
               </div>
             </div>
@@ -319,6 +328,9 @@ interface SeriesBrowserViewProps {
   seriesCatalog: SeriesItem[];
   initialSeriesId?: string | null;
   watchHistory: WatchHistoryEntry[];
+  locale?: LumaLocale;
+  loadingSeriesIds?: Set<string>;
+  onEnsureSeriesLoaded?: (series: SeriesItem) => void;
   onPlayEpisode: (
     series: SeriesItem,
     seasonNumber: number,
@@ -333,10 +345,14 @@ export const SeriesBrowserView: React.FC<SeriesBrowserViewProps> = ({
   seriesCatalog,
   initialSeriesId,
   watchHistory,
+  locale = 'de',
+  loadingSeriesIds,
+  onEnsureSeriesLoaded,
   onPlayEpisode,
   onInspectSeries,
 }) => {
   const isM3 = designMode === 'm3-expressive';
+  const t = TRANSLATIONS[locale];
   const [selectedSeriesId, setSelectedSeriesId] = useState<string>(
     initialSeriesId || seriesCatalog[0]?.id || ''
   );
@@ -347,6 +363,20 @@ export const SeriesBrowserView: React.FC<SeriesBrowserViewProps> = ({
   const activeSeason =
     activeSeries?.seasons.find((s) => s.seasonNumber === selectedSeasonNum) ??
     activeSeries?.seasons[0];
+
+  useEffect(() => {
+    if (
+      activeSeries &&
+      activeSeries.xtreamSeriesId &&
+      activeSeries.seasonsLoaded === false
+    ) {
+      onEnsureSeriesLoaded?.(activeSeries);
+    }
+  }, [activeSeries, onEnsureSeriesLoaded]);
+
+  const isLoadingActiveSeries = Boolean(
+    activeSeries && loadingSeriesIds?.has(activeSeries.id)
+  );
 
   if (!activeSeries) return null;
 
@@ -364,7 +394,7 @@ export const SeriesBrowserView: React.FC<SeriesBrowserViewProps> = ({
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          {seriesCatalog.map((ser) => {
+          {seriesCatalog.slice(0, 40).map((ser) => {
             const active = ser.id === activeSeries.id;
             return (
               <button
@@ -455,6 +485,13 @@ export const SeriesBrowserView: React.FC<SeriesBrowserViewProps> = ({
       </div>
 
       {/* Episode List */}
+      {isLoadingActiveSeries && (
+        <div className="flex items-center gap-2.5 rounded-2xl bg-white/[0.04] px-4 py-3 text-xs text-sky-300">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          <span>{t.loadingEpisodes}</span>
+        </div>
+      )}
+
       <div className="space-y-2.5">
         {activeSeason?.episodes.map((ep) => {
           const hist = watchHistory.find((w) => w.itemId === ep.id);
@@ -471,7 +508,7 @@ export const SeriesBrowserView: React.FC<SeriesBrowserViewProps> = ({
                   activeSeries,
                   activeSeason.seasonNumber,
                   ep,
-                  hist?.resumeSec ?? 360
+                  hist?.resumeSec ?? 0
                 )
               }
               className={`group flex cursor-pointer flex-col justify-between gap-3 p-4 transition sm:flex-row sm:items-center ${
@@ -518,7 +555,7 @@ export const SeriesBrowserView: React.FC<SeriesBrowserViewProps> = ({
                   }`}
                 >
                   <Sparkles className="h-3.5 w-3.5" />
-                  <span>{pct > 0 ? 'Fortsetzen' : 'Abspielen'}</span>
+                  <span>{pct > 0 ? t.resumePlayback : t.playNow}</span>
                 </span>
               </div>
             </div>

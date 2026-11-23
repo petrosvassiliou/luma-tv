@@ -16,12 +16,21 @@ import {
   Trash2,
   Zap,
 } from 'lucide-react';
-import type { StoredChannel, StoredPlaylistSource } from '../../db/lumaDb';
+import type {
+  StoredChannel,
+  StoredEpgProgram,
+  StoredPlaylistSource,
+} from '../../db/lumaDb';
 import { getChannelProgramsInRange } from '../../data/mockCatalog';
 import {
   isLocalRustProxyEndpoint,
   probeCorsStreamProxy,
 } from '../../engine/corsProxy';
+import {
+  LOCALE_META,
+  TRANSLATIONS,
+  type LumaLocale,
+} from '../../i18n/translations';
 import type {
   LumaSyncPlainPayload,
   WatchHistoryEntry,
@@ -39,17 +48,22 @@ import { Phase4PlatformSyncPanel } from './Phase4PlatformSyncPanel';
 interface VodViewProps {
   designMode: PlatformDesignMode;
   vodCatalog: VodItem[];
-  onPlayVod: (vod: VodItem) => void;
+  watchHistory?: WatchHistoryEntry[];
+  locale?: LumaLocale;
+  onPlayVod: (vod: VodItem, resumeSec?: number) => void;
   onInspectVod?: (vod: VodItem) => void;
 }
 
 export const VodCatalogView: React.FC<VodViewProps> = ({
   designMode,
   vodCatalog,
+  watchHistory = [],
+  locale = 'de',
   onPlayVod,
   onInspectVod,
 }) => {
   const isM3 = designMode === 'm3-expressive';
+  const t = TRANSLATIONS[locale];
   const cardSurface = isM3
     ? 'rounded-[28px] bg-[#1A202E] hover:bg-[#232B3D]'
     : 'lg-pane rounded-[24px] hover:ring-1 hover:ring-white/30';
@@ -57,71 +71,91 @@ export const VodCatalogView: React.FC<VodViewProps> = ({
   return (
     <div className="luma-scroll flex-1 overflow-y-auto p-5">
       <div className="mb-4">
-        <h2 className="text-base font-semibold text-white">Cinema VOD &amp; 4K Referenz-Master</h2>
+        <h2 className="text-base font-semibold text-white">{t.navVod} · 4K HDR &amp; Xtream</h2>
         <p className="text-xs text-slate-400">
-          Direkt abspielbare HLS- &amp; importierte M3U/Xtream-VOD-Master inkl. TMDB-Metadaten &amp; Trailer.
+          HLS, MP4 &amp; MKV On-Demand-Master ({vodCatalog.length})
         </p>
       </div>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {vodCatalog.map((vod) => (
-          <div
-            key={vod.id}
-            onClick={() => onPlayVod(vod)}
-            className={`group flex cursor-pointer flex-col justify-between overflow-hidden transition duration-200 hover:-translate-y-0.5 ${cardSurface}`}
-          >
+        {vodCatalog.slice(0, 120).map((vod) => {
+          const hist = watchHistory.find((w) => w.itemId === vod.id);
+          const pct =
+            hist && hist.durationSec > 0
+              ? Math.min(98, Math.round((hist.resumeSec / hist.durationSec) * 100))
+              : 0;
+          return (
             <div
-              className="relative flex h-36 flex-col justify-between p-4"
-              style={{
-                background: `linear-gradient(135deg, ${vod.accentFrom}55 0%, ${vod.accentTo}BB 100%)`,
-              }}
+              key={vod.id}
+              onClick={() => onPlayVod(vod, hist?.resumeSec ?? 0)}
+              className={`group flex cursor-pointer flex-col justify-between overflow-hidden transition duration-200 hover:-translate-y-0.5 ${cardSurface}`}
             >
-              <div className="flex items-center justify-between">
-                <span className="rounded-full bg-black/55 px-2.5 py-0.5 text-[10px] font-semibold text-sky-200">
-                  {vod.resolution} · {vod.codec}
-                </span>
-                <span className="rounded-full bg-black/55 px-2.5 py-0.5 text-[10px] font-semibold text-amber-300 luma-tabular">
-                  ★ {vod.rating}
-                </span>
-              </div>
-
-              <div className="flex items-end justify-between gap-2">
-                <div>
-                  <div className="text-[11px] font-medium text-sky-200/90">{vod.genre}</div>
-                  <h3 className="text-sm font-semibold text-white">{vod.title}</h3>
+              <div
+                className="relative flex h-36 flex-col justify-between p-4"
+                style={{
+                  background: `linear-gradient(135deg, ${vod.accentFrom}55 0%, ${vod.accentTo}BB 100%)`,
+                }}
+              >
+                <div className="flex items-center justify-between">
+                  <span className="rounded-full bg-black/55 px-2.5 py-0.5 text-[10px] font-semibold text-sky-200">
+                    {vod.resolution} · {vod.codec}
+                  </span>
+                  <span className="rounded-full bg-black/55 px-2.5 py-0.5 text-[10px] font-semibold text-amber-300 luma-tabular">
+                    ★ {vod.rating}
+                  </span>
                 </div>
-                <span
-                  className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full shadow-lg transition group-hover:scale-105 ${
-                    isM3 ? 'm3-primary-pill' : 'lg-pill-active'
-                  }`}
-                >
-                  <Play className="h-4 w-4 fill-current" />
-                </span>
-              </div>
-            </div>
 
-            <div className="p-4">
-              <p className="line-clamp-2 text-xs leading-relaxed text-slate-300">{vod.synopsis}</p>
-              <div className="mt-3 flex items-center justify-between text-[11px] text-slate-400 luma-tabular">
-                <span>
-                  Jahr {vod.year} · {vod.durationMin} Min.
-                </span>
-                {onInspectVod && (
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onInspectVod(vod);
-                    }}
-                    className="rounded-full bg-white/10 px-2.5 py-0.5 text-[10px] font-semibold text-sky-300 hover:bg-sky-400/25 hover:text-white"
+                <div className="flex items-end justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="truncate text-[11px] font-medium text-sky-200/90">
+                      {vod.genre}
+                    </div>
+                    <h3 className="truncate text-sm font-semibold text-white">{vod.title}</h3>
+                  </div>
+                  <span
+                    className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full shadow-lg transition group-hover:scale-105 ${
+                      isM3 ? 'm3-primary-pill' : 'lg-pill-active'
+                    }`}
                   >
-                    Cast &amp; Trailer
-                  </button>
+                    <Play className="h-4 w-4 fill-current" />
+                  </span>
+                </div>
+
+                {pct > 0 && (
+                  <div className="absolute inset-x-0 bottom-0 h-1 bg-white/15">
+                    <div
+                      className={isM3 ? 'h-full bg-[#7FD4FF]' : 'luma-accent-gradient h-full'}
+                      style={{ width: `${pct}%` }}
+                    />
+                  </div>
                 )}
               </div>
+
+              <div className="p-4">
+                <p className="line-clamp-2 text-xs leading-relaxed text-slate-300">
+                  {vod.synopsis}
+                </p>
+                <div className="mt-3 flex items-center justify-between text-[11px] text-slate-400 luma-tabular">
+                  <span>
+                    {vod.year} · {vod.durationMin} min{pct > 0 ? ` · ${pct}%` : ''}
+                  </span>
+                  {onInspectVod && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onInspectVod(vod);
+                      }}
+                      className="rounded-full bg-white/10 px-2.5 py-0.5 text-[10px] font-semibold text-sky-300 hover:bg-sky-400/25 hover:text-white"
+                    >
+                      Cast &amp; Trailer
+                    </button>
+                  )}
+                </div>
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
@@ -130,41 +164,63 @@ export const VodCatalogView: React.FC<VodViewProps> = ({
 interface CatchupViewProps {
   designMode: PlatformDesignMode;
   channels: Channel[];
+  xmltvMap?: Map<string, StoredEpgProgram[]>;
+  epgOffsetHours?: number;
   nowMs: number;
+  locale?: LumaLocale;
   onStartTimeshift: (channel: Channel, program: EpgProgram) => void;
 }
 
 export const CatchupArchiveView: React.FC<CatchupViewProps> = ({
   designMode,
   channels,
+  xmltvMap,
+  epgOffsetHours = 0,
   nowMs,
+  locale = 'de',
   onStartTimeshift,
 }) => {
   const isM3 = designMode === 'm3-expressive';
-  const catchupChannels = channels.slice(0, 8).filter((c) => c.hasCatchup);
+  const t = TRANSLATIONS[locale];
+  const bcp47 = LOCALE_META[locale].bcp47;
+  const catchupChannels = channels.filter((c) => c.hasCatchup).slice(0, 24);
+  const offsetMs = epgOffsetHours * 3600_000;
   const fmt = (ms: number) =>
-    new Intl.DateTimeFormat('de-DE', { hour: '2-digit', minute: '2-digit' }).format(ms);
+    new Intl.DateTimeFormat(bcp47, { hour: '2-digit', minute: '2-digit' }).format(ms);
 
   return (
     <div className="luma-scroll flex-1 overflow-y-auto p-5 space-y-4">
       <div>
-        <h2 className="text-base font-semibold text-white">Xtream Catch-Up &amp; Timeshift Archiv</h2>
-        <p className="text-xs text-slate-400">
-          Vergangene Sendungen direkt aus dem Cloud-Archiv abspielen.
-        </p>
+        <h2 className="text-base font-semibold text-white">{t.catchupTitle}</h2>
+        <p className="text-xs text-slate-400">{t.catchupSubtitle}</p>
       </div>
 
       <div className="grid grid-cols-1 gap-3.5 lg:grid-cols-2">
         {catchupChannels.map((ch) => {
-          const pastPrograms = getChannelProgramsInRange(
-            ch,
-            nowMs - 5 * 3600_000,
-            nowMs - 5 * 60_000,
-            nowMs
-          )
-            .filter((p) => p.endMs <= nowMs)
-            .slice(-3)
-            .reverse();
+          const xmlBucket = ch.tvgId ? xmltvMap?.get(ch.tvgId) : undefined;
+          const maxWindowMs = Math.max(1, ch.catchupDays || 3) * 86_400_000;
+
+          const pastPrograms: EpgProgram[] =
+            xmlBucket && xmlBucket.length > 0
+              ? xmlBucket
+                  .map((p) =>
+                    offsetMs !== 0
+                      ? { ...p, startMs: p.startMs + offsetMs, endMs: p.endMs + offsetMs }
+                      : p
+                  )
+                  .filter((p) => p.endMs <= nowMs && p.startMs >= nowMs - maxWindowMs)
+                  .slice(-4)
+                  .reverse()
+              : getChannelProgramsInRange(
+                  ch,
+                  nowMs - 5 * 3600_000,
+                  nowMs - 5 * 60_000,
+                  nowMs,
+                  epgOffsetHours
+                )
+                  .filter((p) => p.endMs <= nowMs)
+                  .slice(-4)
+                  .reverse();
 
           return (
             <div
@@ -183,7 +239,7 @@ export const CatchupArchiveView: React.FC<CatchupViewProps> = ({
                   <div>
                     <h3 className="text-xs font-semibold text-white">{ch.name}</h3>
                     <span className="text-[10px] text-slate-400 luma-tabular">
-                      {ch.catchupDays} Tage Rückschau-Puffer aktiv
+                      {ch.catchupDays} {t.catchupDaysActive}
                     </span>
                   </div>
                 </div>
@@ -216,7 +272,7 @@ export const CatchupArchiveView: React.FC<CatchupViewProps> = ({
                       }`}
                     >
                       <Play className="h-3 w-3" />
-                      Re-Live
+                      {t.reLiveBtn}
                     </span>
                   </button>
                 ))}

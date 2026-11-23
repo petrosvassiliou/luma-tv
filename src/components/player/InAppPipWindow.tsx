@@ -82,7 +82,7 @@ export const InAppPipWindow: React.FC<InAppPipWindowProps> = ({
       activeUrl,
       proxyConfig,
       true,
-      overrideStreamUrl ? 'hls' : channel.streamType
+      overrideStreamUrl ? undefined : channel.streamType
     );
   }, [activeUrl, channel.streamType, overrideStreamUrl, proxyConfig]);
 
