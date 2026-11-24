@@ -9,12 +9,12 @@ import {
   Plus,
   Search,
 } from 'lucide-react';
+import { isTauriNativeRuntime } from '../../engine/LumaPlayerEngine';
 import {
   LOCALE_META,
   TRANSLATIONS,
   type LumaLocale,
 } from '../../i18n/translations';
-import { invokeNativeWindowControl } from '../../services/universalInput';
 import type {
   NavigationSection,
   PlatformDesignMode,
@@ -63,7 +63,28 @@ export const CustomTitlebar: React.FC<CustomTitlebarProps> = ({
   const bcp47 = LOCALE_META[locale].bcp47;
 
   const [playlistMenuOpen, setPlaylistMenuOpen] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const menuContainerRef = useRef<HTMLDivElement | null>(null);
+  const reserveNativeTrafficLights = !isM3 && isTauriNativeRuntime() && !isFullscreen;
+
+  useEffect(() => {
+    const updateFs = () => {
+      const htmlFs = Boolean(document.fullscreenElement);
+      const macNativeFs =
+        typeof window !== 'undefined' &&
+        typeof screen !== 'undefined' &&
+        Math.abs(window.innerHeight - screen.height) <= 2 &&
+        Math.abs(window.innerWidth - screen.width) <= 2;
+      setIsFullscreen(htmlFs || macNativeFs);
+    };
+    updateFs();
+    window.addEventListener('resize', updateFs);
+    document.addEventListener('fullscreenchange', updateFs);
+    return () => {
+      window.removeEventListener('resize', updateFs);
+      document.removeEventListener('fullscreenchange', updateFs);
+    };
+  }, []);
 
   useEffect(() => {
     if (!playlistMenuOpen) return;
@@ -96,35 +117,17 @@ export const CustomTitlebar: React.FC<CustomTitlebarProps> = ({
   return (
     <header
       id="luma-custom-titlebar"
+      data-tauri-drag-region
       className={
         isM3
           ? 'app-drag-region m3-surface-low relative z-30 flex h-13 shrink-0 items-center justify-between gap-4 px-4'
           : 'app-drag-region lg-pane relative z-30 mx-2.5 mt-2 flex h-11 shrink-0 items-center justify-between gap-4 rounded-[18px] px-3.5'
       }
     >
-      {/* Left Region: Window / Sidebar + Brand */}
+      {/* Left Region: Native macOS Traffic Light Clearance + Sidebar + Brand */}
       <div className="app-no-drag flex items-center gap-2.5">
-        {!isM3 && (
-          <div className="mr-1.5 flex items-center gap-2 pl-0.5" title="macOS Window Controls">
-            <button
-              type="button"
-              onClick={() => invokeNativeWindowControl('close')}
-              className="h-3 w-3 rounded-full bg-[#FF5F57] shadow-[inset_0_0_0_0.5px_rgba(0,0,0,0.35)]"
-              aria-label="Close"
-            />
-            <button
-              type="button"
-              onClick={() => invokeNativeWindowControl('minimize')}
-              className="h-3 w-3 rounded-full bg-[#FEBC2E] shadow-[inset_0_0_0_0.5px_rgba(0,0,0,0.35)]"
-              aria-label="Minimize"
-            />
-            <button
-              type="button"
-              onClick={() => invokeNativeWindowControl('toggle-maximize')}
-              className="h-3 w-3 rounded-full bg-[#28C840] shadow-[inset_0_0_0_0.5px_rgba(0,0,0,0.35)]"
-              aria-label="Zoom"
-            />
-          </div>
+        {reserveNativeTrafficLights && (
+          <div className="w-[70px] shrink-0" aria-hidden="true" />
         )}
 
         <button
