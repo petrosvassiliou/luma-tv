@@ -20,6 +20,7 @@ import type {
   PlatformDesignMode,
 } from '../../types/luma';
 import { LumaLogo } from '../brand/LumaLogo';
+import { LanguageDropdown } from '../common/LanguageDropdown';
 
 export interface QuickPlaylistOption {
   id: string;
@@ -30,7 +31,7 @@ export interface QuickPlaylistOption {
 interface CustomTitlebarProps {
   designMode: PlatformDesignMode;
   locale: LumaLocale;
-  onToggleLocale: () => void;
+  onSelectLocale: (locale: LumaLocale) => void;
   sleepRemainingSec: number | null;
   sidebarCollapsed: boolean;
   onToggleSidebar: () => void;
@@ -46,7 +47,7 @@ interface CustomTitlebarProps {
 export const CustomTitlebar: React.FC<CustomTitlebarProps> = ({
   designMode,
   locale,
-  onToggleLocale,
+  onSelectLocale,
   sleepRemainingSec,
   sidebarCollapsed,
   onToggleSidebar,
@@ -303,19 +304,13 @@ export const CustomTitlebar: React.FC<CustomTitlebarProps> = ({
           <span className="hidden lg:inline">Multiview</span>
         </button>
 
-        <button
+        <LanguageDropdown
           id="btn-toggle-locale"
-          type="button"
-          onClick={onToggleLocale}
-          className={
-            isM3
-              ? 'm3-secondary-tonal hidden rounded-full px-2.5 py-1.5 text-[11px] font-bold sm:inline-flex'
-              : 'lg-capsule hidden rounded-full px-2.5 py-1 text-[11px] font-semibold text-white sm:inline-flex'
-          }
-          title={`${LOCALE_META[locale].nativeName} — DE / EN / IT / FR / ES / GR`}
-        >
-          {LOCALE_META[locale].badge}
-        </button>
+          variant="compact"
+          designMode={designMode}
+          locale={locale}
+          onSelectLocale={onSelectLocale}
+        />
 
         <div
           className={

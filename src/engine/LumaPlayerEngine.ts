@@ -2,13 +2,21 @@ import Hls from 'hls.js';
 import mpegts from 'mpegts.js';
 import {
   buildProxiedStreamUrl,
+  buildRustTranscodeStreamUrl,
   detectStreamDriver,
   isLocalRustProxyEndpoint,
+  isNonNativeBrowserContainer,
   resolveBufferProfileSettings,
   shouldProactivelyProxyStream,
+  type StreamDriverKind,
 } from './corsProxy';
+import {
+  convertSubtitleToWebVtt,
+  type ExternalSubtitleEntry,
+} from '../services/subtitleConverter';
 import type {
   EngineProxyConfig,
+  NativeTranscodeMode,
   QualityLevelOption,
   StreamTelemetry,
   SubtitleTrackOption,
@@ -24,6 +32,8 @@ export function isTauriNativeRuntime(): boolean {
   return typeof window !== 'undefined' && Boolean(window.__TAURI_INTERNALS__);
 }
 
+const EXTERNAL_SUB_BASE_INDEX = 1000;
+
 const INITIAL_TELEMETRY: StreamTelemetry = {
   engine: 'WebHLS · MSE Worker',
   state: 'idle',
@@ -38,8 +48,17 @@ const INITIAL_TELEMETRY: StreamTelemetry = {
   currentAudioTrack: 0,
   subtitleTracks: [],
   currentSubtitleTrack: -1,
+  subtitleOffsetSec: 0,
+  activeSubtitleText: '',
+  activeTranscodeMode: 'auto',
   proxyActive: false,
 };
+
+interface AttachedExternalSubtitle extends ExternalSubtitleEntry {
+  index: number;
+  blobUrl: string;
+  trackEl: HTMLTrackElement | null;
+}
 
 export class LumaPlayerEngine {
   private hls: Hls | null = null;
@@ -49,6 +68,19 @@ export class LumaPlayerEngine {
   private fallbackTimer: number | null = null;
   private unlockAudioCleanup: (() => void) | null = null;
   private retriedWithProxy = false;
+  private retriedTranscodeStage: 'none' | 'remux' | 'hw' = 'none';
+  private userTranscodeMode: NativeTranscodeMode = 'auto';
+  private lastLoadArgs: {
+    rawStreamUrl: string;
+    proxyConfig: EngineProxyConfig;
+    autoPlay: boolean;
+    explicitStreamType?: 'hls' | 'mpegts';
+  } | null = null;
+
+  private embeddedSubtitleTracks: SubtitleTrackOption[] = [];
+  private externalSubtitles: AttachedExternalSubtitle[] = [];
+  private subtitleOffsetSec = 0;
+
   private telemetry: StreamTelemetry = { ...INITIAL_TELEMETRY };
   private onTelemetry: (telemetry: StreamTelemetry) => void;
 
@@ -61,11 +93,168 @@ export class LumaPlayerEngine {
     this.onTelemetry(this.telemetry);
   }
 
+  private combinedSubtitleTracks(): SubtitleTrackOption[] {
+    const extOptions: SubtitleTrackOption[] = this.externalSubtitles.map((ext) => ({
+      index: ext.index,
+      name: ext.name,
+      lang: ext.lang,
+      isExternal: true,
+      id: ext.id,
+    }));
+    return [...this.embeddedSubtitleTracks, ...extOptions];
+  }
+
+  private mountExternalTracksOnVideo(video: HTMLVideoElement) {
+    for (const ext of this.externalSubtitles) {
+      if (ext.trackEl && ext.trackEl.parentElement === video) continue;
+      if (ext.trackEl && ext.trackEl.parentElement) {
+        ext.trackEl.parentElement.removeChild(ext.trackEl);
+      }
+      const trackEl = document.createElement('track');
+      trackEl.kind = 'subtitles';
+      trackEl.label = ext.name;
+      trackEl.srclang = ext.lang;
+      trackEl.src = ext.blobUrl;
+      video.appendChild(trackEl);
+      ext.trackEl = trackEl;
+
+      const textTrack = trackEl.track;
+      const isSelected = this.telemetry.currentSubtitleTrack === ext.index;
+      textTrack.mode = isSelected ? 'hidden' : 'disabled';
+      textTrack.oncuechange = () => {
+        if (this.telemetry.currentSubtitleTrack !== ext.index) return;
+        const activeCues = textTrack.activeCues;
+        if (!activeCues || activeCues.length === 0) {
+          this.emit({ activeSubtitleText: '' });
+          return;
+        }
+        const lines: string[] = [];
+        for (let i = 0; i < activeCues.length; i++) {
+          const cue = activeCues[i] as VTTCue;
+          if (cue && typeof cue.text === 'string' && cue.text.trim()) {
+            lines.push(cue.text.trim());
+          }
+        }
+        this.emit({ activeSubtitleText: lines.join('\n') });
+      };
+    }
+  }
+
+  public addExternalSubtitle(params: {
+    name: string;
+    lang: string;
+    rawText: string;
+    selectImmediately?: boolean;
+  }): number {
+    const vttText = convertSubtitleToWebVtt(params.rawText, this.subtitleOffsetSec);
+    const blob = new Blob([vttText], { type: 'text/vtt;charset=utf-8' });
+    const blobUrl =
+      typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function'
+        ? URL.createObjectURL(blob)
+        : '';
+    const nextIndex = EXTERNAL_SUB_BASE_INDEX + this.externalSubtitles.length;
+    const entry: AttachedExternalSubtitle = {
+      id: `ext-sub-${Date.now()}-${this.externalSubtitles.length}`,
+      index: nextIndex,
+      name: params.name,
+      lang: params.lang,
+      rawText: params.rawText,
+      blobUrl,
+      trackEl: null,
+    };
+    this.externalSubtitles.push(entry);
+
+    if (this.video) {
+      this.mountExternalTracksOnVideo(this.video);
+    }
+
+    const merged = this.combinedSubtitleTracks();
+    this.emit({ subtitleTracks: merged });
+
+    if (params.selectImmediately !== false) {
+      this.setSubtitleTrack(nextIndex);
+    }
+
+    return nextIndex;
+  }
+
+  public setSubtitleOffset(offsetSec: number) {
+    const clamped = Math.max(-15, Math.min(15, Number(offsetSec.toFixed(1))));
+    this.subtitleOffsetSec = clamped;
+
+    for (const ext of this.externalSubtitles) {
+      if (ext.blobUrl && typeof URL.revokeObjectURL === 'function') {
+        URL.revokeObjectURL(ext.blobUrl);
+      }
+      const vttText = convertSubtitleToWebVtt(ext.rawText, clamped);
+      const blob = new Blob([vttText], { type: 'text/vtt;charset=utf-8' });
+      ext.blobUrl =
+        typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function'
+          ? URL.createObjectURL(blob)
+          : '';
+      if (ext.trackEl) {
+        if (ext.trackEl.parentElement) {
+          ext.trackEl.parentElement.removeChild(ext.trackEl);
+        }
+        ext.trackEl = null;
+      }
+    }
+
+    if (this.video) {
+      this.mountExternalTracksOnVideo(this.video);
+    }
+
+    this.emit({ subtitleOffsetSec: clamped });
+  }
+
+  public clearExternalSubtitles() {
+    for (const ext of this.externalSubtitles) {
+      if (ext.trackEl && ext.trackEl.parentElement) {
+        ext.trackEl.parentElement.removeChild(ext.trackEl);
+      }
+      if (ext.blobUrl && typeof URL.revokeObjectURL === 'function') {
+        URL.revokeObjectURL(ext.blobUrl);
+      }
+    }
+    this.externalSubtitles = [];
+    this.subtitleOffsetSec = 0;
+    this.emit({
+      subtitleTracks: this.combinedSubtitleTracks(),
+      subtitleOffsetSec: 0,
+      activeSubtitleText: '',
+      ...(this.telemetry.currentSubtitleTrack >= EXTERNAL_SUB_BASE_INDEX
+        ? { currentSubtitleTrack: -1 }
+        : {}),
+    });
+  }
+
+  public setTranscodeMode(mode: NativeTranscodeMode) {
+    this.userTranscodeMode = mode;
+    this.retriedTranscodeStage = 'none';
+    if (this.video && this.lastLoadArgs) {
+      const resumeAt =
+        this.video.currentTime && Number.isFinite(this.video.currentTime)
+          ? this.video.currentTime
+          : 0;
+      const { rawStreamUrl, proxyConfig, autoPlay, explicitStreamType } = this.lastLoadArgs;
+      this.loadInternal(
+        this.video,
+        rawStreamUrl,
+        { ...proxyConfig, transcodeMode: mode },
+        autoPlay,
+        explicitStreamType,
+        false,
+        mode === 'auto' ? 'none' : mode,
+        resumeAt
+      );
+    } else {
+      this.emit({ activeTranscodeMode: mode });
+    }
+  }
+
   /**
    * Starts playback while preserving the caller's desired `video.muted` state.
    * Never mutes on `AbortError` (which fires routinely during channel zapping / MSE swaps).
-   * Only falls back to temporary mute if the browser throws `NotAllowedError` before
-   * any user gesture, and automatically restores sound on the first pointer/key event.
    */
   private attemptPlayRespectingMute(
     video: HTMLVideoElement,
@@ -110,8 +299,71 @@ export class LumaPlayerEngine {
     autoPlay = true,
     explicitStreamType?: 'hls' | 'mpegts'
   ) {
+    const streamChanged = this.lastLoadArgs?.rawStreamUrl !== rawStreamUrl;
+    if (streamChanged) {
+      this.clearExternalSubtitles();
+      this.userTranscodeMode = proxyConfig.transcodeMode ?? 'auto';
+    }
+    this.lastLoadArgs = {
+      rawStreamUrl,
+      proxyConfig,
+      autoPlay,
+      explicitStreamType,
+    };
     this.retriedWithProxy = false;
-    this.loadInternal(video, rawStreamUrl, proxyConfig, autoPlay, explicitStreamType, false);
+    this.retriedTranscodeStage = 'none';
+    const initialForced =
+      this.userTranscodeMode === 'auto' ? 'none' : this.userTranscodeMode;
+    this.loadInternal(
+      video,
+      rawStreamUrl,
+      proxyConfig,
+      autoPlay,
+      explicitStreamType,
+      false,
+      initialForced,
+      0
+    );
+  }
+
+  private tryEscalateToRustFfmpeg(
+    video: HTMLVideoElement,
+    rawStreamUrl: string,
+    proxyConfig: EngineProxyConfig,
+    autoPlay: boolean,
+    explicitStreamType: 'hls' | 'mpegts' | undefined,
+    canUseRustFfmpeg: boolean
+  ): boolean {
+    if (!canUseRustFfmpeg) return false;
+    if (this.retriedTranscodeStage === 'none') {
+      this.retriedTranscodeStage = 'remux';
+      this.loadInternal(
+        video,
+        rawStreamUrl,
+        proxyConfig,
+        autoPlay,
+        explicitStreamType,
+        true,
+        'remux',
+        0
+      );
+      return true;
+    }
+    if (this.retriedTranscodeStage === 'remux') {
+      this.retriedTranscodeStage = 'hw';
+      this.loadInternal(
+        video,
+        rawStreamUrl,
+        proxyConfig,
+        autoPlay,
+        explicitStreamType,
+        true,
+        'hw',
+        0
+      );
+      return true;
+    }
+    return false;
   }
 
   private loadInternal(
@@ -120,14 +372,36 @@ export class LumaPlayerEngine {
     proxyConfig: EngineProxyConfig,
     autoPlay: boolean,
     explicitStreamType: 'hls' | 'mpegts' | undefined,
-    forceProxy: boolean
+    forceProxy: boolean,
+    transcodeStage: 'none' | 'remux' | 'hw',
+    startOffsetSec: number
   ) {
     const desiredMuted = video.muted;
     this.destroyDriversOnly();
     this.video = video;
     video.muted = desiredMuted;
+    this.embeddedSubtitleTracks = [];
 
-    const useProxy = forceProxy || shouldProactivelyProxyStream(rawStreamUrl, proxyConfig);
+    const hasLocalRustEndpoint = isLocalRustProxyEndpoint(proxyConfig.endpointUrl);
+    const canUseRustFfmpeg = Boolean(
+      hasLocalRustEndpoint && proxyConfig.ffmpegAvailable
+    );
+
+    // Proactively remux .mkv / .avi / .flv containers via zero-CPU FFmpeg remux when available
+    let activeTranscode: 'none' | 'remux' | 'hw' = transcodeStage;
+    if (
+      activeTranscode === 'none' &&
+      canUseRustFfmpeg &&
+      isNonNativeBrowserContainer(rawStreamUrl)
+    ) {
+      activeTranscode = 'remux';
+      this.retriedTranscodeStage = 'remux';
+    }
+
+    const useProxy =
+      activeTranscode !== 'none' ||
+      forceProxy ||
+      shouldProactivelyProxyStream(rawStreamUrl, proxyConfig);
     const effectiveProxy: EngineProxyConfig = useProxy
       ? { ...proxyConfig, enabled: true }
       : proxyConfig;
@@ -136,30 +410,79 @@ export class LumaPlayerEngine {
     );
     const isRustLoopback =
       isProxied && isLocalRustProxyEndpoint(effectiveProxy.endpointUrl);
-    const finalUrl = buildProxiedStreamUrl(rawStreamUrl, effectiveProxy);
-    const driver = detectStreamDriver(rawStreamUrl, explicitStreamType);
+
+    let finalUrl: string;
+    let driver: StreamDriverKind;
+    if (activeTranscode === 'remux' && isRustLoopback) {
+      finalUrl = buildRustTranscodeStreamUrl(
+        rawStreamUrl,
+        effectiveProxy,
+        'remux',
+        startOffsetSec
+      );
+      driver = 'mpegts';
+    } else if (activeTranscode === 'hw' && isRustLoopback) {
+      finalUrl = buildRustTranscodeStreamUrl(
+        rawStreamUrl,
+        effectiveProxy,
+        'hw',
+        startOffsetSec
+      );
+      driver = 'progressive';
+    } else {
+      finalUrl = buildProxiedStreamUrl(rawStreamUrl, effectiveProxy);
+      driver = detectStreamDriver(rawStreamUrl, explicitStreamType);
+    }
+
     const bufferTuning = resolveBufferProfileSettings(effectiveProxy.bufferProfile);
 
-    const engineLabel: StreamTelemetry['engine'] = isRustLoopback
-      ? driver === 'mpegts'
-        ? 'Tauri Rust · MPEG-TS'
-        : 'Tauri Rust · HLS MSE'
-      : driver === 'mpegts'
-        ? 'MPEG-TS · MSE Worker'
-        : 'WebHLS · MSE Worker';
+    const engineLabel: StreamTelemetry['engine'] =
+      activeTranscode !== 'none'
+        ? 'Tauri Rust · FFmpeg Remux'
+        : isRustLoopback
+          ? driver === 'mpegts'
+            ? 'Tauri Rust · MPEG-TS'
+            : 'Tauri Rust · HLS MSE'
+          : driver === 'mpegts'
+            ? 'MPEG-TS · MSE Worker'
+            : 'WebHLS · MSE Worker';
+
+    this.mountExternalTracksOnVideo(video);
 
     this.emit({
       ...INITIAL_TELEMETRY,
       engine: engineLabel,
       state: 'connecting',
+      subtitleTracks: this.combinedSubtitleTracks(),
+      currentSubtitleTrack:
+        this.telemetry.currentSubtitleTrack >= EXTERNAL_SUB_BASE_INDEX
+          ? this.telemetry.currentSubtitleTrack
+          : -1,
+      subtitleOffsetSec: this.subtitleOffsetSec,
+      activeTranscodeMode:
+        activeTranscode === 'none' ? this.userTranscodeMode : activeTranscode,
       proxyActive: isProxied,
       proxyMode: isProxied ? (isRustLoopback ? 'local-rust' : 'cloud-edge') : 'none',
       errorMessage: undefined,
     });
 
+    const fallbackDelayMs = activeTranscode !== 'none' ? 8500 : 3400;
+
     // Graceful Studio Synth Fallback if external media CDN is blocked by sandbox/firewall
     this.fallbackTimer = window.setTimeout(() => {
       if (this.telemetry.state !== 'playing') {
+        if (
+          this.tryEscalateToRustFfmpeg(
+            video,
+            rawStreamUrl,
+            proxyConfig,
+            autoPlay,
+            explicitStreamType,
+            canUseRustFfmpeg
+          )
+        ) {
+          return;
+        }
         this.emit({
           engine: 'Luma Studio Synth',
           state: 'synth-fallback',
@@ -172,10 +495,13 @@ export class LumaPlayerEngine {
             { index: 1, height: 1080, bitrateKbps: 6800, label: '1080p · 6.8 Mbps' },
           ],
           audioTracks: [{ index: 0, name: 'Studio Master 5.1', lang: 'de' }],
-          subtitleTracks: [{ index: 0, name: 'Deutsch (DVB/VTT)', lang: 'de' }],
+          subtitleTracks:
+            this.externalSubtitles.length > 0
+              ? this.combinedSubtitleTracks()
+              : [{ index: 0, name: 'Deutsch (DVB/VTT)', lang: 'de' }],
         });
       }
-    }, 3400);
+    }, fallbackDelayMs);
 
     const markPlaying = () => {
       if (!video.muted && this.unlockAudioCleanup) {
@@ -206,12 +532,12 @@ export class LumaPlayerEngine {
       }
     };
 
-    // 1. MPEG-TS Live Driver (mpegts.js + MSE Worker)
+    // 1. MPEG-TS Live / Remux Driver (mpegts.js + MSE Worker)
     if (driver === 'mpegts' && mpegts.isSupported()) {
       const player = mpegts.createPlayer(
         {
           type: 'mpegts',
-          isLive: true,
+          isLive: startOffsetSec <= 0,
           cors: true,
           url: finalUrl,
         },
@@ -219,7 +545,7 @@ export class LumaPlayerEngine {
           enableWorker: true,
           enableStashBuffer: bufferTuning.mpegtsStashKB >= 512,
           stashInitialSize: bufferTuning.mpegtsStashKB * 1024,
-          liveBufferLatencyChasing: true,
+          liveBufferLatencyChasing: activeTranscode === 'none',
           liveBufferLatencyMaxLatency: bufferTuning.mpegtsMaxLatency,
           liveBufferLatencyMinRemain: bufferTuning.mpegtsMinRemain,
         }
@@ -237,13 +563,21 @@ export class LumaPlayerEngine {
         this.emit({
           width: info.width || video.videoWidth || 1920,
           height: info.height || video.videoHeight || 1080,
-          audioTracks: [{ index: 0, name: 'MPEG-TS PID Audio', lang: 'live' }],
+          audioTracks: [
+            {
+              index: 0,
+              name:
+                activeTranscode !== 'none'
+                  ? 'FFmpeg AAC Stereo Remux'
+                  : 'MPEG-TS PID Audio',
+              lang: 'live',
+            },
+          ],
         });
       });
 
       player.on(mpegts.Events.STATISTICS_INFO, (stats: { speed?: number }) => {
         if (typeof stats.speed === 'number') {
-          // stats.speed is in KB/s -> convert to kbps
           this.emit({
             bitrateKbps: Math.round(stats.speed * 8),
           });
@@ -264,8 +598,22 @@ export class LumaPlayerEngine {
             proxyConfig,
             autoPlay,
             explicitStreamType,
-            true
+            true,
+            'none',
+            0
           );
+          return;
+        }
+        if (
+          this.tryEscalateToRustFfmpeg(
+            video,
+            rawStreamUrl,
+            proxyConfig,
+            autoPlay,
+            explicitStreamType,
+            canUseRustFfmpeg
+          )
+        ) {
           return;
         }
         this.emit({
@@ -278,7 +626,7 @@ export class LumaPlayerEngine {
       return;
     }
 
-    // 2. Progressive MP4 / WebM / MKV Driver
+    // 2. Progressive MP4 / WebM / Hardware Transcoded fMP4 Driver
     if (driver === 'progressive') {
       video.onerror = () => {
         if (
@@ -294,8 +642,22 @@ export class LumaPlayerEngine {
             proxyConfig,
             autoPlay,
             explicitStreamType,
-            true
+            true,
+            'none',
+            0
           );
+          return;
+        }
+        if (
+          this.tryEscalateToRustFfmpeg(
+            video,
+            rawStreamUrl,
+            proxyConfig,
+            autoPlay,
+            explicitStreamType,
+            canUseRustFfmpeg
+          )
+        ) {
           return;
         }
         this.emit({
@@ -350,7 +712,7 @@ export class LumaPlayerEngine {
           lang: t.lang || 'und',
         }));
 
-        const subtitleTracks: SubtitleTrackOption[] = hls.subtitleTracks.map((s, index) => ({
+        this.embeddedSubtitleTracks = hls.subtitleTracks.map((s, index) => ({
           index,
           name: s.name || `Untertitel ${index + 1}`,
           lang: s.lang || 'und',
@@ -364,8 +726,11 @@ export class LumaPlayerEngine {
               ? audioTracks
               : [{ index: 0, name: 'Master Stereo / Surround', lang: 'auto' }],
           currentAudioTrack: Math.max(0, hls.audioTrack),
-          subtitleTracks,
-          currentSubtitleTrack: hls.subtitleTrack,
+          subtitleTracks: this.combinedSubtitleTracks(),
+          currentSubtitleTrack:
+            this.telemetry.currentSubtitleTrack >= EXTERNAL_SUB_BASE_INDEX
+              ? this.telemetry.currentSubtitleTrack
+              : hls.subtitleTrack,
         });
 
         if (autoPlay) {
@@ -400,17 +765,21 @@ export class LumaPlayerEngine {
       });
 
       hls.on(Hls.Events.SUBTITLE_TRACKS_UPDATED, (_event, data) => {
-        const subtitleTracks: SubtitleTrackOption[] = data.subtitleTracks.map((s, index) => ({
+        this.embeddedSubtitleTracks = data.subtitleTracks.map((s, index) => ({
           index,
           name: s.name || `Untertitel ${index + 1}`,
           lang: s.lang || 'auto',
         }));
         this.emit({
-          subtitleTracks,
-          currentSubtitleTrack: hls.subtitleTrack,
+          subtitleTracks: this.combinedSubtitleTracks(),
+          currentSubtitleTrack:
+            this.telemetry.currentSubtitleTrack >= EXTERNAL_SUB_BASE_INDEX
+              ? this.telemetry.currentSubtitleTrack
+              : hls.subtitleTrack,
         });
       });
 
+      let mediaRecoveryAttempted = false;
       hls.on(Hls.Events.ERROR, (_event, data) => {
         if (!data.fatal) return;
         switch (data.type) {
@@ -428,8 +797,22 @@ export class LumaPlayerEngine {
                 proxyConfig,
                 autoPlay,
                 explicitStreamType,
-                true
+                true,
+                'none',
+                0
               );
+              return;
+            }
+            if (
+              this.tryEscalateToRustFfmpeg(
+                video,
+                rawStreamUrl,
+                proxyConfig,
+                autoPlay,
+                explicitStreamType,
+                canUseRustFfmpeg
+              )
+            ) {
               return;
             }
             this.emit({
@@ -442,9 +825,41 @@ export class LumaPlayerEngine {
             });
             break;
           case Hls.ErrorTypes.MEDIA_ERROR:
-            hls.recoverMediaError();
+            if (!mediaRecoveryAttempted) {
+              mediaRecoveryAttempted = true;
+              hls.recoverMediaError();
+              return;
+            }
+            if (
+              this.tryEscalateToRustFfmpeg(
+                video,
+                rawStreamUrl,
+                proxyConfig,
+                autoPlay,
+                explicitStreamType,
+                canUseRustFfmpeg
+              )
+            ) {
+              return;
+            }
+            this.emit({
+              engine: 'Luma Studio Synth',
+              state: 'synth-fallback',
+            });
             break;
           default:
+            if (
+              this.tryEscalateToRustFfmpeg(
+                video,
+                rawStreamUrl,
+                proxyConfig,
+                autoPlay,
+                explicitStreamType,
+                canUseRustFfmpeg
+              )
+            ) {
+              return;
+            }
             this.emit({
               engine: 'Luma Studio Synth',
               state: 'synth-fallback',
@@ -485,11 +900,26 @@ export class LumaPlayerEngine {
   }
 
   public setSubtitleTrack(trackIndex: number) {
+    const isExternal = trackIndex >= EXTERNAL_SUB_BASE_INDEX;
     if (this.hls) {
-      this.hls.subtitleTrack = trackIndex;
-      this.hls.subtitleDisplay = trackIndex >= 0;
+      if (isExternal || trackIndex < 0) {
+        this.hls.subtitleTrack = -1;
+        this.hls.subtitleDisplay = false;
+      } else {
+        this.hls.subtitleTrack = trackIndex;
+        this.hls.subtitleDisplay = true;
+      }
     }
-    this.emit({ currentSubtitleTrack: trackIndex });
+
+    for (const ext of this.externalSubtitles) {
+      if (!ext.trackEl) continue;
+      ext.trackEl.track.mode = ext.index === trackIndex ? 'hidden' : 'disabled';
+    }
+
+    this.emit({
+      currentSubtitleTrack: trackIndex,
+      activeSubtitleText: '',
+    });
   }
 
   private startTelemetryLoop() {
@@ -574,6 +1004,7 @@ export class LumaPlayerEngine {
   }
 
   public destroy() {
+    this.clearExternalSubtitles();
     this.destroyDriversOnly();
     this.video = null;
   }

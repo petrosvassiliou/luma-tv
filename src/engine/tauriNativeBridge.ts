@@ -6,6 +6,8 @@ export interface NativeEngineProbe {
   hwDecoder: string;
   mpvAvailable: boolean;
   mpvPath?: string | null;
+  ffmpegAvailable?: boolean;
+  ffmpegPath?: string | null;
   localProxyUrl?: string | null;
   corsFreeNetwork: boolean;
   supportedCodecs: string[];

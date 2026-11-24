@@ -1,7 +1,7 @@
 import type { BufferProfile } from '../i18n/translations';
 
-export const LUMA_APP_VERSION = '0.7.0-beta.4';
-export const LUMA_RELEASE_BADGE = '0.7 beta';
+export const LUMA_APP_VERSION = '0.8.0-beta.1';
+export const LUMA_RELEASE_BADGE = '0.8 beta';
 
 export interface EpgReminder {
   programId: string;
@@ -44,6 +44,7 @@ export interface CustomBouquet {
   id: string;
   name: string;
   channelIds: string[];
+  vodIds?: string[];
   seriesIds?: string[];
   isPinLocked: boolean;
 }
@@ -194,6 +195,8 @@ export interface SubtitleTrackOption {
   index: number;
   name: string;
   lang: string;
+  isExternal?: boolean;
+  id?: string;
 }
 
 export interface StreamTelemetry {
@@ -202,6 +205,7 @@ export interface StreamTelemetry {
     | 'MPEG-TS · MSE Worker'
     | 'Tauri Rust · HLS MSE'
     | 'Tauri Rust · MPEG-TS'
+    | 'Tauri Rust · FFmpeg Remux'
     | 'Native Safari HLS'
     | 'Tauri v2 Native MPV'
     | 'Luma Studio Synth';
@@ -217,10 +221,15 @@ export interface StreamTelemetry {
   currentAudioTrack: number;
   subtitleTracks: SubtitleTrackOption[];
   currentSubtitleTrack: number;
+  subtitleOffsetSec?: number;
+  activeSubtitleText?: string;
+  activeTranscodeMode?: NativeTranscodeMode;
   proxyActive: boolean;
   proxyMode?: 'none' | 'local-rust' | 'cloud-edge';
   errorMessage?: string;
 }
+
+export type NativeTranscodeMode = 'auto' | 'remux' | 'hw';
 
 export interface EngineProxyConfig {
   enabled: boolean;
@@ -228,4 +237,6 @@ export interface EngineProxyConfig {
   customUserAgent?: string;
   autoFallbackOnCors?: boolean;
   bufferProfile?: BufferProfile;
+  ffmpegAvailable?: boolean;
+  transcodeMode?: NativeTranscodeMode;
 }

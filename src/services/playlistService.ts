@@ -242,6 +242,7 @@ export async function importM3uPlaylist(params: {
     lastUpdated: formatSyncTimestamp(),
     accountInfo: res.accountInfo,
     createdAt: Date.now(),
+    lastSyncedAtMs: Date.now(),
   };
 
   await lumaDb.sources.put(source);
@@ -320,6 +321,7 @@ export async function importXtreamSource(params: {
     lastUpdated: formatSyncTimestamp(),
     accountInfo: res.accountInfo,
     createdAt: Date.now(),
+    lastSyncedAtMs: Date.now(),
   };
 
   await lumaDb.sources.put(source);
@@ -727,6 +729,52 @@ export async function resyncPersistedSource(params: {
     vodCount: res.vodItems.length,
     seriesCount: res.seriesItems?.length ?? 0,
     lastUpdated: formatSyncTimestamp(),
+    lastSyncedAtMs: Date.now(),
+    ...(res.discoveredXmltvUrl && !source.xmltvUrl
+      ? { xmltvUrl: res.discoveredXmltvUrl }
+      : {}),
     ...(res.accountInfo ? { accountInfo: res.accountInfo } : {}),
   });
+
+  const effectiveXmltvUrl = source.xmltvUrl || res.discoveredXmltvUrl;
+  if (effectiveXmltvUrl && effectiveXmltvUrl.startsWith('http')) {
+    try {
+      await importXmltvForSource({
+        sourceId: source.id,
+        url: effectiveXmltvUrl,
+        proxyEndpoint,
+        onProgress,
+      });
+    } catch {
+      // Keep refreshed playlist active even if XMLTV endpoint fails
+    }
+  }
+}
+
+export function canAutoRefreshSource(source: StoredPlaylistSource): boolean {
+  if (source.type === 'xtream') {
+    return Boolean(
+      source.rawUrlOrHost &&
+        source.rawUrlOrHost.startsWith('http') &&
+        source.username &&
+        source.password
+    );
+  }
+  return Boolean(source.rawUrlOrHost && source.rawUrlOrHost.startsWith('http'));
+}
+
+export function isPlaylistSourceStale(
+  source: StoredPlaylistSource,
+  autoRefreshHours: number,
+  nowMs = Date.now()
+): boolean {
+  if (!Number.isFinite(autoRefreshHours) || autoRefreshHours <= 0) {
+    return false;
+  }
+  if (!canAutoRefreshSource(source)) {
+    return false;
+  }
+  const referenceMs = source.lastSyncedAtMs ?? source.createdAt ?? 0;
+  const maxAgeMs = autoRefreshHours * 3_600_000;
+  return nowMs - referenceMs >= maxAgeMs;
 }

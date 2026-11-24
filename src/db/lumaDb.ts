@@ -15,6 +15,7 @@ export interface StoredPlaylistSource extends PlaylistSource {
   xmltvUrl?: string;
   hiddenGroupIds: string[];
   createdAt: number;
+  lastSyncedAtMs?: number;
 }
 
 export interface StoredChannel extends Channel {

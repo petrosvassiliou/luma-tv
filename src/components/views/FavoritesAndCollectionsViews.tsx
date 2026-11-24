@@ -8,6 +8,7 @@ import {
   Clapperboard,
   Database,
   Download,
+  Film,
   FolderHeart,
   FolderPlus,
   Globe,
@@ -33,6 +34,7 @@ import {
   matchesNormalizedQuery,
   searchChannelsRanked,
   searchSeriesRanked,
+  searchVodRanked,
   tokenizeSearchQuery,
 } from '../../services/channelSearch';
 import {
@@ -45,6 +47,7 @@ import type {
   CustomBouquet,
   PlatformDesignMode,
   SeriesItem,
+  VodItem,
 } from '../../types/luma';
 import type { ChannelContextMenuTarget } from '../common/ChannelContextMenu';
 
@@ -52,15 +55,19 @@ interface FavoritesViewProps {
   designMode: PlatformDesignMode;
   locale: LumaLocale;
   channels: Channel[];
+  vodCatalog?: VodItem[];
   seriesCatalog: SeriesItem[];
   favoriteIds: Set<string>;
+  favoriteVodIds?: Set<string>;
   favoriteSeriesIds: Set<string>;
   activeChannelId: string;
   nowMs: number;
   epgOffsetHours: number;
   onSelectChannel: (channel: Channel) => void;
+  onPlayVod?: (vod: VodItem) => void;
   onOpenSeries: (seriesId: string) => void;
   onToggleFavorite: (channelId: string) => void;
+  onToggleFavoriteVod?: (vodId: string) => void;
   onToggleFavoriteSeries: (seriesId: string) => void;
   onOpenChannelMenu: (target: ChannelContextMenuTarget) => void;
 }
@@ -69,15 +76,19 @@ export const FavoritesView: React.FC<FavoritesViewProps> = ({
   designMode,
   locale,
   channels,
+  vodCatalog = [],
   seriesCatalog,
   favoriteIds,
+  favoriteVodIds = new Set(),
   favoriteSeriesIds,
   activeChannelId,
   nowMs,
   epgOffsetHours,
   onSelectChannel,
+  onPlayVod,
   onOpenSeries,
   onToggleFavorite,
+  onToggleFavoriteVod,
   onToggleFavoriteSeries,
   onOpenChannelMenu,
 }) => {
@@ -91,6 +102,11 @@ export const FavoritesView: React.FC<FavoritesViewProps> = ({
     [channels, favoriteIds]
   );
 
+  const favoriteVod = useMemo(
+    () => vodCatalog.filter((v) => favoriteVodIds.has(v.id)),
+    [vodCatalog, favoriteVodIds]
+  );
+
   const favoriteSeries = useMemo(
     () => seriesCatalog.filter((s) => favoriteSeriesIds.has(s.id)),
     [seriesCatalog, favoriteSeriesIds]
@@ -101,12 +117,18 @@ export const FavoritesView: React.FC<FavoritesViewProps> = ({
     return searchChannelsRanked(favoriteChannels, query, favoriteChannels.length).items;
   }, [favoriteChannels, query]);
 
+  const filteredVod = useMemo(() => {
+    if (!query.trim()) return favoriteVod;
+    return searchVodRanked(favoriteVod, query, favoriteVod.length).items;
+  }, [favoriteVod, query]);
+
   const filteredSeries = useMemo(() => {
     if (!query.trim()) return favoriteSeries;
     return searchSeriesRanked(favoriteSeries, query, favoriteSeries.length).items;
   }, [favoriteSeries, query]);
 
-  const totalFavorites = favoriteChannels.length + favoriteSeries.length;
+  const totalFavorites =
+    favoriteChannels.length + favoriteVod.length + favoriteSeries.length;
 
   return (
     <div className="luma-scroll flex-1 overflow-y-auto p-5 space-y-5">
@@ -255,6 +277,81 @@ export const FavoritesView: React.FC<FavoritesViewProps> = ({
             </section>
           )}
 
+          {/* Favorite Movies (VOD) */}
+          {filteredVod.length > 0 && (
+            <section className="space-y-2.5">
+              <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-300">
+                <Film className="h-3.5 w-3.5 text-sky-300" />
+                <span>
+                  {t.navVod} ({filteredVod.length})
+                </span>
+              </div>
+              <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                {filteredVod.map((vod) => (
+                  <div
+                    key={vod.id}
+                    onClick={() => onPlayVod?.(vod)}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      onOpenChannelMenu({ vod, x: e.clientX, y: e.clientY });
+                    }}
+                    className={`group flex cursor-pointer flex-col justify-between p-4 transition ${
+                      isM3
+                        ? 'rounded-[24px] bg-[#1A202E] hover:bg-[#232B3D]'
+                        : 'lg-pane rounded-[20px] hover:bg-white/[0.08]'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="truncate text-[11px] text-sky-300">
+                          {vod.genre}
+                        </div>
+                        <div className="mt-0.5 line-clamp-2 text-sm font-semibold text-white">
+                          {vod.title}
+                        </div>
+                      </div>
+                      <div
+                        className="flex shrink-0 items-center gap-0.5"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        {onToggleFavoriteVod && (
+                          <button
+                            type="button"
+                            onClick={() => onToggleFavoriteVod(vod.id)}
+                            className="rounded-full p-1.5 text-amber-400 hover:bg-white/10"
+                            title={t.removeFromFavorites}
+                          >
+                            <Star className="h-3.5 w-3.5 fill-amber-400" />
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            const rect = e.currentTarget.getBoundingClientRect();
+                            onOpenChannelMenu({
+                              vod,
+                              x: rect.left,
+                              y: rect.bottom + 4,
+                            });
+                          }}
+                          className="rounded-full p-1.5 text-slate-300 hover:bg-white/10 hover:text-white"
+                        >
+                          <MoreVertical className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                    <div className="mt-3 flex items-center justify-between text-[11px] text-slate-400 luma-tabular">
+                      <span>
+                        {vod.year} · {vod.resolution}
+                      </span>
+                      <span className="text-amber-300">★ {vod.rating}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
           {/* Favorite Series */}
           {filteredSeries.length > 0 && (
             <section className="space-y-2.5">
@@ -335,6 +432,7 @@ interface CollectionsViewProps {
   designMode: PlatformDesignMode;
   locale: LumaLocale;
   channels: Channel[];
+  vodCatalog?: VodItem[];
   seriesCatalog: SeriesItem[];
   persistedSources: StoredPlaylistSource[];
   activeSourceId: string;
@@ -349,6 +447,7 @@ interface CollectionsViewProps {
   epgOffsetHours: number;
   onChangeCollections: (next: CustomBouquet[]) => void;
   onSelectChannel: (channel: Channel) => void;
+  onPlayVod?: (vod: VodItem) => void;
   onOpenSeries: (seriesId: string) => void;
   onRequestUnlockCollection: (id: string, name: string) => void;
   onOpenChannelMenu: (target: ChannelContextMenuTarget) => void;
@@ -360,6 +459,7 @@ export const CollectionsView: React.FC<CollectionsViewProps> = ({
   designMode,
   locale,
   channels,
+  vodCatalog = [],
   seriesCatalog,
   persistedSources,
   activeSourceId,
@@ -374,6 +474,7 @@ export const CollectionsView: React.FC<CollectionsViewProps> = ({
   epgOffsetHours,
   onChangeCollections,
   onSelectChannel,
+  onPlayVod,
   onOpenSeries,
   onRequestUnlockCollection,
   onOpenChannelMenu,
@@ -442,6 +543,11 @@ export const CollectionsView: React.FC<CollectionsViewProps> = ({
     return map;
   }, [channels, pickerSourceChannels]);
 
+  const vodById = useMemo(
+    () => new Map(vodCatalog.map((v) => [v.id, v])),
+    [vodCatalog]
+  );
+
   const seriesById = useMemo(
     () => new Map(seriesCatalog.map((s) => [s.id, s])),
     [seriesCatalog]
@@ -463,6 +569,13 @@ export const CollectionsView: React.FC<CollectionsViewProps> = ({
       .map((id) => channelById.get(id))
       .filter((c): c is Channel => Boolean(c));
   }, [activeCollection, channelById]);
+
+  const collectionVod = useMemo(() => {
+    if (!activeCollection?.vodIds) return [];
+    return activeCollection.vodIds
+      .map((id) => vodById.get(id))
+      .filter((v): v is VodItem => Boolean(v));
+  }, [activeCollection, vodById]);
 
   const collectionSeries = useMemo(() => {
     if (!activeCollection?.seriesIds) return [];
@@ -620,6 +733,17 @@ export const CollectionsView: React.FC<CollectionsViewProps> = ({
     }
   };
 
+  const removeVodFromCollection = (vodId: string) => {
+    if (!activeCollection) return;
+    onChangeCollections(
+      collections.map((c) =>
+        c.id === activeCollection.id
+          ? { ...c, vodIds: (c.vodIds ?? []).filter((id) => id !== vodId) }
+          : c
+      )
+    );
+  };
+
   const removeSeriesFromCollection = (seriesId: string) => {
     if (!activeCollection) return;
     onChangeCollections(
@@ -717,11 +841,15 @@ export const CollectionsView: React.FC<CollectionsViewProps> = ({
               (acc, id) => (channelById.has(id) ? acc + 1 : acc),
               0
             );
+            const resolvedVod = (col.vodIds ?? []).reduce(
+              (acc, id) => (vodById.has(id) ? acc + 1 : acc),
+              0
+            );
             const resolvedSeries = (col.seriesIds ?? []).reduce(
               (acc, id) => (seriesById.has(id) ? acc + 1 : acc),
               0
             );
-            const resolvedCount = resolvedChannels + resolvedSeries;
+            const resolvedCount = resolvedChannels + resolvedVod + resolvedSeries;
             const locked =
               parentalEnabled &&
               (col.isPinLocked || lockedGroupIds.includes(col.id)) &&
@@ -1219,8 +1347,10 @@ export const CollectionsView: React.FC<CollectionsViewProps> = ({
             </div>
           )}
 
-          {/* Channels & Series in Active Collection */}
-          {collectionChannels.length === 0 && collectionSeries.length === 0 ? (
+          {/* Channels, Movies & Series in Active Collection */}
+          {collectionChannels.length === 0 &&
+          collectionVod.length === 0 &&
+          collectionSeries.length === 0 ? (
             <div className="py-10 text-center text-xs text-slate-400">
               Click &ldquo;Add Countries, Groups &amp; Channels&rdquo; above to populate{' '}
               <strong className="text-white">{activeCollection.name}</strong>.
@@ -1340,6 +1470,54 @@ export const CollectionsView: React.FC<CollectionsViewProps> = ({
                       </div>
                     );
                   })}
+                </div>
+              )}
+
+              {collectionVod.length > 0 && (
+                <div className="space-y-2.5 border-t border-white/10 pt-4">
+                  <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-300">
+                    <Film className="h-3.5 w-3.5 text-sky-300" />
+                    <span>
+                      {t.navVod} ({collectionVod.length})
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
+                    {collectionVod.map((vod) => (
+                      <div
+                        key={vod.id}
+                        onClick={() => onPlayVod?.(vod)}
+                        onContextMenu={(e) => {
+                          e.preventDefault();
+                          onOpenChannelMenu({ vod, x: e.clientX, y: e.clientY });
+                        }}
+                        className={`flex cursor-pointer items-center justify-between gap-2 p-3.5 transition ${
+                          isM3
+                            ? 'rounded-[20px] bg-[#232B3D] hover:bg-[#2C364C]'
+                            : 'lg-capsule rounded-[18px] hover:bg-white/[0.1]'
+                        }`}
+                      >
+                        <div className="min-w-0">
+                          <div className="truncate text-[10px] text-sky-300">
+                            {vod.genre} · {vod.year} · {vod.resolution}
+                          </div>
+                          <div className="truncate text-xs font-semibold text-white">
+                            {vod.title}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            removeVodFromCollection(vod.id);
+                          }}
+                          className="shrink-0 rounded-full p-1.5 text-slate-300 hover:bg-rose-500/20 hover:text-rose-200"
+                          title="Remove from collection"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
 

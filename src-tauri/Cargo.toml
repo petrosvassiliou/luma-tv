@@ -1,6 +1,6 @@
 [package]
 name = "luma-tv-native"
-version = "0.7.0-beta.4"
+version = "0.8.0-beta.1"
 description = "Luma TV (app.lumatv.client) — Tauri v2 Native Playback & CORS-Free Stream Bridge"
 authors = ["Luma TV Architecture Team"]
 edition = "2021"
@@ -22,5 +22,5 @@ http-body-util = "0.1"
 hyper = { version = "1", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip", "stream"] }
-tokio = { version = "1", features = ["process", "sync", "rt-multi-thread", "net", "time"] }
+tokio = { version = "1", features = ["process", "io-util", "macros", "sync", "rt-multi-thread", "net", "time"] }
 url = "2"

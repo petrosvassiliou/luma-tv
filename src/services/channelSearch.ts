@@ -241,26 +241,91 @@ export function matchesNormalizedQuery(text: string, tokens: readonly string[]):
   return true;
 }
 
+interface CachedMediaNorm {
+  titleNorm: string;
+  combinedNorm: string;
+}
+
+const mediaNormCache = new WeakMap<object, CachedMediaNorm>();
+
+function getMediaNorm(item: { title: string; genre: string; year: number }): CachedMediaNorm {
+  const cached = mediaNormCache.get(item as object);
+  if (cached) return cached;
+  const titleNorm = normalizeSearchText(item.title);
+  const genreNorm = normalizeSearchText(item.genre);
+  const entry: CachedMediaNorm = {
+    titleNorm,
+    combinedNorm: `${titleNorm} ${genreNorm} ${item.year}`,
+  };
+  mediaNormCache.set(item as object, entry);
+  return entry;
+}
+
+function searchMediaItemsRanked<T extends { title: string; genre: string; year: number }>(
+  catalog: readonly T[],
+  rawQuery: string,
+  limit = 100
+): RankedSearchResult<T> {
+  const trimmed = rawQuery.trim();
+  if (!trimmed) {
+    return { items: catalog.slice(0, limit), totalMatches: catalog.length };
+  }
+  const fullQueryNorm = normalizeSearchText(trimmed);
+  const tokens = fullQueryNorm ? fullQueryNorm.split(' ').filter(Boolean) : [];
+  if (tokens.length === 0) {
+    return { items: catalog.slice(0, limit), totalMatches: catalog.length };
+  }
+
+  const scored: { item: T; score: number }[] = [];
+  for (let i = 0; i < catalog.length; i++) {
+    const item = catalog[i];
+    const norm = getMediaNorm(item);
+    let allMatch = true;
+    for (let t = 0; t < tokens.length; t++) {
+      if (!norm.combinedNorm.includes(tokens[t])) {
+        allMatch = false;
+        break;
+      }
+    }
+    if (!allMatch) continue;
+
+    let score = 20;
+    if (norm.titleNorm === fullQueryNorm) {
+      score = 900;
+    } else if (norm.titleNorm.startsWith(fullQueryNorm)) {
+      score = 750;
+    } else if (norm.titleNorm.includes(` ${fullQueryNorm}`)) {
+      score = 620;
+    } else if (norm.titleNorm.includes(fullQueryNorm)) {
+      score = 500;
+    } else {
+      let allInTitle = true;
+      for (let t = 0; t < tokens.length; t++) {
+        if (!norm.titleNorm.includes(tokens[t])) {
+          allInTitle = false;
+          break;
+        }
+      }
+      if (allInTitle) score = 350;
+    }
+
+    scored.push({ item, score });
+  }
+
+  scored.sort((a, b) => b.score - a.score);
+  const out: T[] = new Array(Math.min(limit, scored.length));
+  for (let i = 0; i < out.length; i++) {
+    out[i] = scored[i].item;
+  }
+  return { items: out, totalMatches: scored.length };
+}
+
 export function searchVodRanked(
   vodCatalog: readonly VodItem[],
   rawQuery: string,
   limit = 100
 ): RankedSearchResult<VodItem> {
-  const tokens = tokenizeSearchQuery(rawQuery);
-  if (tokens.length === 0) {
-    return { items: vodCatalog.slice(0, limit), totalMatches: vodCatalog.length };
-  }
-  const matches: VodItem[] = [];
-  for (let i = 0; i < vodCatalog.length; i++) {
-    const v = vodCatalog[i];
-    if (matchesNormalizedQuery(`${v.title} ${v.genre} ${v.year}`, tokens)) {
-      matches.push(v);
-    }
-  }
-  return {
-    items: matches.slice(0, limit),
-    totalMatches: matches.length,
-  };
+  return searchMediaItemsRanked(vodCatalog, rawQuery, limit);
 }
 
 export function searchSeriesRanked(
@@ -268,19 +333,5 @@ export function searchSeriesRanked(
   rawQuery: string,
   limit = 100
 ): RankedSearchResult<SeriesItem> {
-  const tokens = tokenizeSearchQuery(rawQuery);
-  if (tokens.length === 0) {
-    return { items: seriesCatalog.slice(0, limit), totalMatches: seriesCatalog.length };
-  }
-  const matches: SeriesItem[] = [];
-  for (let i = 0; i < seriesCatalog.length; i++) {
-    const s = seriesCatalog[i];
-    if (matchesNormalizedQuery(`${s.title} ${s.genre} ${s.year}`, tokens)) {
-      matches.push(s);
-    }
-  }
-  return {
-    items: matches.slice(0, limit),
-    totalMatches: matches.length,
-  };
+  return searchMediaItemsRanked(seriesCatalog, rawQuery, limit);
 }

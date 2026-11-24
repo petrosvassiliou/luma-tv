@@ -9,17 +9,17 @@ import {
   LockOpen,
   Moon,
   PictureInPicture2,
+  RefreshCw,
   ShieldAlert,
   Sliders,
 } from 'lucide-react';
 import {
-  LOCALE_META,
-  SUPPORTED_LOCALES,
   TRANSLATIONS,
   type BufferProfile,
   type LumaLocale,
   type LumaPreferences,
 } from '../../i18n/translations';
+import { LanguageDropdown } from '../common/LanguageDropdown';
 import {
   LUMA_APP_VERSION,
   type ChannelGroup,
@@ -153,30 +153,13 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
             <span>{t.langAndDesignTitle}</span>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
-            {SUPPORTED_LOCALES.map((loc) => {
-              const meta = LOCALE_META[loc];
-              const active = preferences.locale === loc;
-              return (
-                <button
-                  key={loc}
-                  type="button"
-                  onClick={() => setLocale(loc)}
-                  className={`rounded-full px-3.5 py-2 text-xs font-bold transition ${
-                    active
-                      ? isM3
-                        ? 'm3-primary-pill'
-                        : 'lg-pill-active'
-                      : isM3
-                        ? 'm3-secondary-tonal'
-                        : 'lg-capsule text-slate-200'
-                  }`}
-                >
-                  {meta.nativeName} ({meta.badge})
-                </button>
-              );
-            })}
-          </div>
+          <LanguageDropdown
+            id="settings-language-dropdown"
+            variant="full"
+            designMode={designMode}
+            locale={preferences.locale}
+            onSelectLocale={setLocale}
+          />
 
           <div className="border-t border-white/10 pt-3">
             {isAppleDevice ? (
@@ -318,6 +301,61 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
                 >
                   <div className="text-xs font-semibold text-white">{title}</div>
                   <div className="text-[10px] opacity-75">{sub}</div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Automatic Background Playlist & XMLTV Refresh */}
+        <div className={`${panelClass} space-y-3`}>
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 text-xs font-semibold text-white">
+              <RefreshCw className="h-4 w-4 text-sky-400" />
+              <span>Auto Playlist &amp; EPG Refresh</span>
+            </div>
+            <span className="text-[11px] text-slate-400">
+              {(preferences.autoRefreshHours ?? 12) === 0
+                ? t.sleepOff
+                : `Every ${preferences.autoRefreshHours ?? 12}h`}
+            </span>
+          </div>
+
+          <p className="text-[11px] text-slate-400">
+            Automatically refreshes Xtream &amp; M3U URL playlists and XMLTV schedules in
+            the background without interrupting playback.
+          </p>
+
+          <div className="flex flex-wrap gap-2 pt-0.5">
+            {[
+              { hours: 0, label: t.sleepOff },
+              { hours: 6, label: '6h' },
+              { hours: 12, label: '12h' },
+              { hours: 24, label: '24h' },
+            ].map((opt) => {
+              const currentHours = preferences.autoRefreshHours ?? 12;
+              const active = currentHours === opt.hours;
+              return (
+                <button
+                  key={opt.hours}
+                  type="button"
+                  onClick={() =>
+                    onChangePreferences({
+                      ...preferences,
+                      autoRefreshHours: opt.hours,
+                    })
+                  }
+                  className={`rounded-full px-3.5 py-1.5 text-xs font-semibold luma-tabular ${
+                    active
+                      ? isM3
+                        ? 'm3-primary-pill'
+                        : 'lg-pill-active'
+                      : isM3
+                        ? 'm3-secondary-tonal'
+                        : 'lg-capsule text-slate-200'
+                  }`}
+                >
+                  {opt.label}
                 </button>
               );
             })}

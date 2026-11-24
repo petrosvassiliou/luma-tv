@@ -11,8 +11,10 @@ import {
 } from '../engine/catchupUrlBuilder';
 import {
   buildProxiedStreamUrl,
+  buildRustTranscodeStreamUrl,
   detectStreamDriver,
   isLocalRustProxyEndpoint,
+  isNonNativeBrowserContainer,
   resolveBufferProfileSettings,
   rewriteHlsManifestUrls,
   shouldProactivelyProxyStream,
@@ -29,6 +31,7 @@ import {
   isProviderDividerChannel,
   normalizeSearchText,
   searchChannelsRanked,
+  searchVodRanked,
 } from '../services/channelSearch';
 import {
   buildCountryBuckets,
@@ -45,8 +48,16 @@ import {
   detectPlatformEnvironment,
   resolveAllowedDesignMode,
 } from '../services/platformDetection';
-import { parseXtreamAccountInfoPayload } from '../services/playlistService';
+import {
+  canAutoRefreshSource,
+  isPlaylistSourceStale,
+  parseXtreamAccountInfoPayload,
+} from '../services/playlistService';
 import { pickBestSpatialCandidate } from '../services/spatialNavigation';
+import {
+  convertSubtitleToWebVtt,
+  detectSubtitleLanguageFromFilename,
+} from '../services/subtitleConverter';
 import {
   exportChannelsToM3uPlus,
   parseM3uContent,
@@ -515,5 +526,177 @@ describe('Luma TV v0.1 beta — Zero-Knowledge AES-256-GCM Sync Vault & 20k EPG 
     });
     expect(unlimited?.expiresAtMs).toBeNull();
     expect(unlimited?.isTrial).toBe(true);
+  });
+
+  it('ranks exact and prefix VOD movie matches first across large catalogs', () => {
+    const sampleVod = [
+      {
+        id: 'vod-sub',
+        title: 'Behind the Scenes of Dune Part Two',
+        year: 2024,
+        genre: 'Documentary',
+        durationMin: 60,
+        rating: '7.5',
+        resolution: '1080p' as const,
+        codec: 'H.264' as const,
+        streamUrl: 'https://vod.example/1.mp4',
+        synopsis: '',
+        accentFrom: '#111',
+        accentTo: '#222',
+      },
+      {
+        id: 'vod-exact',
+        title: 'Dune',
+        year: 2021,
+        genre: 'Sci-Fi',
+        durationMin: 155,
+        rating: '8.4',
+        resolution: '4K HDR' as const,
+        codec: 'HEVC' as const,
+        streamUrl: 'https://vod.example/2.mkv',
+        synopsis: '',
+        accentFrom: '#111',
+        accentTo: '#222',
+      },
+      {
+        id: 'vod-prefix',
+        title: 'Dune: Part Two (2024)',
+        year: 2024,
+        genre: 'Sci-Fi',
+        durationMin: 166,
+        rating: '8.8',
+        resolution: '4K HDR' as const,
+        codec: 'HEVC' as const,
+        streamUrl: 'https://vod.example/3.mkv',
+        synopsis: '',
+        accentFrom: '#111',
+        accentTo: '#222',
+      },
+    ];
+
+    const ranked = searchVodRanked(sampleVod, 'Dune', 10);
+    expect(ranked.totalMatches).toBe(3);
+    expect(ranked.items.map((v) => v.id)).toEqual([
+      'vod-exact',
+      'vod-prefix',
+      'vod-sub',
+    ]);
+  });
+
+  it('detects MKV/AVI containers and builds in-window Rust FFmpeg remux & VideoToolbox URLs', () => {
+    expect(isNonNativeBrowserContainer('http://xtream.tv:8080/movie/u/p/991.mkv')).toBe(
+      true
+    );
+    expect(isNonNativeBrowserContainer('http://xtream.tv:8080/movie/u/p/991.avi')).toBe(
+      true
+    );
+    expect(isNonNativeBrowserContainer('http://xtream.tv:8080/movie/u/p/991.mp4')).toBe(
+      false
+    );
+
+    const rustProxy = 'http://127.0.0.1:59001/luma-proxy/tok99/stream';
+    const remuxUrl = buildRustTranscodeStreamUrl(
+      'http://xtream.tv:8080/movie/u/p/991.mkv',
+      {
+        enabled: true,
+        endpointUrl: rustProxy,
+        customUserAgent: 'LumaTV/0.8',
+      },
+      'remux',
+      125.4
+    );
+    expect(remuxUrl).toBe(
+      `${rustProxy}?url=${encodeURIComponent('http://xtream.tv:8080/movie/u/p/991.mkv')}&transcode=remux&start=125&ua=${encodeURIComponent('LumaTV/0.8')}`
+    );
+
+    const hwUrl = buildRustTranscodeStreamUrl(
+      'http://xtream.tv:8080/live/u/p/404.ts',
+      { enabled: true, endpointUrl: rustProxy },
+      'hw'
+    );
+    expect(hwUrl).toContain('&transcode=hw');
+    expect(hwUrl).not.toContain('&start=');
+  });
+
+  it('evaluates playlist auto-refresh eligibility and staleness intervals accurately', () => {
+    const tBase = 1_800_000_000_000;
+    const xtreamSrc = {
+      id: 'xt-1',
+      name: 'Max4TV',
+      type: 'xtream' as const,
+      endpoint: 'http://max4tv.example:8080',
+      rawUrlOrHost: 'http://max4tv.example:8080',
+      username: 'alice',
+      password: 'secret',
+      channelCount: 12000,
+      vodCount: 4000,
+      epgStatus: 'synced' as const,
+      epgOffsetHours: 0,
+      lastUpdated: 'Today',
+      hiddenGroupIds: [],
+      createdAt: tBase,
+      lastSyncedAtMs: tBase,
+    };
+
+    const localFileSrc = {
+      ...xtreamSrc,
+      id: 'local-1',
+      type: 'm3u_plus' as const,
+      rawUrlOrHost: 'local://m3u',
+    };
+
+    expect(canAutoRefreshSource(xtreamSrc)).toBe(true);
+    expect(canAutoRefreshSource(localFileSrc)).toBe(false);
+
+    // Off (0h) is never stale
+    expect(isPlaylistSourceStale(xtreamSrc, 0, tBase + 48 * 3_600_000)).toBe(false);
+    // 5h elapsed with 6h threshold -> not stale yet
+    expect(isPlaylistSourceStale(xtreamSrc, 6, tBase + 5 * 3_600_000)).toBe(false);
+    // 6.5h elapsed with 6h threshold -> stale!
+    expect(isPlaylistSourceStale(xtreamSrc, 6, tBase + 6.5 * 3_600_000)).toBe(true);
+    // Local file upload is never auto-refreshed over network
+    expect(isPlaylistSourceStale(localFileSrc, 6, tBase + 99 * 3_600_000)).toBe(false);
+  });
+
+  it('converts SRT and ASS subtitles to WebVTT, shifts cue sync offsets, and detects language codes', () => {
+    const sampleSrt = [
+      '\uFEFF1',
+      '00:00:01,500 --> 00:00:04,250',
+      'Willkommen bei Luma TV!',
+      '',
+      '2',
+      '00:01:10,000 --> 00:01:12,800',
+      'Zweite Zeile im Kinomodus.',
+    ].join('\r\n');
+
+    const vtt = convertSubtitleToWebVtt(sampleSrt, 0);
+    expect(vtt.startsWith('WEBVTT\n')).toBe(true);
+    expect(vtt).toContain('00:00:01.500 --> 00:00:04.250');
+    expect(vtt).toContain('00:01:10.000 --> 00:01:12.800');
+    expect(vtt).not.toContain('\n1\n00:00:01');
+
+    // Shift +2.0s and -3.0s (clamped cleanly at 00:00:00.000)
+    const shiftedFwd = convertSubtitleToWebVtt(sampleSrt, 2.0);
+    expect(shiftedFwd).toContain('00:00:03.500 --> 00:00:06.250');
+
+    const shiftedBack = convertSubtitleToWebVtt(sampleSrt, -3.0);
+    expect(shiftedBack).toContain('00:00:00.000 --> 00:00:01.250');
+
+    // SubStation Alpha (.ass) Dialogue conversion with override tag stripping
+    const sampleAss = [
+      '[Script Info]',
+      'Title: Demo',
+      '[Events]',
+      'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text',
+      'Dialogue: 0,0:00:05.20,0:00:08.40,Default,,0,0,0,,{\\an8\\i1}Hello\\NWorld!',
+    ].join('\n');
+    const assVtt = convertSubtitleToWebVtt(sampleAss, 0.5);
+    expect(assVtt).toContain('00:00:05.700 --> 00:00:08.900');
+    expect(assVtt).toContain('Hello\nWorld!');
+    expect(assVtt).not.toContain('{\\an8');
+
+    expect(detectSubtitleLanguageFromFilename('Dune.2024.4K.de.srt').lang).toBe('de');
+    expect(detectSubtitleLanguageFromFilename('Movie.2025.greek.vtt').lang).toBe('el');
+    expect(detectSubtitleLanguageFromFilename('Episode.S01E02.eng.srt').lang).toBe('en');
   });
 });

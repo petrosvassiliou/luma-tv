@@ -5,13 +5,18 @@ import {
   ChevronDown,
   ChevronUp,
   Circle,
+  Cpu,
   Expand,
   ExternalLink,
+  FileUp,
+  Link2,
   Maximize2,
   Minimize2,
+  Minus,
   Pause,
   PictureInPicture2,
   Play,
+  Plus,
   Radio,
   RotateCcw,
   RotateCw,
@@ -39,11 +44,16 @@ import {
   TRANSLATIONS,
   type LumaLocale,
 } from '../../i18n/translations';
+import {
+  detectSubtitleLanguageFromFilename,
+  fetchRemoteSubtitleText,
+} from '../../services/subtitleConverter';
 import type {
   AspectRatioMode,
   Channel,
   EngineProxyConfig,
   EpgProgram,
+  NativeTranscodeMode,
   PlatformDesignMode,
   StreamTelemetry,
 } from '../../types/luma';
@@ -169,6 +179,8 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
   const [preAmpBoost, setPreAmpBoost] = useState<number>(1.0);
   const [aspectMode, setAspectMode] = useState<AspectRatioMode>('16:9');
   const [showQualityMenu, setShowQualityMenu] = useState(false);
+  const [subtitleUrlInput, setSubtitleUrlInput] = useState('');
+  const [isSubtitleDropActive, setIsSubtitleDropActive] = useState(false);
 
   // Live DVR Recording State
   const [isRecording, setIsRecording] = useState(false);
@@ -559,6 +571,89 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
     );
   };
 
+  const ingestExternalSubtitleFile = async (file: File) => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    try {
+      const rawText = await file.text();
+      const detected = detectSubtitleLanguageFromFilename(file.name);
+      engine.addExternalSubtitle({
+        name: detected.label,
+        lang: detected.lang,
+        rawText,
+        selectImmediately: true,
+      });
+      onToast?.(`Subtitle loaded: ${detected.label}`);
+    } catch {
+      onToast?.('Failed to read subtitle file.');
+    }
+  };
+
+  const handleSubtitleFileInputChange = async (
+    e: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      await ingestExternalSubtitleFile(file);
+    }
+    e.target.value = '';
+  };
+
+  const handleLoadRemoteSubtitleUrl = async () => {
+    const trimmed = subtitleUrlInput.trim();
+    if (!trimmed || !engineRef.current) return;
+    try {
+      const rawText = await fetchRemoteSubtitleText(trimmed, proxyConfig.endpointUrl);
+      const filePart = trimmed.split('?')[0].split('/').pop() || 'Remote Subtitle.srt';
+      const detected = detectSubtitleLanguageFromFilename(filePart);
+      engineRef.current.addExternalSubtitle({
+        name: detected.label,
+        lang: detected.lang,
+        rawText,
+        selectImmediately: true,
+      });
+      setSubtitleUrlInput('');
+      onToast?.(`Remote subtitle loaded: ${detected.label}`);
+    } catch (err) {
+      onToast?.(
+        err instanceof Error ? err.message : 'Failed to fetch remote subtitle.'
+      );
+    }
+  };
+
+  const handleStageDragOver = (e: React.DragEvent) => {
+    if (e.dataTransfer?.types.includes('Files')) {
+      e.preventDefault();
+      setIsSubtitleDropActive(true);
+    }
+  };
+
+  const handleStageDragLeave = () => {
+    setIsSubtitleDropActive(false);
+  };
+
+  const handleStageDrop = async (e: React.DragEvent) => {
+    setIsSubtitleDropActive(false);
+    const file = e.dataTransfer?.files?.[0];
+    if (!file) return;
+    if (/\.(srt|vtt|ass|ssa)$/i.test(file.name)) {
+      e.preventDefault();
+      e.stopPropagation();
+      await ingestExternalSubtitleFile(file);
+    }
+  };
+
+  const handleSelectTranscodeMode = (mode: NativeTranscodeMode) => {
+    engineRef.current?.setTranscodeMode(mode);
+    const label =
+      mode === 'remux'
+        ? 'In-Window Dolby Audio Remux (AAC)'
+        : mode === 'hw'
+          ? 'In-Window Hardware VideoToolbox'
+          : 'Auto Native MSE';
+    onToast?.(`Playback engine: ${label}`);
+  };
+
   // Android / Tablet Touch Vertical Swipe Zapping
   const handleTouchStart = (e: React.TouchEvent) => {
     touchStartY.current = e.touches[0]?.clientY ?? null;
@@ -649,6 +744,9 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
         handleTouchStart(e);
       }}
       onTouchEnd={handleTouchEnd}
+      onDragOver={handleStageDragOver}
+      onDragLeave={handleStageDragLeave}
+      onDrop={handleStageDrop}
       className={`@container relative overflow-hidden transition-all duration-300 ${
         layoutVariant === 'cinema'
           ? 'h-full min-h-[320px] flex-1'
@@ -697,11 +795,32 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
           }`}
         />
 
-        {telemetry.currentSubtitleTrack >= 0 && (
-          <div className="pointer-events-none absolute bottom-28 z-20 rounded-xl bg-black/75 px-4 py-1.5 text-xs font-medium text-white shadow-lg backdrop-blur-md">
-            [CC] {displayTitle} — Live-Untertitelspur aktiv
+        {isSubtitleDropActive && (
+          <div className="pointer-events-none absolute inset-4 z-30 flex items-center justify-center rounded-2xl border-2 border-dashed border-sky-400/80 bg-black/70 backdrop-blur-md">
+            <div className="flex items-center gap-2.5 text-sm font-semibold text-sky-200">
+              <Captions className="h-5 w-5" />
+              <span>Drop .srt, .vtt, or .ass subtitle file to attach</span>
+            </div>
           </div>
         )}
+
+        {telemetry.activeSubtitleText ? (
+          <div
+            className={`pointer-events-none absolute inset-x-8 z-20 flex justify-center transition-all duration-200 ${
+              showChrome ? 'bottom-28' : 'bottom-8'
+            }`}
+          >
+            <div className="max-w-3xl whitespace-pre-line rounded-xl bg-black/80 px-4 py-2 text-center text-sm font-medium leading-relaxed text-white shadow-xl backdrop-blur-md md:text-base">
+              {telemetry.activeSubtitleText}
+            </div>
+          </div>
+        ) : telemetry.currentSubtitleTrack >= 0 &&
+          telemetry.currentSubtitleTrack < 1000 &&
+          telemetry.state === 'synth-fallback' ? (
+          <div className="pointer-events-none absolute bottom-28 z-20 rounded-xl bg-black/75 px-4 py-1.5 text-xs font-medium text-white shadow-lg backdrop-blur-md">
+            [CC] {displayTitle}
+          </div>
+        ) : null}
 
         <div className="pointer-events-none absolute inset-x-0 top-0 z-10 h-20 bg-gradient-to-b from-black/70 to-transparent" />
         <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 h-36 bg-gradient-to-t from-black/90 via-black/40 to-transparent" />
@@ -765,6 +884,17 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
               <span className="h-2 w-2 rounded-full bg-white animate-luma-live" />
               <span>REC {fmtRecTimer(recSeconds)}</span>
             </button>
+          )}
+
+          {telemetry.engine === 'Tauri Rust · FFmpeg Remux' && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-emerald-400/20 px-2.5 py-1 text-[10px] font-semibold text-emerald-200 ring-1 ring-emerald-400/35">
+              <Cpu className="h-3 w-3" />
+              <span>
+                {telemetry.activeTranscodeMode === 'hw'
+                  ? 'VideoToolbox HW'
+                  : 'FFmpeg AAC Remux'}
+              </span>
+            </span>
           )}
 
           {audioPreset !== 'direct' && (
@@ -1097,12 +1227,50 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
 
                 {showQualityMenu && (
                   <div
-                    className={`luma-scroll absolute right-0 bottom-12 z-30 max-h-96 w-72 overflow-y-auto p-3.5 text-xs ${
+                    className={`luma-scroll absolute right-0 bottom-12 z-30 max-h-[420px] w-80 overflow-y-auto p-3.5 text-xs ${
                       isM3
                         ? 'rounded-[24px] bg-[#232B3D] shadow-2xl ring-1 ring-white/10'
                         : 'lg-modal rounded-[22px]'
                     }`}
                   >
+                    {/* In-Window Native FFmpeg Remux / VideoToolbox Engine */}
+                    {proxyConfig.ffmpegAvailable && (
+                      <>
+                        <div className="mb-1.5 flex items-center justify-between text-[10px] font-semibold uppercase tracking-wider text-emerald-300">
+                          <span>In-Window Native Playback</span>
+                          <Cpu className="h-3 w-3" />
+                        </div>
+                        <div className="grid grid-cols-3 gap-1">
+                          {(
+                            [
+                              ['auto', 'Auto MSE'],
+                              ['remux', 'Dolby AAC'],
+                              ['hw', 'HW Decode'],
+                            ] as [NativeTranscodeMode, string][]
+                          ).map(([mode, label]) => {
+                            const active = (telemetry.activeTranscodeMode ?? 'auto') === mode;
+                            return (
+                              <button
+                                key={mode}
+                                type="button"
+                                onClick={() => handleSelectTranscodeMode(mode)}
+                                className={`rounded-xl px-2 py-1.5 text-center text-[11px] font-semibold transition ${
+                                  active
+                                    ? isM3
+                                      ? 'm3-tonal-active'
+                                      : 'lg-pill-active'
+                                    : 'bg-white/[0.05] text-slate-200 hover:bg-white/15'
+                                }`}
+                              >
+                                {label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                        <div className="my-2.5 border-t border-white/10" />
+                      </>
+                    )}
+
                     {/* Luma Studio Audio DSP */}
                     <div className="mb-1.5 flex items-center justify-between text-[10px] font-semibold uppercase tracking-wider text-sky-300">
                       <span>Studio Audio-DSP &amp; Nachtmodus</span>
@@ -1195,8 +1363,8 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
                     </div>
 
                     <div className="my-2.5 border-t border-white/10" />
-                    <div className="mb-1 flex items-center justify-between text-[10px] font-semibold uppercase tracking-wider text-slate-300">
-                      <span>Untertitel / CC</span>
+                    <div className="mb-1.5 flex items-center justify-between text-[10px] font-semibold uppercase tracking-wider text-slate-300">
+                      <span>Subtitles / External .SRT &amp; .VTT</span>
                       <Captions className="h-3 w-3 text-sky-400" />
                     </div>
                     <div className="space-y-1">
@@ -1214,12 +1382,9 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
                             : 'text-slate-200 hover:bg-white/10'
                         }`}
                       >
-                        <span>Aus</span>
+                        <span>{t.sleepOff}</span>
                       </button>
-                      {(telemetry.subtitleTracks.length > 0
-                        ? telemetry.subtitleTracks
-                        : [{ index: 0, name: 'Live CC / DVB-Sub', lang: 'de' }]
-                      ).map((sub) => (
+                      {telemetry.subtitleTracks.map((sub) => (
                         <button
                           key={sub.index}
                           type="button"
@@ -1227,7 +1392,7 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
                             engineRef.current?.setSubtitleTrack(sub.index);
                             setShowQualityMenu(false);
                           }}
-                          className={`flex w-full items-center justify-between rounded-full px-3 py-1.5 text-left ${
+                          className={`flex w-full items-center justify-between gap-2 rounded-full px-3 py-1.5 text-left ${
                             telemetry.currentSubtitleTrack === sub.index
                               ? isM3
                                 ? 'm3-tonal-active font-semibold'
@@ -1236,9 +1401,127 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
                           }`}
                         >
                           <span className="truncate">{sub.name}</span>
-                          <span className="text-[10px] uppercase opacity-70">{sub.lang}</span>
+                          <span className="shrink-0 text-[10px] uppercase opacity-70">
+                            {sub.lang}
+                          </span>
                         </button>
                       ))}
+                    </div>
+
+                    {/* Load Local .SRT / .VTT / .ASS + Remote Subtitle URL + Sync Offset */}
+                    <div className="mt-2.5 space-y-2 rounded-2xl bg-black/25 p-2.5">
+                      <div className="flex items-center gap-1.5">
+                        <label
+                          className={`flex flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-full px-2.5 py-1.5 text-[11px] font-semibold ${
+                            isM3 ? 'm3-secondary-tonal' : 'lg-capsule text-sky-200'
+                          }`}
+                        >
+                          <FileUp className="h-3.5 w-3.5 shrink-0" />
+                          <span>Load .SRT / .VTT</span>
+                          <input
+                            type="file"
+                            accept=".srt,.vtt,.ass,.ssa"
+                            onChange={handleSubtitleFileInputChange}
+                            className="hidden"
+                          />
+                        </label>
+
+                        <a
+                          href={`https://www.opensubtitles.org/en/search2/sublanguageid-${
+                            locale === 'de'
+                              ? 'ger'
+                              : locale === 'gr'
+                                ? 'ell'
+                                : locale === 'it'
+                                  ? 'ita'
+                                  : locale === 'fr'
+                                    ? 'fre'
+                                    : locale === 'es'
+                                      ? 'spa'
+                                      : 'eng'
+                          }/moviename-${encodeURIComponent(
+                            displayTitle.replace(/\(\d{4}\)/g, '').trim()
+                          )}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className={`inline-flex shrink-0 items-center gap-1 rounded-full px-2.5 py-1.5 text-[11px] font-semibold ${
+                            isM3 ? 'm3-secondary-tonal' : 'lg-capsule text-slate-200'
+                          }`}
+                          title="Find subtitles on OpenSubtitles"
+                        >
+                          <ExternalLink className="h-3 w-3" />
+                          <span>Find</span>
+                        </a>
+                      </div>
+
+                      <div className="flex items-center gap-1">
+                        <div className="relative flex-1">
+                          <Link2 className="pointer-events-none absolute left-2.5 top-2 h-3 w-3 text-slate-400" />
+                          <input
+                            type="url"
+                            value={subtitleUrlInput}
+                            onChange={(e) => setSubtitleUrlInput(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault();
+                                void handleLoadRemoteSubtitleUrl();
+                              }
+                            }}
+                            placeholder="Paste .srt / .vtt URL…"
+                            className="h-7 w-full rounded-full bg-white/10 pl-7 pr-2 text-[11px] text-white placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-sky-400"
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          disabled={!subtitleUrlInput.trim()}
+                          onClick={() => void handleLoadRemoteSubtitleUrl()}
+                          className={`rounded-full px-2.5 py-1 text-[10px] font-bold disabled:opacity-40 ${
+                            isM3 ? 'm3-primary-pill' : 'lg-pill-active'
+                          }`}
+                        >
+                          Add
+                        </button>
+                      </div>
+
+                      {/* Timing Offset (-0.5s / +0.5s) */}
+                      <div className="flex items-center justify-between pt-0.5 text-[11px] text-slate-300 luma-tabular">
+                        <span>Sync Offset</span>
+                        <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              engineRef.current?.setSubtitleOffset(
+                                (telemetry.subtitleOffsetSec ?? 0) - 0.5
+                              )
+                            }
+                            className="rounded-full bg-white/10 p-1 hover:bg-white/20"
+                            title="-0.5s"
+                          >
+                            <Minus className="h-3 w-3" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => engineRef.current?.setSubtitleOffset(0)}
+                            className="min-w-12 rounded-full bg-white/10 px-2 py-0.5 text-center text-[10px] font-semibold hover:bg-white/20"
+                            title="Reset offset"
+                          >
+                            {(telemetry.subtitleOffsetSec ?? 0) > 0 ? '+' : ''}
+                            {(telemetry.subtitleOffsetSec ?? 0).toFixed(1)}s
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              engineRef.current?.setSubtitleOffset(
+                                (telemetry.subtitleOffsetSec ?? 0) + 0.5
+                              )
+                            }
+                            className="rounded-full bg-white/10 p-1 hover:bg-white/20"
+                            title="+0.5s"
+                          >
+                            <Plus className="h-3 w-3" />
+                          </button>
+                        </div>
+                      </div>
                     </div>
                   </div>
                 )}

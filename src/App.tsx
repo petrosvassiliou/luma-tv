@@ -21,7 +21,6 @@ import {
   type NativeEngineProbe,
 } from './engine/tauriNativeBridge';
 import {
-  cycleNextLocale,
   detectSystemLocale,
   normalizeLocale,
   TRANSLATIONS,
@@ -49,6 +48,7 @@ import {
   importM3uPlaylist,
   importXmltvForSource,
   importXtreamSource,
+  isPlaylistSourceStale,
   loadPersistedSourceBundle,
   refreshSourceAccountInfo,
   renamePersistedSource,
@@ -304,8 +304,9 @@ export function App() {
     () => ({
       ...proxyConfig,
       bufferProfile: preferences.bufferProfile,
+      ffmpegAvailable: Boolean(nativeProbe?.ffmpegAvailable),
     }),
-    [proxyConfig, preferences.bufferProfile]
+    [proxyConfig, preferences.bufferProfile, nativeProbe?.ffmpegAvailable]
   );
 
   // Sync Sleep Timer Deadline
@@ -370,6 +371,17 @@ export function App() {
                 : [...col.channelIds, cid],
             };
           }
+          if (target.vod) {
+            const vid = target.vod.id;
+            const prevVod = col.vodIds ?? [];
+            const exists = prevVod.includes(vid);
+            return {
+              ...col,
+              vodIds: exists
+                ? prevVod.filter((id) => id !== vid)
+                : [...prevVod, vid],
+            };
+          }
           if (target.series) {
             const sid = target.series.id;
             const prevSeries = col.seriesIds ?? [];
@@ -403,6 +415,7 @@ export function App() {
           id: `col-${Date.now()}`,
           name: trimmed,
           channelIds: target.channel ? [target.channel.id] : [],
+          vodIds: target.vod ? [target.vod.id] : [],
           seriesIds: target.series ? [target.series.id] : [],
           isPinLocked: false,
         };
@@ -466,6 +479,9 @@ export function App() {
     StoredChannel[]
   >([]);
   const [persistedVod, setPersistedVod] = useState<StoredVodItem[]>([]);
+  const [crossSourceLookupVod, setCrossSourceLookupVod] = useState<
+    StoredVodItem[]
+  >([]);
   const [persistedSeries, setPersistedSeries] = useState<StoredSeriesItem[]>([]);
   const [crossSourceLookupSeries, setCrossSourceLookupSeries] = useState<
     StoredSeriesItem[]
@@ -487,6 +503,30 @@ export function App() {
     }
     return new Set(DEFAULT_FAVORITES);
   });
+
+  const [favoriteVodIds, setFavoriteVodIds] = useState<Set<string>>(() => {
+    try {
+      const raw = localStorage.getItem('luma.favoriteVod.v1');
+      if (raw) return new Set(JSON.parse(raw) as string[]);
+    } catch {
+      // Ignore
+    }
+    return new Set();
+  });
+
+  const toggleFavoriteVod = useCallback((vodId: string) => {
+    setFavoriteVodIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(vodId)) next.delete(vodId);
+      else next.add(vodId);
+      try {
+        localStorage.setItem('luma.favoriteVod.v1', JSON.stringify(Array.from(next)));
+      } catch {
+        // Ignore
+      }
+      return next;
+    });
+  }, []);
 
   const [favoriteSeriesIds, setFavoriteSeriesIds] = useState<Set<string>>(() => {
     try {
@@ -594,6 +634,31 @@ export function App() {
       cancelled = true;
     };
   }, [favoriteIds, customBouquets, persistedSources]);
+
+  // Resolve any Favorite or Collection VOD IDs stored in IndexedDB across ALL playlists
+  useEffect(() => {
+    const neededVodIds = new Set<string>(favoriteVodIds);
+    for (const bq of customBouquets) {
+      for (const vid of bq.vodIds ?? []) neededVodIds.add(vid);
+    }
+    if (neededVodIds.size === 0) {
+      setCrossSourceLookupVod([]);
+      return;
+    }
+    let cancelled = false;
+    lumaDb.vodItems
+      .bulkGet(Array.from(neededVodIds))
+      .then((rows) => {
+        if (cancelled) return;
+        setCrossSourceLookupVod(
+          rows.filter((r): r is StoredVodItem => Boolean(r))
+        );
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [favoriteVodIds, customBouquets, persistedSources]);
 
   // Resolve any Favorite or Collection series IDs stored in IndexedDB across ALL playlists
   useEffect(() => {
@@ -725,6 +790,18 @@ export function App() {
 
     return [...bouquetGroups, ...standardGroups];
   }, [customBouquets, baseGroups, parentalConfig]);
+
+  const collectionAndFavoriteVodPool: VodItem[] = useMemo(() => {
+    const map = new Map<string, VodItem>();
+    for (const vod of persistedVod) map.set(vod.id, vod);
+    for (const vod of crossSourceLookupVod) map.set(vod.id, vod);
+    if (!demoSourceDeleted) {
+      for (const vod of DEMO_VOD_CATALOG) {
+        if (!map.has(vod.id)) map.set(vod.id, vod);
+      }
+    }
+    return Array.from(map.values());
+  }, [persistedVod, crossSourceLookupVod, demoSourceDeleted]);
 
   const collectionAndFavoriteSeriesPool: SeriesItem[] = useMemo(() => {
     const map = new Map<string, SeriesItem>();
@@ -1426,6 +1503,81 @@ export function App() {
     }
   };
 
+  // Background Automatic Playlist & XMLTV Refresh Scheduler
+  const autoRefreshingRef = useRef<boolean>(false);
+  useEffect(() => {
+    const intervalHours = preferences.autoRefreshHours ?? 12;
+    if (intervalHours <= 0 || persistedSources.length === 0) return;
+
+    let cancelled = false;
+
+    const checkAndAutoRefresh = async () => {
+      if (cancelled || autoRefreshingRef.current || ingestState.active) return;
+      const now = Date.now();
+      const staleSources = persistedSources.filter((src) =>
+        isPlaylistSourceStale(src, intervalHours, now)
+      );
+      if (staleSources.length === 0) return;
+
+      autoRefreshingRef.current = true;
+      try {
+        const proxyEndpoint =
+          proxyConfig.enabled || isLocalRustProxyEndpoint(proxyConfig.endpointUrl)
+            ? proxyConfig.endpointUrl
+            : nativeProbe?.localProxyUrl || undefined;
+
+        for (const src of staleSources) {
+          if (cancelled) break;
+          try {
+            await resyncPersistedSource({
+              source: src,
+              proxyEndpoint,
+            });
+          } catch {
+            // Silently skip offline/unreachable provider during background refresh
+          }
+        }
+
+        if (!cancelled) {
+          const updatedList = await lumaDb.sources.orderBy('createdAt').reverse().toArray();
+          setPersistedSources(updatedList);
+          if (staleSources.some((s) => s.id === activeSourceId)) {
+            await refreshActiveSourceBundle(activeSourceId);
+          }
+          setToastMessage(
+            `Auto-refreshed ${staleSources.map((s) => s.name).join(', ')}`
+          );
+          window.setTimeout(() => setToastMessage(null), 3200);
+        }
+      } finally {
+        autoRefreshingRef.current = false;
+      }
+    };
+
+    const startupTimer = window.setTimeout(() => {
+      void checkAndAutoRefresh();
+    }, 6000);
+
+    const periodicTimer = window.setInterval(() => {
+      void checkAndAutoRefresh();
+    }, 15 * 60_000);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(startupTimer);
+      window.clearInterval(periodicTimer);
+    };
+  }, [
+    preferences.autoRefreshHours,
+    persistedSources,
+    ingestState.active,
+    proxyConfig.enabled,
+    proxyConfig.endpointUrl,
+    nativeProbe?.localProxyUrl,
+    activeSourceId,
+    refreshActiveSourceBundle,
+  ]);
+
   const [reminders, setReminders] = useState<EpgReminder[]>(() => {
     try {
       const raw = localStorage.getItem('luma.reminders.v1');
@@ -1751,10 +1903,10 @@ export function App() {
       <CustomTitlebar
         designMode={designMode}
         locale={preferences.locale}
-        onToggleLocale={() =>
+        onSelectLocale={(nextLocale) =>
           handleUpdatePreferences({
             ...preferences,
-            locale: cycleNextLocale(preferences.locale),
+            locale: nextLocale,
           })
         }
         sleepRemainingSec={sleepRemainingSec}
@@ -1786,7 +1938,9 @@ export function App() {
           onSelectGroup={handleSelectSidebarGroup}
           groups={groups}
           totalChannelCount={channels.length}
-          favoritesCount={favoriteIds.size + favoriteSeriesIds.size}
+          favoritesCount={
+            favoriteIds.size + favoriteVodIds.size + favoriteSeriesIds.size
+          }
           collectionsCount={customBouquets.length}
         />
 
@@ -1879,18 +2033,22 @@ export function App() {
               designMode={designMode}
               locale={preferences.locale}
               channels={collectionAndFavoritePool}
+              vodCatalog={collectionAndFavoriteVodPool}
               seriesCatalog={collectionAndFavoriteSeriesPool}
               favoriteIds={favoriteIds}
+              favoriteVodIds={favoriteVodIds}
               favoriteSeriesIds={favoriteSeriesIds}
               activeChannelId={activeChannel.id}
               nowMs={nowMs}
               epgOffsetHours={epgOffsetHours}
               onSelectChannel={selectLiveChannel}
+              onPlayVod={(vod) => handlePlayVod(vod, 0)}
               onOpenSeries={(serId) => {
                 setFocusedSeriesId(serId);
                 setActiveSection('series');
               }}
               onToggleFavorite={toggleFavorite}
+              onToggleFavoriteVod={toggleFavoriteVod}
               onToggleFavoriteSeries={toggleFavoriteSeries}
               onOpenChannelMenu={setChannelMenuTarget}
             />
@@ -1901,6 +2059,7 @@ export function App() {
               designMode={designMode}
               locale={preferences.locale}
               channels={collectionAndFavoritePool}
+              vodCatalog={collectionAndFavoriteVodPool}
               seriesCatalog={collectionAndFavoriteSeriesPool}
               persistedSources={persistedSources}
               activeSourceId={activeSourceId}
@@ -1915,6 +2074,7 @@ export function App() {
               epgOffsetHours={epgOffsetHours}
               onChangeCollections={handleUpdateBouquets}
               onSelectChannel={selectLiveChannel}
+              onPlayVod={(vod) => handlePlayVod(vod, 0)}
               onOpenSeries={(serId) => {
                 setFocusedSeriesId(serId);
                 setActiveSection('series');
@@ -1962,6 +2122,10 @@ export function App() {
             <VodCatalogView
               designMode={designMode}
               vodCatalog={combinedVodCatalog}
+              favoriteVodIds={favoriteVodIds}
+              collections={customBouquets}
+              onToggleFavoriteVod={toggleFavoriteVod}
+              onOpenItemMenu={setChannelMenuTarget}
               watchHistory={watchHistory}
               locale={preferences.locale}
               onPlayVod={(vod, resumeSec) => handlePlayVod(vod, resumeSec)}
@@ -2099,13 +2263,16 @@ export function App() {
           isFavorite={
             channelMenuTarget.channel
               ? favoriteIds.has(channelMenuTarget.channel.id)
-              : channelMenuTarget.series
-                ? favoriteSeriesIds.has(channelMenuTarget.series.id)
-                : false
+              : channelMenuTarget.vod
+                ? favoriteVodIds.has(channelMenuTarget.vod.id)
+                : channelMenuTarget.series
+                  ? favoriteSeriesIds.has(channelMenuTarget.series.id)
+                  : false
           }
           collections={customBouquets}
           onClose={() => setChannelMenuTarget(null)}
           onPlayChannel={(ch) => selectLiveChannel(ch)}
+          onPlayVod={(vod) => handlePlayVod(vod, 0)}
           onOpenSeries={(ser) => {
             setFocusedSeriesId(ser.id);
             setActiveSection('series');
@@ -2113,6 +2280,8 @@ export function App() {
           onToggleFavorite={() => {
             if (channelMenuTarget.channel) {
               toggleFavorite(channelMenuTarget.channel.id);
+            } else if (channelMenuTarget.vod) {
+              toggleFavoriteVod(channelMenuTarget.vod.id);
             } else if (channelMenuTarget.series) {
               toggleFavoriteSeries(channelMenuTarget.series.id);
             }

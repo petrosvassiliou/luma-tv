@@ -22,9 +22,11 @@ import {
   Server,
   ShieldCheck,
   Sliders,
+  Star,
   Trash2,
   UserCheck,
   Users,
+  X,
 } from 'lucide-react';
 import type {
   StoredChannel,
@@ -41,6 +43,7 @@ import {
   isProviderDividerChannel,
   matchesNormalizedQuery,
   searchChannelsRanked,
+  searchVodRanked,
   tokenizeSearchQuery,
 } from '../../services/channelSearch';
 import {
@@ -55,6 +58,7 @@ import type {
 import type { IngestProgressState } from '../../services/playlistService';
 import type {
   Channel,
+  CustomBouquet,
   EngineProxyConfig,
   EpgProgram,
   PlatformDesignMode,
@@ -63,9 +67,15 @@ import type {
 import type { ChannelContextMenuTarget } from '../common/ChannelContextMenu';
 import { Phase4PlatformSyncPanel } from './Phase4PlatformSyncPanel';
 
+const VOD_PAGE_SIZE = 48;
+
 interface VodViewProps {
   designMode: PlatformDesignMode;
   vodCatalog: VodItem[];
+  favoriteVodIds?: Set<string>;
+  collections?: CustomBouquet[];
+  onToggleFavoriteVod?: (vodId: string) => void;
+  onOpenItemMenu?: (target: ChannelContextMenuTarget) => void;
   watchHistory?: WatchHistoryEntry[];
   locale?: LumaLocale;
   onPlayVod: (vod: VodItem, resumeSec?: number) => void;
@@ -75,6 +85,10 @@ interface VodViewProps {
 export const VodCatalogView: React.FC<VodViewProps> = ({
   designMode,
   vodCatalog,
+  favoriteVodIds = new Set(),
+  collections = [],
+  onToggleFavoriteVod,
+  onOpenItemMenu,
   watchHistory = [],
   locale = 'de',
   onPlayVod,
@@ -82,99 +96,419 @@ export const VodCatalogView: React.FC<VodViewProps> = ({
 }) => {
   const isM3 = designMode === 'm3-expressive';
   const t = TRANSLATIONS[locale];
+  const bcp47 = LOCALE_META[locale].bcp47;
+
+  const [query, setQuery] = useState('');
+  const [scopeFilter, setScopeFilter] = useState<string>('all'); // 'all' | 'favorites' | 'continue' | `col:...`
+  const [genreFilter, setGenreFilter] = useState<string>('all');
+  const [page, setPage] = useState(0);
+
+  const historyMap = useMemo(() => {
+    const map = new Map<string, WatchHistoryEntry>();
+    for (let i = 0; i < watchHistory.length; i++) {
+      const h = watchHistory[i];
+      map.set(h.itemId, h);
+    }
+    return map;
+  }, [watchHistory]);
+
+  const continueWatchingCount = useMemo(() => {
+    let count = 0;
+    for (let i = 0; i < vodCatalog.length; i++) {
+      const h = historyMap.get(vodCatalog[i].id);
+      if (h && h.resumeSec > 5) count += 1;
+    }
+    return count;
+  }, [vodCatalog, historyMap]);
+
+  const derivedGenres = useMemo(() => {
+    const map = new Map<string, number>();
+    for (let i = 0; i < vodCatalog.length; i++) {
+      const g = vodCatalog[i].genre || 'Other';
+      map.set(g, (map.get(g) ?? 0) + 1);
+    }
+    return Array.from(map.entries())
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => b.count - a.count);
+  }, [vodCatalog]);
+
+  const filteredVod = useMemo(() => {
+    let base = vodCatalog;
+
+    if (scopeFilter === 'favorites') {
+      base = base.filter((v) => favoriteVodIds.has(v.id));
+    } else if (scopeFilter === 'continue') {
+      base = base.filter((v) => {
+        const h = historyMap.get(v.id);
+        return Boolean(h && h.resumeSec > 5);
+      });
+    } else if (scopeFilter.startsWith('col:')) {
+      const colId = scopeFilter.slice(4);
+      const col = collections.find((c) => c.id === colId);
+      const set = new Set(col?.vodIds ?? []);
+      base = base.filter((v) => set.has(v.id));
+    }
+
+    if (genreFilter !== 'all') {
+      base = base.filter((v) => v.genre === genreFilter);
+    }
+
+    if (!query.trim()) return base;
+    return searchVodRanked(base, query, base.length).items;
+  }, [vodCatalog, scopeFilter, genreFilter, query, favoriteVodIds, collections, historyMap]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredVod.length / VOD_PAGE_SIZE));
+  const safePage = Math.min(page, totalPages - 1);
+  const pagedVod = filteredVod.slice(
+    safePage * VOD_PAGE_SIZE,
+    (safePage + 1) * VOD_PAGE_SIZE
+  );
+
+  const vodCollections = useMemo(
+    () => collections.filter((c) => (c.vodIds?.length ?? 0) > 0),
+    [collections]
+  );
+
   const cardSurface = isM3
-    ? 'rounded-[28px] bg-[#1A202E] hover:bg-[#232B3D]'
-    : 'lg-pane rounded-[24px] hover:ring-1 hover:ring-white/30';
+    ? 'rounded-[26px] bg-[#1A202E] hover:bg-[#232B3D]'
+    : 'lg-pane rounded-[22px] hover:ring-1 hover:ring-white/30';
 
   return (
-    <div className="luma-scroll flex-1 overflow-y-auto p-5">
-      <div className="mb-4">
-        <h2 className="text-base font-semibold text-white">{t.navVod}</h2>
-        <p className="text-xs text-slate-400 luma-tabular">
-          {vodCatalog.length.toLocaleString()} Titles
-        </p>
+    <div className="luma-scroll flex-1 overflow-y-auto p-5 space-y-4">
+      {/* Header + Search + Category Filter */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 className="text-base font-semibold text-white">{t.navVod}</h2>
+          <p className="text-xs text-slate-400 luma-tabular">
+            {filteredVod.length.toLocaleString(bcp47)} /{' '}
+            {vodCatalog.length.toLocaleString(bcp47)} Titles
+          </p>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2.5">
+          {/* Search Input */}
+          <div className="relative w-64 sm:w-72">
+            <Search className="pointer-events-none absolute left-3.5 top-2.5 h-3.5 w-3.5 text-slate-400" />
+            <input
+              id="input-vod-search"
+              type="text"
+              value={query}
+              onChange={(e) => {
+                setQuery(e.target.value);
+                setPage(0);
+              }}
+              placeholder={t.searchPlaceholder}
+              className={
+                isM3
+                  ? 'h-9 w-full rounded-full bg-[#232B3D] pl-9 pr-8 text-xs text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[#7FD4FF]/60'
+                  : 'lg-capsule h-9 w-full rounded-full pl-9 pr-8 text-xs text-white placeholder:text-white/45 focus:outline-none'
+              }
+            />
+            {query && (
+              <button
+                type="button"
+                onClick={() => {
+                  setQuery('');
+                  setPage(0);
+                }}
+                className="absolute right-2.5 top-2 rounded-full p-0.5 text-slate-400 hover:text-white"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
+
+          {/* Genre / Category Dropdown */}
+          <select
+            value={genreFilter}
+            onChange={(e) => {
+              setGenreFilter(e.target.value);
+              setPage(0);
+            }}
+            aria-label="Filter category"
+            className={
+              isM3
+                ? 'h-9 max-w-56 rounded-full bg-[#232B3D] px-3.5 text-xs font-semibold text-slate-100 focus:outline-none focus:ring-2 focus:ring-[#7FD4FF]/60'
+                : 'lg-capsule h-9 max-w-56 rounded-full bg-slate-900/90 px-3.5 text-xs font-semibold text-white focus:outline-none'
+            }
+          >
+            <option value="all" className="bg-slate-900 text-white">
+              {t.allChannels} ({vodCatalog.length.toLocaleString(bcp47)})
+            </option>
+            {derivedGenres.map((g) => (
+              <option key={g.name} value={g.name} className="bg-slate-900 text-white">
+                {g.name} ({g.count})
+              </option>
+            ))}
+          </select>
+        </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {vodCatalog.slice(0, 120).map((vod) => {
-          const hist = watchHistory.find((w) => w.itemId === vod.id);
-          const pct =
-            hist && hist.durationSec > 0
-              ? Math.min(98, Math.round((hist.resumeSec / hist.durationSec) * 100))
-              : 0;
-          return (
-            <div
-              key={vod.id}
-              onClick={() => onPlayVod(vod, hist?.resumeSec ?? 0)}
-              className={`group flex cursor-pointer flex-col justify-between overflow-hidden transition duration-200 hover:-translate-y-0.5 ${cardSurface}`}
+      {/* Scope Pills: All / Favorites / Continue Watching / Collections */}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => {
+              setScopeFilter('all');
+              setPage(0);
+            }}
+            className={`rounded-full px-3.5 py-1.5 text-xs font-semibold transition ${
+              scopeFilter === 'all'
+                ? isM3
+                  ? 'm3-primary-pill'
+                  : 'lg-pill-active'
+                : isM3
+                  ? 'm3-secondary-tonal'
+                  : 'lg-capsule text-slate-200'
+            }`}
+          >
+            {t.allChannels}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setScopeFilter('favorites');
+              setPage(0);
+            }}
+            className={`inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-xs font-semibold transition ${
+              scopeFilter === 'favorites'
+                ? 'bg-amber-400/25 text-amber-200 ring-1 ring-amber-400/50'
+                : isM3
+                  ? 'm3-secondary-tonal'
+                  : 'lg-capsule text-slate-200'
+            }`}
+          >
+            <Star className="h-3.5 w-3.5 fill-amber-400 text-amber-400" />
+            <span>
+              {t.favorites} ({favoriteVodIds.size})
+            </span>
+          </button>
+
+          {continueWatchingCount > 0 && (
+            <button
+              type="button"
+              onClick={() => {
+                setScopeFilter('continue');
+                setPage(0);
+              }}
+              className={`inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-xs font-semibold transition ${
+                scopeFilter === 'continue'
+                  ? isM3
+                    ? 'm3-primary-pill'
+                    : 'lg-pill-active'
+                  : isM3
+                    ? 'm3-secondary-tonal'
+                    : 'lg-capsule text-slate-200'
+              }`}
             >
-              <div
-                className="relative flex h-36 flex-col justify-between p-4"
-                style={{
-                  background: `linear-gradient(135deg, ${vod.accentFrom}55 0%, ${vod.accentTo}BB 100%)`,
+              <History className="h-3.5 w-3.5 text-sky-300" />
+              <span>Continue ({continueWatchingCount})</span>
+            </button>
+          )}
+
+          {vodCollections.map((col) => {
+            const key = `col:${col.id}`;
+            const active = scopeFilter === key;
+            return (
+              <button
+                key={col.id}
+                type="button"
+                onClick={() => {
+                  setScopeFilter(key);
+                  setPage(0);
                 }}
+                className={`rounded-full px-3.5 py-1.5 text-xs font-semibold transition ${
+                  active
+                    ? isM3
+                      ? 'm3-primary-pill'
+                      : 'lg-pill-active'
+                    : isM3
+                      ? 'm3-secondary-tonal'
+                      : 'lg-capsule text-slate-200'
+                }`}
               >
-                <div className="flex items-center justify-between">
-                  <span className="rounded-full bg-black/55 px-2.5 py-0.5 text-[10px] font-semibold text-sky-200">
-                    {vod.resolution} · {vod.codec}
-                  </span>
-                  <span className="rounded-full bg-black/55 px-2.5 py-0.5 text-[10px] font-semibold text-amber-300 luma-tabular">
-                    ★ {vod.rating}
-                  </span>
-                </div>
+                {col.name} ({col.vodIds?.length ?? 0})
+              </button>
+            );
+          })}
+        </div>
 
-                <div className="flex items-end justify-between gap-2">
-                  <div className="min-w-0">
-                    <div className="truncate text-[11px] font-medium text-sky-200/90">
-                      {vod.genre}
-                    </div>
-                    <h3 className="truncate text-sm font-semibold text-white">{vod.title}</h3>
-                  </div>
-                  <span
-                    className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full shadow-lg transition group-hover:scale-105 ${
-                      isM3 ? 'm3-primary-pill' : 'lg-pill-active'
-                    }`}
-                  >
-                    <Play className="h-4 w-4 fill-current" />
-                  </span>
-                </div>
+        {/* Pagination Controls */}
+        {totalPages > 1 && (
+          <div className="flex items-center gap-1.5 text-xs text-slate-300 luma-tabular">
+            <button
+              type="button"
+              disabled={safePage === 0}
+              onClick={() => setPage((p) => Math.max(0, p - 1))}
+              className={`rounded-full p-1.5 disabled:opacity-35 ${
+                isM3 ? 'm3-secondary-tonal' : 'lg-capsule text-white'
+              }`}
+            >
+              <ChevronLeft className="h-3.5 w-3.5" />
+            </button>
+            <span className="px-2">
+              {safePage + 1} / {totalPages}
+            </span>
+            <button
+              type="button"
+              disabled={safePage >= totalPages - 1}
+              onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+              className={`rounded-full p-1.5 disabled:opacity-35 ${
+                isM3 ? 'm3-secondary-tonal' : 'lg-capsule text-white'
+              }`}
+            >
+              <ChevronRight className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        )}
+      </div>
 
-                {pct > 0 && (
-                  <div className="absolute inset-x-0 bottom-0 h-1 bg-white/15">
+      {/* Movies Grid */}
+      {pagedVod.length === 0 ? (
+        <div
+          className={`flex flex-col items-center justify-center py-16 text-center ${
+            isM3 ? 'rounded-[28px] bg-[#1A202E]' : 'lg-pane rounded-[24px]'
+          }`}
+        >
+          <Search className="h-7 w-7 text-slate-400" />
+          <p className="mt-2.5 text-xs text-slate-300">
+            No matching movies found. Try clearing your search or category filter.
+          </p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+          {pagedVod.map((vod) => {
+            const hist = historyMap.get(vod.id);
+            const pct =
+              hist && hist.durationSec > 0
+                ? Math.min(98, Math.round((hist.resumeSec / hist.durationSec) * 100))
+                : 0;
+            const isFav = favoriteVodIds.has(vod.id);
+
+            return (
+              <div
+                key={vod.id}
+                onClick={() => onPlayVod(vod, hist?.resumeSec ?? 0)}
+                onContextMenu={(e) => {
+                  if (!onOpenItemMenu) return;
+                  e.preventDefault();
+                  onOpenItemMenu({ vod, x: e.clientX, y: e.clientY });
+                }}
+                className={`group flex cursor-pointer flex-col justify-between overflow-hidden transition duration-200 hover:-translate-y-0.5 ${cardSurface}`}
+              >
+                <div
+                  className="relative flex h-40 flex-col justify-between bg-cover bg-center p-4"
+                  style={{
+                    backgroundImage: vod.coverUrl
+                      ? `linear-gradient(180deg, rgba(6,8,14,0.35) 0%, rgba(6,8,14,0.92) 100%), url("${vod.coverUrl}")`
+                      : `linear-gradient(135deg, ${vod.accentFrom}55 0%, ${vod.accentTo}BB 100%)`,
+                  }}
+                >
+                  <div className="flex items-center justify-between gap-1.5">
+                    <span className="rounded-full bg-black/60 px-2.5 py-0.5 text-[10px] font-semibold text-sky-200">
+                      {vod.resolution} · {vod.codec}
+                    </span>
+
                     <div
-                      className={isM3 ? 'h-full bg-[#7FD4FF]' : 'luma-accent-gradient h-full'}
-                      style={{ width: `${pct}%` }}
-                    />
-                  </div>
-                )}
-              </div>
-
-              <div className="p-4">
-                <p className="line-clamp-2 text-xs leading-relaxed text-slate-300">
-                  {vod.synopsis}
-                </p>
-                <div className="mt-3 flex items-center justify-between text-[11px] text-slate-400 luma-tabular">
-                  <span>
-                    {vod.year} · {vod.durationMin} min{pct > 0 ? ` · ${pct}%` : ''}
-                  </span>
-                  {onInspectVod && (
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onInspectVod(vod);
-                      }}
-                      className="rounded-full bg-white/10 px-2.5 py-0.5 text-[10px] font-semibold text-sky-300 hover:bg-sky-400/25 hover:text-white"
+                      className="flex items-center gap-1"
+                      onClick={(e) => e.stopPropagation()}
                     >
-                      Details
-                    </button>
+                      <span className="rounded-full bg-black/60 px-2 py-0.5 text-[10px] font-semibold text-amber-300 luma-tabular">
+                        ★ {vod.rating}
+                      </span>
+
+                      {onToggleFavoriteVod && (
+                        <button
+                          type="button"
+                          onClick={() => onToggleFavoriteVod(vod.id)}
+                          className="rounded-full bg-black/60 p-1.5 text-slate-200 transition hover:bg-black/80 hover:text-amber-300"
+                          title={isFav ? t.removeFromFavorites : t.addToFavorites}
+                        >
+                          <Star
+                            className={`h-3.5 w-3.5 ${
+                              isFav ? 'fill-amber-400 text-amber-400' : ''
+                            }`}
+                          />
+                        </button>
+                      )}
+
+                      {onOpenItemMenu && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            const rect = e.currentTarget.getBoundingClientRect();
+                            onOpenItemMenu({
+                              vod,
+                              x: rect.left,
+                              y: rect.bottom + 4,
+                            });
+                          }}
+                          className="rounded-full bg-black/60 p-1.5 text-slate-200 transition hover:bg-black/80 hover:text-white"
+                          title={t.addToCollectionHeader}
+                        >
+                          <MoreVertical className="h-3.5 w-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex items-end justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="truncate text-[11px] font-medium text-sky-200/90">
+                        {vod.genre}
+                      </div>
+                      <h3 className="line-clamp-2 text-sm font-semibold text-white">
+                        {vod.title}
+                      </h3>
+                    </div>
+                    <span
+                      className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full shadow-lg transition group-hover:scale-105 ${
+                        isM3 ? 'm3-primary-pill' : 'lg-pill-active'
+                      }`}
+                    >
+                      <Play className="h-4 w-4 fill-current" />
+                    </span>
+                  </div>
+
+                  {pct > 0 && (
+                    <div className="absolute inset-x-0 bottom-0 h-1 bg-white/15">
+                      <div
+                        className={isM3 ? 'h-full bg-[#7FD4FF]' : 'luma-accent-gradient h-full'}
+                        style={{ width: `${pct}%` }}
+                      />
+                    </div>
                   )}
                 </div>
+
+                <div className="p-3.5">
+                  <p className="line-clamp-2 text-xs leading-relaxed text-slate-300">
+                    {vod.synopsis}
+                  </p>
+                  <div className="mt-2.5 flex items-center justify-between text-[11px] text-slate-400 luma-tabular">
+                    <span>
+                      {vod.year} · {vod.durationMin} min{pct > 0 ? ` · ${pct}%` : ''}
+                    </span>
+                    {onInspectVod && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onInspectVod(vod);
+                        }}
+                        className="rounded-full bg-white/10 px-2.5 py-0.5 text-[10px] font-semibold text-sky-300 hover:bg-sky-400/25 hover:text-white"
+                      >
+                        Details
+                      </button>
+                    )}
+                  </div>
+                </div>
               </div>
-            </div>
-          );
-        })}
-      </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 };

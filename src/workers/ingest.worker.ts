@@ -346,7 +346,7 @@ self.onmessage = async (event: MessageEvent<WorkerIngestRequest>) => {
         }
       );
 
-      const vodItems: StoredVodItem[] = vodStreams.slice(0, 6000).map((v, idx) => {
+      const vodItems: StoredVodItem[] = vodStreams.slice(0, 35000).map((v, idx) => {
         const title = v.name || `VOD #${v.stream_id}`;
         const upper = title.toUpperCase();
         const is4k = upper.includes('4K') || upper.includes('UHD');

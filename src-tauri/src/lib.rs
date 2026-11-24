@@ -19,8 +19,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
+use tokio::io::AsyncReadExt;
 use tokio::net::TcpListener;
-use tokio::sync::OnceCell;
+use tokio::sync::{mpsc, OnceCell};
 use url::Url;
 
 type ProxyBody = BoxBody<Bytes, std::io::Error>;
@@ -34,6 +35,8 @@ pub struct NativeEngineCapabilities {
     pub hw_decoder: &'static str,
     pub mpv_available: bool,
     pub mpv_path: Option<String>,
+    pub ffmpeg_available: bool,
+    pub ffmpeg_path: Option<String>,
     pub local_proxy_url: Option<String>,
     pub cors_free_network: bool,
     pub supported_codecs: Vec<&'static str>,
@@ -52,6 +55,7 @@ struct ProxyRuntimeContext {
 }
 
 static CACHED_MPV_BINARY: OnceLock<PathBuf> = OnceLock::new();
+static CACHED_FFMPEG_BINARY: OnceLock<PathBuf> = OnceLock::new();
 static LOCAL_PROXY_INSTANCE: OnceCell<LocalProxyServer> = OnceCell::const_new();
 
 fn generate_session_token() -> String {
@@ -145,6 +149,81 @@ pub fn resolve_mpv_binary() -> Option<PathBuf> {
         seen.push(candidate.clone());
         if verify_mpv_executable(&candidate) {
             let _ = CACHED_MPV_BINARY.set(candidate.clone());
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn candidate_ffmpeg_paths() -> Vec<PathBuf> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    let bin_name = if cfg!(target_os = "windows") {
+        "ffmpeg.exe"
+    } else {
+        "ffmpeg"
+    };
+
+    if let Some(explicit) = std::env::var_os("LUMA_FFMPEG_PATH") {
+        if !explicit.is_empty() {
+            candidates.push(PathBuf::from(explicit));
+        }
+    }
+
+    if let Some(path_var) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path_var) {
+            candidates.push(dir.join(bin_name));
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        candidates.push(PathBuf::from("/opt/homebrew/bin/ffmpeg"));
+        candidates.push(PathBuf::from("/usr/local/bin/ffmpeg"));
+        candidates.push(PathBuf::from("/opt/local/bin/ffmpeg"));
+        if let Some(home) = std::env::var_os("HOME") {
+            candidates.push(PathBuf::from(home).join(".local/bin/ffmpeg"));
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        candidates.push(PathBuf::from("/usr/bin/ffmpeg"));
+        candidates.push(PathBuf::from("/usr/local/bin/ffmpeg"));
+        candidates.push(PathBuf::from("/snap/bin/ffmpeg"));
+    }
+
+    candidates
+}
+
+fn verify_ffmpeg_executable(path: &Path) -> bool {
+    if !path.is_file() {
+        return false;
+    }
+    Command::new(path)
+        .arg("-version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+pub fn resolve_ffmpeg_binary() -> Option<PathBuf> {
+    if let Some(cached) = CACHED_FFMPEG_BINARY.get() {
+        if cached.is_file() {
+            return Some(cached.clone());
+        }
+    }
+
+    let mut seen: Vec<PathBuf> = Vec::new();
+    for candidate in candidate_ffmpeg_paths() {
+        if seen.iter().any(|p| p == &candidate) {
+            continue;
+        }
+        seen.push(candidate.clone());
+        if verify_ffmpeg_executable(&candidate) {
+            let _ = CACHED_FFMPEG_BINARY.set(candidate.clone());
             return Some(candidate);
         }
     }
@@ -348,6 +427,8 @@ async fn handle_proxy_request(
 
     let mut raw_target = String::new();
     let mut query_ua: Option<String> = None;
+    let mut transcode_mode: Option<String> = None;
+    let mut start_sec: f64 = 0.0;
     let mut is_health = false;
 
     if let Some(q) = req.uri().query() {
@@ -355,6 +436,14 @@ async fn handle_proxy_request(
             match k.as_ref() {
                 "url" => raw_target = v.into_owned(),
                 "ua" if !v.trim().is_empty() => query_ua = Some(v.into_owned()),
+                "transcode" if !v.trim().is_empty() => transcode_mode = Some(v.into_owned()),
+                "start" => {
+                    if let Ok(parsed_sec) = v.parse::<f64>() {
+                        if parsed_sec.is_finite() && parsed_sec > 0.0 {
+                            start_sec = parsed_sec;
+                        }
+                    }
+                }
                 "health" if v == "1" => is_health = true,
                 _ => {}
             }
@@ -367,7 +456,8 @@ async fn handle_proxy_request(
             serde_json::json!({
                 "ok": true,
                 "service": "lumaNativeRustProxy",
-                "version": "0.7.0",
+                "version": "0.8.0-beta.1",
+                "ffmpegAvailable": resolve_ffmpeg_binary().is_some(),
             }),
         ));
     }
@@ -393,6 +483,178 @@ async fn handle_proxy_request(
     let effective_ua = query_ua
         .or(header_ua)
         .unwrap_or_else(|| "LumaTV/0.7 (Native Tauri Stream Engine)".to_string());
+
+    // In-Window Native FFmpeg Remux / Dolby Audio Transcode / Hardware VideoToolbox Pipeline
+    if let Some(ref mode) = transcode_mode {
+        if mode == "remux" || mode == "hw" {
+            let Some(ffmpeg_bin) = resolve_ffmpeg_binary() else {
+                return Ok(json_response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    serde_json::json!({
+                        "error": "FFmpeg binary not found on system.",
+                    }),
+                ));
+            };
+
+            let is_hw = mode == "hw";
+            let content_mime = if is_hw { "video/mp4" } else { "video/mp2t" };
+
+            if req.method() == Method::HEAD {
+                return Ok(with_cors_headers(Response::builder().status(StatusCode::OK))
+                    .header(CONTENT_TYPE, content_mime)
+                    .header(CACHE_CONTROL, "no-store")
+                    .body(empty_body())
+                    .unwrap_or_else(|_| Response::new(empty_body())));
+            }
+
+            let mut cmd = tokio::process::Command::new(&ffmpeg_bin);
+            cmd.kill_on_drop(true)
+                .arg("-hide_banner")
+                .arg("-loglevel")
+                .arg("error")
+                .arg("-fflags")
+                .arg("+genpts+discardcorrupt")
+                .arg("-user_agent")
+                .arg(sanitize_cli_value(&effective_ua))
+                .arg("-reconnect")
+                .arg("1")
+                .arg("-reconnect_streamed")
+                .arg("1")
+                .arg("-reconnect_delay_max")
+                .arg("4");
+
+            if start_sec > 0.5 {
+                cmd.arg("-ss").arg(format!("{start_sec:.1}"));
+            }
+
+            cmd.arg("-i")
+                .arg(target_url.as_str())
+                .arg("-map")
+                .arg("0:v:0?")
+                .arg("-map")
+                .arg("0:a:0?")
+                .arg("-sn");
+
+            if is_hw {
+                #[cfg(target_os = "macos")]
+                {
+                    cmd.arg("-c:v")
+                        .arg("h264_videotoolbox")
+                        .arg("-b:v")
+                        .arg("8M")
+                        .arg("-allow_sw")
+                        .arg("1")
+                        .arg("-pix_fmt")
+                        .arg("yuv420p");
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    cmd.arg("-c:v")
+                        .arg("libx264")
+                        .arg("-preset")
+                        .arg("veryfast")
+                        .arg("-crf")
+                        .arg("21")
+                        .arg("-pix_fmt")
+                        .arg("yuv420p");
+                }
+                cmd.arg("-c:a")
+                    .arg("aac")
+                    .arg("-b:a")
+                    .arg("192k")
+                    .arg("-ac")
+                    .arg("2")
+                    .arg("-f")
+                    .arg("mp4")
+                    .arg("-movflags")
+                    .arg("frag_keyframe+empty_moov+default_base_moof")
+                    .arg("pipe:1");
+            } else {
+                // Zero-CPU video passthrough + Dolby AC3/EAC3/DTS -> AAC stereo remux
+                cmd.arg("-c:v")
+                    .arg("copy")
+                    .arg("-c:a")
+                    .arg("aac")
+                    .arg("-b:a")
+                    .arg("192k")
+                    .arg("-ac")
+                    .arg("2")
+                    .arg("-f")
+                    .arg("mpegts")
+                    .arg("pipe:1");
+            }
+
+            cmd.stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null());
+
+            let mut child = match cmd.spawn() {
+                Ok(c) => c,
+                Err(err) => {
+                    return Ok(json_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        serde_json::json!({
+                            "error": "Failed to spawn FFmpeg remux pipeline",
+                            "detail": err.to_string(),
+                        }),
+                    ));
+                }
+            };
+
+            let Some(mut stdout) = child.stdout.take() else {
+                let _ = child.start_kill();
+                return Ok(json_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    serde_json::json!({ "error": "FFmpeg stdout unavailable" }),
+                ));
+            };
+
+            let (tx, rx) = mpsc::channel::<Result<Frame<Bytes>, std::io::Error>>(24);
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 65_536];
+                loop {
+                    tokio::select! {
+                        biased;
+                        _ = tx.closed() => {
+                            let _ = child.kill().await;
+                            break;
+                        }
+                        read_res = stdout.read(&mut buf) => {
+                            match read_res {
+                                Ok(0) => {
+                                    let _ = child.wait().await;
+                                    break;
+                                }
+                                Ok(n) => {
+                                    let chunk = Bytes::copy_from_slice(&buf[..n]);
+                                    if tx.send(Ok(Frame::data(chunk))).await.is_err() {
+                                        let _ = child.kill().await;
+                                        break;
+                                    }
+                                }
+                                Err(err) => {
+                                    let _ = tx.send(Err(err)).await;
+                                    let _ = child.kill().await;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+
+            let receiver_stream = futures_util::stream::unfold(rx, |mut receiver| async move {
+                receiver.recv().await.map(|item| (item, receiver))
+            });
+            let stream_body: ProxyBody = StreamBody::new(receiver_stream).boxed();
+
+            return Ok(with_cors_headers(Response::builder().status(StatusCode::OK))
+                .header(CONTENT_TYPE, content_mime)
+                .header(CACHE_CONTROL, "no-store")
+                .body(stream_body)
+                .unwrap_or_else(|_| Response::new(empty_body())));
+        }
+    }
 
     let method = if req.method() == Method::HEAD {
         reqwest::Method::HEAD
@@ -569,6 +831,9 @@ async fn luma_native_probe_engine() -> NativeEngineCapabilities {
     let mpv_resolved = resolve_mpv_binary();
     let mpv_available = mpv_resolved.is_some();
     let mpv_path = mpv_resolved.map(|p| p.to_string_lossy().into_owned());
+    let ffmpeg_resolved = resolve_ffmpeg_binary();
+    let ffmpeg_available = ffmpeg_resolved.is_some();
+    let ffmpeg_path = ffmpeg_resolved.map(|p| p.to_string_lossy().into_owned());
     let local_proxy_url = ensure_local_proxy_url().await;
 
     NativeEngineCapabilities {
@@ -578,6 +843,8 @@ async fn luma_native_probe_engine() -> NativeEngineCapabilities {
         hw_decoder,
         mpv_available,
         mpv_path,
+        ffmpeg_available,
+        ffmpeg_path,
         local_proxy_url,
         cors_free_network: true,
         supported_codecs: vec![

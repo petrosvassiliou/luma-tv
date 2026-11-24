@@ -14,10 +14,12 @@ import type {
   CustomBouquet,
   PlatformDesignMode,
   SeriesItem,
+  VodItem,
 } from '../../types/luma';
 
 export interface ChannelContextMenuTarget {
   channel?: Channel;
+  vod?: VodItem;
   series?: SeriesItem;
   x: number;
   y: number;
@@ -31,6 +33,7 @@ interface ChannelContextMenuProps {
   collections: CustomBouquet[];
   onClose: () => void;
   onPlayChannel?: (channel: Channel) => void;
+  onPlayVod?: (vod: VodItem) => void;
   onOpenSeries?: (series: SeriesItem) => void;
   onToggleFavorite: () => void;
   onToggleInCollection: (collectionId: string) => void;
@@ -45,6 +48,7 @@ export const ChannelContextMenu: React.FC<ChannelContextMenuProps> = ({
   collections,
   onClose,
   onPlayChannel,
+  onPlayVod,
   onOpenSeries,
   onToggleFavorite,
   onToggleInCollection,
@@ -86,10 +90,14 @@ export const ChannelContextMenu: React.FC<ChannelContextMenuProps> = ({
 
   const title = target.channel
     ? `#${target.channel.number} · ${target.channel.name}`
-    : target.series?.title ?? '';
+    : target.vod
+      ? target.vod.title
+      : target.series?.title ?? '';
   const subtitle = target.channel
     ? target.channel.groupName
-    : `${target.series?.genre ?? ''} · ${target.series?.year ?? ''}`;
+    : target.vod
+      ? `${target.vod.genre} · ${target.vod.year}`
+      : `${target.series?.genre ?? ''} · ${target.series?.year ?? ''}`;
 
   return (
     <div
@@ -124,6 +132,20 @@ export const ChannelContextMenu: React.FC<ChannelContextMenuProps> = ({
               type="button"
               onClick={() => {
                 onPlayChannel(target.channel!);
+                onClose();
+              }}
+              className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-xs font-medium text-slate-100 hover:bg-white/10"
+            >
+              <Play className="h-3.5 w-3.5 text-sky-300" />
+              <span>{t.playNow}</span>
+            </button>
+          )}
+
+          {target.vod && onPlayVod && (
+            <button
+              type="button"
+              onClick={() => {
+                onPlayVod(target.vod!);
                 onClose();
               }}
               className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-xs font-medium text-slate-100 hover:bg-white/10"
@@ -179,9 +201,11 @@ export const ChannelContextMenu: React.FC<ChannelContextMenuProps> = ({
               {collections.map((col) => {
                 const inCollection = target.channel
                   ? col.channelIds.includes(target.channel.id)
-                  : target.series
-                    ? Boolean(col.seriesIds?.includes(target.series.id))
-                    : false;
+                  : target.vod
+                    ? Boolean(col.vodIds?.includes(target.vod.id))
+                    : target.series
+                      ? Boolean(col.seriesIds?.includes(target.series.id))
+                      : false;
                 return (
                   <button
                     key={col.id}

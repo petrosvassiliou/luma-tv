@@ -111,6 +111,40 @@ export function detectStreamDriver(
   return 'hls';
 }
 
+export function isNonNativeBrowserContainer(rawUrl: string): boolean {
+  try {
+    const p = new URL(rawUrl).pathname.toLowerCase();
+    return (
+      p.endsWith('.mkv') ||
+      p.endsWith('.avi') ||
+      p.endsWith('.flv') ||
+      p.endsWith('.divx') ||
+      p.endsWith('.wmv')
+    );
+  } catch {
+    const lower = rawUrl.toLowerCase();
+    return lower.endsWith('.mkv') || lower.endsWith('.avi') || lower.endsWith('.flv');
+  }
+}
+
+export function buildRustTranscodeStreamUrl(
+  rawUrl: string,
+  proxy: EngineProxyConfig,
+  mode: 'remux' | 'hw',
+  startSec = 0
+): string {
+  const base = proxy.endpointUrl.trim().replace(/\/+$/, '');
+  if (!base || !isLocalRustProxyEndpoint(base)) {
+    return rawUrl;
+  }
+  const uaParam =
+    proxy.customUserAgent && proxy.customUserAgent.trim()
+      ? `&ua=${encodeURIComponent(proxy.customUserAgent.trim())}`
+      : '';
+  const startParam = startSec > 0.5 ? `&start=${Math.round(startSec)}` : '';
+  return `${base}?url=${encodeURIComponent(rawUrl)}&transcode=${mode}${startParam}${uaParam}`;
+}
+
 export function buildProxiedStreamUrl(rawUrl: string, proxy: EngineProxyConfig): string {
   if (!proxy.enabled || !proxy.endpointUrl.trim()) {
     return rawUrl;
