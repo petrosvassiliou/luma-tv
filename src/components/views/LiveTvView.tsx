@@ -32,6 +32,7 @@ interface LiveTvViewProps {
   collections?: CustomBouquet[];
   onSelectGroup?: (groupId: string) => void;
   activeChannelId: string;
+  isOnDemandActive?: boolean;
   favoriteIds: Set<string>;
   onSelectChannel: (channel: Channel) => void;
   onToggleFavorite: (channelId: string) => void;
@@ -52,6 +53,7 @@ export const LiveTvView: React.FC<LiveTvViewProps> = ({
   collections = [],
   onSelectGroup,
   activeChannelId,
+  isOnDemandActive = false,
   favoriteIds,
   onSelectChannel,
   onToggleFavorite,
@@ -63,7 +65,16 @@ export const LiveTvView: React.FC<LiveTvViewProps> = ({
   const t = TRANSLATIONS[locale];
   const bcp47 = LOCALE_META[locale].bcp47;
 
-  const [drawerOpen, setDrawerOpen] = useState(true);
+  const [drawerPref, setDrawerPref] = useState<{
+    onDemand: boolean;
+    open: boolean;
+  }>({ onDemand: false, open: true });
+  const drawerOpen =
+    drawerPref.onDemand === isOnDemandActive ? drawerPref.open : !isOnDemandActive;
+  const setDrawerOpen = (next: boolean | ((prev: boolean) => boolean)) => {
+    const resolved = typeof next === 'function' ? next(drawerOpen) : next;
+    setDrawerPref({ onDemand: isOnDemandActive, open: resolved });
+  };
   const [filterQuery, setFilterQuery] = useState('');
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(600);
@@ -131,7 +142,7 @@ export const LiveTvView: React.FC<LiveTvViewProps> = ({
 
         {/* Subtle Top-Right Collections, EPG & Drawer Quick Switcher */}
         <div className="absolute top-3.5 right-3.5 z-30 flex items-center gap-1.5">
-          {collections.length > 0 && onSelectGroup && (
+          {!isOnDemandActive && collections.length > 0 && onSelectGroup && (
             <button
               type="button"
               onClick={handleQuickCollectionToggle}
@@ -153,19 +164,21 @@ export const LiveTvView: React.FC<LiveTvViewProps> = ({
             </button>
           )}
 
-          <button
-            type="button"
-            onClick={onOpenEpgView}
-            className={
-              isM3
-                ? 'm3-secondary-tonal hidden items-center gap-1.5 rounded-full px-3 py-1.5 text-[11px] font-semibold shadow-md sm:inline-flex'
-                : 'lg-capsule hidden items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-medium text-white/90 shadow-md sm:inline-flex'
-            }
-            title={t.navLive}
-          >
-            <CalendarClock className="h-3.5 w-3.5 text-sky-300" />
-            <span>EPG</span>
-          </button>
+          {!isOnDemandActive && (
+            <button
+              type="button"
+              onClick={onOpenEpgView}
+              className={
+                isM3
+                  ? 'm3-secondary-tonal hidden items-center gap-1.5 rounded-full px-3 py-1.5 text-[11px] font-semibold shadow-md sm:inline-flex'
+                  : 'lg-capsule hidden items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-medium text-white/90 shadow-md sm:inline-flex'
+              }
+              title={t.navLive}
+            >
+              <CalendarClock className="h-3.5 w-3.5 text-sky-300" />
+              <span>EPG</span>
+            </button>
+          )}
 
           <button
             type="button"

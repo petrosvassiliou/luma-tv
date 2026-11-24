@@ -14,7 +14,12 @@ interface MediaSessionCallbacks {
 export function syncOsMediaSession(
   channel: Channel,
   programTitle: string,
-  callbacks: MediaSessionCallbacks
+  callbacks: MediaSessionCallbacks,
+  onDemandMeta?: {
+    title: string;
+    subtitle: string;
+    badgeTop: string;
+  } | null
 ): void {
   if (typeof navigator === 'undefined' || !('mediaSession' in navigator)) {
     return;
@@ -22,9 +27,11 @@ export function syncOsMediaSession(
 
   try {
     navigator.mediaSession.metadata = new MediaMetadata({
-      title: `${channel.name} — ${programTitle}`,
-      artist: `Luma TV · Kanal #${channel.number}`,
-      album: channel.groupName,
+      title: onDemandMeta ? onDemandMeta.title : `${channel.name} — ${programTitle}`,
+      artist: onDemandMeta
+        ? `Luma TV · ${onDemandMeta.badgeTop}`
+        : `Luma TV · Kanal #${channel.number}`,
+      album: onDemandMeta ? onDemandMeta.subtitle : channel.groupName,
       artwork: [
         {
           src: '/luma-logo.svg',
@@ -34,8 +41,14 @@ export function syncOsMediaSession(
       ],
     });
 
-    navigator.mediaSession.setActionHandler('previoustrack', callbacks.onPrevChannel);
-    navigator.mediaSession.setActionHandler('nexttrack', callbacks.onNextChannel);
+    navigator.mediaSession.setActionHandler(
+      'previoustrack',
+      onDemandMeta ? null : callbacks.onPrevChannel
+    );
+    navigator.mediaSession.setActionHandler(
+      'nexttrack',
+      onDemandMeta ? null : callbacks.onNextChannel
+    );
     if (callbacks.onPlay) {
       navigator.mediaSession.setActionHandler('play', callbacks.onPlay);
     }

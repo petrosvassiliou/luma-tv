@@ -227,6 +227,7 @@ export const InAppPipWindow: React.FC<InAppPipWindowProps> = ({
 
   const { current, progressPct } = getCurrentAndNextProgram(channel, nowMs);
   const title = overrideTitle ?? current.title;
+  const isOnDemand = Boolean(overrideStreamUrl && overrideTitle);
 
   return (
     <div
@@ -295,7 +296,7 @@ export const InAppPipWindow: React.FC<InAppPipWindowProps> = ({
           <GripHorizontal className="h-3.5 w-3.5 shrink-0 text-slate-400" />
           <span className="h-2 w-2 shrink-0 rounded-full bg-sky-300 animate-luma-live" />
           <span className="truncate text-xs font-semibold text-white">
-            #{channel.number} · {channel.name}
+            {isOnDemand ? title : `#${channel.number} · ${channel.name}`}
           </span>
         </div>
 
@@ -349,7 +350,12 @@ export const InAppPipWindow: React.FC<InAppPipWindowProps> = ({
       {/* Mini Video Viewport */}
       <div className="relative aspect-video w-full bg-[#06080E]">
         {state !== 'playing' && (
-          <BroadcastSynthCanvas channel={channel} programTitle={title} compact />
+          <BroadcastSynthCanvas
+            channel={channel}
+            programTitle={title}
+            badgeCodeOverride={isOnDemand ? 'VOD' : undefined}
+            compact
+          />
         )}
         <video
           ref={videoRef}
@@ -376,22 +382,26 @@ export const InAppPipWindow: React.FC<InAppPipWindowProps> = ({
           </div>
 
           <div className="flex shrink-0 items-center gap-1">
-            <button
-              type="button"
-              onClick={onPrevChannel}
-              className="rounded-full bg-black/55 p-1.5 text-slate-200 hover:bg-white/20 hover:text-white"
-              title="Previous channel"
-            >
-              <ChevronUp className="h-3.5 w-3.5" />
-            </button>
-            <button
-              type="button"
-              onClick={onNextChannel}
-              className="rounded-full bg-black/55 p-1.5 text-slate-200 hover:bg-white/20 hover:text-white"
-              title="Next channel"
-            >
-              <ChevronDown className="h-3.5 w-3.5" />
-            </button>
+            {!isOnDemand && (
+              <>
+                <button
+                  type="button"
+                  onClick={onPrevChannel}
+                  className="rounded-full bg-black/55 p-1.5 text-slate-200 hover:bg-white/20 hover:text-white"
+                  title="Previous channel"
+                >
+                  <ChevronUp className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={onNextChannel}
+                  className="rounded-full bg-black/55 p-1.5 text-slate-200 hover:bg-white/20 hover:text-white"
+                  title="Next channel"
+                >
+                  <ChevronDown className="h-3.5 w-3.5" />
+                </button>
+              </>
+            )}
             <button
               type="button"
               onClick={() => onChangeMuted(!isMuted)}

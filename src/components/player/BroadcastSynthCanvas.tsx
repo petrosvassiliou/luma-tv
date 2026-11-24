@@ -4,6 +4,7 @@ import type { Channel } from '../../types/luma';
 interface BroadcastSynthCanvasProps {
   channel: Channel;
   programTitle: string;
+  badgeCodeOverride?: string;
   paused?: boolean;
   compact?: boolean;
   externalCanvasRef?: React.RefObject<HTMLCanvasElement | null>;
@@ -12,6 +13,7 @@ interface BroadcastSynthCanvasProps {
 export const BroadcastSynthCanvas: React.FC<BroadcastSynthCanvasProps> = ({
   channel,
   programTitle,
+  badgeCodeOverride,
   paused = false,
   compact = false,
   externalCanvasRef,
@@ -98,9 +100,10 @@ export const BroadcastSynthCanvas: React.FC<BroadcastSynthCanvasProps> = ({
       ctx.restore();
 
       if (!compact) {
+        const badgeLabel = badgeCodeOverride || channel.shortCode;
         ctx.fillStyle = 'rgba(255, 255, 255, 0.86)';
         ctx.font = '600 13px Inter, system-ui, sans-serif';
-        ctx.fillText(`${channel.shortCode} · LUMA HDR STUDIO FEED`, w * 0.055, h * 0.26);
+        ctx.fillText(`${badgeLabel} · LUMA HDR STUDIO FEED`, w * 0.055, h * 0.26);
 
         ctx.fillStyle = `rgba(${ar}, ${ag}, ${ab}, 0.95)`;
         ctx.font = '700 22px Inter, system-ui, sans-serif';
@@ -122,6 +125,7 @@ export const BroadcastSynthCanvas: React.FC<BroadcastSynthCanvasProps> = ({
     rafId = requestAnimationFrame(render);
     return () => cancelAnimationFrame(rafId);
   }, [
+    badgeCodeOverride,
     canvasRef,
     channel.accentColor,
     channel.number,

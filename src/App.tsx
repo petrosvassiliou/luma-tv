@@ -910,6 +910,12 @@ export function App() {
   const [activeOnDemand, setActiveOnDemand] = useState<{
     itemId: string;
     kind: 'vod' | 'catchup';
+    mediaKind: 'movie' | 'series';
+    favoriteTargetId: string;
+    returnSection: 'vod' | 'series';
+    badgeTop: string;
+    badgeCode: string;
+    techBadge: string;
     title: string;
     subtitle: string;
     streamUrl: string;
@@ -1127,6 +1133,12 @@ export function App() {
       setActiveOnDemand({
         itemId: vod.id,
         kind: 'vod',
+        mediaKind: 'movie',
+        favoriteTargetId: vod.id,
+        returnSection: 'vod',
+        badgeTop: 'VOD',
+        badgeCode: vod.resolution.includes('4K') ? '4K' : 'HD',
+        techBadge: `${vod.resolution} · ${vod.codec}`,
         title: vod.title,
         subtitle: `${vod.genre} · ${vod.year} · ${vod.durationMin} min`,
         streamUrl: vod.streamUrl,
@@ -1203,6 +1215,12 @@ export function App() {
       setActiveOnDemand({
         itemId: ep.id,
         kind: 'vod',
+        mediaKind: 'series',
+        favoriteTargetId: series.id,
+        returnSection: 'series',
+        badgeTop: 'SERIES',
+        badgeCode: code,
+        techBadge: ep.resolution,
         title: fullTitle,
         subtitle: `${series.genre} · ${ep.durationMin} min · ${ep.resolution}`,
         streamUrl: ep.streamUrl,
@@ -1281,10 +1299,21 @@ export function App() {
   useEffect(() => {
     const { current } = getCurrentAndNextProgram(activeChannel, nowMs, epgOffsetHours);
     const title = activeOnDemand?.title ?? timeshiftProgram?.title ?? current.title;
-    syncOsMediaSession(activeChannel, title, {
-      onPrevChannel: () => zapRelative(-1),
-      onNextChannel: () => zapRelative(1),
-    });
+    syncOsMediaSession(
+      activeChannel,
+      title,
+      {
+        onPrevChannel: () => zapRelative(-1),
+        onNextChannel: () => zapRelative(1),
+      },
+      activeOnDemand
+        ? {
+            title: activeOnDemand.title,
+            subtitle: activeOnDemand.subtitle,
+            badgeTop: activeOnDemand.badgeTop,
+          }
+        : null
+    );
   }, [activeChannel, activeOnDemand, timeshiftProgram, nowMs, epgOffsetHours, zapRelative]);
 
   const handleRestoreFromSync = useCallback(
@@ -1876,6 +1905,28 @@ export function App() {
       overrideTitle={activeOnDemand?.title}
       overrideSubtitle={activeOnDemand?.subtitle}
       overrideStreamUrl={activeOnDemand?.streamUrl ?? timeshiftStreamUrl ?? undefined}
+      onDemandMeta={
+        activeOnDemand
+          ? {
+              badgeTop: activeOnDemand.badgeTop,
+              badgeCode: activeOnDemand.badgeCode,
+              techBadge: activeOnDemand.techBadge,
+              favoriteTargetId: activeOnDemand.favoriteTargetId,
+              backLabel:
+                activeOnDemand.returnSection === 'series' ? t.navSeries : t.navVod,
+            }
+          : null
+      }
+      onBackToCatalog={
+        activeOnDemand
+          ? () => {
+              if (activeOnDemand.returnSection === 'series') {
+                setFocusedSeriesId(activeOnDemand.favoriteTargetId);
+              }
+              setActiveSection(activeOnDemand.returnSection);
+            }
+          : undefined
+      }
       timeshiftProgram={timeshiftProgram}
       onExitTimeshift={() => {
         setActiveOnDemand(null);
@@ -1931,8 +1982,24 @@ export function App() {
             }
           : undefined
       }
-      isFavorite={favoriteIds.has(activeChannel.id)}
-      onToggleFavorite={toggleFavorite}
+      isFavorite={
+        activeOnDemand
+          ? activeOnDemand.mediaKind === 'movie'
+            ? favoriteVodIds.has(activeOnDemand.favoriteTargetId)
+            : favoriteSeriesIds.has(activeOnDemand.favoriteTargetId)
+          : favoriteIds.has(activeChannel.id)
+      }
+      onToggleFavorite={(targetId) => {
+        if (activeOnDemand) {
+          if (activeOnDemand.mediaKind === 'movie') {
+            toggleFavoriteVod(targetId);
+          } else {
+            toggleFavoriteSeries(targetId);
+          }
+        } else {
+          toggleFavorite(targetId);
+        }
+      }}
       onPrevChannel={() => zapRelative(-1)}
       onNextChannel={() => zapRelative(1)}
       onDetachInAppPip={() => setDetachedPipInEpg(true)}
@@ -2081,7 +2148,8 @@ export function App() {
               selectedGroupId={selectedGroupId}
               collections={customBouquets}
               onSelectGroup={handleSelectSidebarGroup}
-              activeChannelId={activeChannel.id}
+              activeChannelId={activeOnDemand ? '' : activeChannel.id}
+              isOnDemandActive={Boolean(activeOnDemand)}
               favoriteIds={favoriteIds}
               onSelectChannel={selectLiveChannel}
               onToggleFavorite={toggleFavorite}
@@ -2431,9 +2499,16 @@ export function App() {
           }}
           onPlayTrailer={() => {
             const targetId = inspectMedia.vod?.id ?? inspectMedia.series?.id ?? 'preview';
+            const isSeries = Boolean(inspectMedia.series && !inspectMedia.vod);
             setActiveOnDemand({
               itemId: `trailer-${targetId}`,
               kind: 'vod',
+              mediaKind: isSeries ? 'series' : 'movie',
+              favoriteTargetId: targetId,
+              returnSection: isSeries ? 'series' : 'vod',
+              badgeTop: 'TRAILER',
+              badgeCode: '4K',
+              techBadge: '4K HDR · Studio Preview',
               title: `Trailer · ${inspectMedia.vod?.title ?? inspectMedia.series?.title ?? 'Preview'}`,
               subtitle: 'Offizieller 4K HDR Studio-Trailer',
               streamUrl: VERIFIED_HLS_STREAMS.tearsOfSteel,

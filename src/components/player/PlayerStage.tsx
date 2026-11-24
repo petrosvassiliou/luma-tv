@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   AppWindow,
+  ArrowLeft,
   Captions,
   ChevronDown,
   ChevronUp,
@@ -59,12 +60,22 @@ import type {
 } from '../../types/luma';
 import { BroadcastSynthCanvas } from './BroadcastSynthCanvas';
 
+export interface OnDemandHudMeta {
+  badgeTop: string; // e.g. 'VOD' | 'SERIES'
+  badgeCode: string; // e.g. '4K' | 'HD' | 'S01E01'
+  techBadge: string; // e.g. '4K HDR · HEVC' | '1080p · H.264'
+  favoriteTargetId: string;
+  backLabel?: string; // e.g. 'Movies' | 'Series'
+}
+
 interface PlayerStageProps {
   designMode: PlatformDesignMode;
   channel: Channel;
   overrideTitle?: string;
   overrideSubtitle?: string;
   overrideStreamUrl?: string;
+  onDemandMeta?: OnDemandHudMeta | null;
+  onBackToCatalog?: () => void;
   timeshiftProgram?: EpgProgram | null;
   onExitTimeshift?: () => void;
   sessionKey?: string;
@@ -100,6 +111,8 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
   overrideTitle,
   overrideSubtitle,
   overrideStreamUrl,
+  onDemandMeta,
+  onBackToCatalog,
   timeshiftProgram,
   onExitTimeshift,
   sessionKey,
@@ -189,6 +202,7 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
   const activeUrl = overrideStreamUrl ?? channel.streamUrl;
   const activeSessionId = sessionKey ?? `${activeUrl}::${timeshiftProgram?.id ?? 'live'}`;
 
+  const isOnDemandVod = Boolean(overrideStreamUrl && !timeshiftProgram);
   const isSeekable = Boolean(overrideStreamUrl || timeshiftProgram);
   const defaultSeekableDuration =
     fallbackDurationSec > 0
@@ -513,7 +527,12 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
         : synthCanvasRef.current;
     if (!targetEl) return;
 
-    const ok = dvr.startRecording(targetEl, channel.shortCode);
+    const clipSlug = isOnDemandVod
+      ? (overrideTitle || 'VOD')
+          .replace(/[^a-zA-Z0-9_-]+/g, '_')
+          .slice(0, 24)
+      : channel.shortCode;
+    const ok = dvr.startRecording(targetEl, clipSlug);
     if (ok) {
       setRecSeconds(0);
       setIsRecording(true);
@@ -540,9 +559,12 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
     try {
       engineRef.current?.markExternalMpvSession();
       setIsPlaying(false);
+      const mpvWindowTitle = isOnDemandVod
+        ? displayTitle
+        : `${channel.name} · ${displayTitle}`;
       const msg = await launchNativeMpvStream(
         activeUrl,
-        `${channel.name} · ${displayTitle}`,
+        mpvWindowTitle,
         proxyConfig.customUserAgent
       );
       onToast?.(msg);
@@ -664,7 +686,7 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
     const endY = e.changedTouches[0]?.clientY ?? touchStartY.current;
     const dy = endY - touchStartY.current;
     touchStartY.current = null;
-    if (Math.abs(dy) > 60) {
+    if (!isOnDemandVod && Math.abs(dy) > 60) {
       if (dy < 0) onNextChannel();
       else onPrevChannel();
     }
@@ -773,6 +795,9 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
           <BroadcastSynthCanvas
             channel={channel}
             programTitle={displayTitle}
+            badgeCodeOverride={
+              isOnDemandVod ? (onDemandMeta?.badgeCode ?? 'VOD') : undefined
+            }
             paused={!isPlaying}
             externalCanvasRef={synthCanvasRef}
           />
@@ -904,6 +929,21 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
             </span>
           )}
 
+          {isOnDemandVod && onBackToCatalog && (
+            <button
+              type="button"
+              onClick={onBackToCatalog}
+              className={
+                isM3
+                  ? 'm3-secondary-tonal inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-semibold'
+                  : 'lg-capsule inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-medium text-sky-200'
+              }
+            >
+              <ArrowLeft className="h-3 w-3" />
+              <span>{onDemandMeta?.backLabel || t.navVod}</span>
+            </button>
+          )}
+
           {isSeekable && onExitTimeshift && (
             <button
               type="button"
@@ -975,7 +1015,7 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
           )}
 
           <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
-            {/* Channel Identity (guaranteed min-w-[200px] + overflow-hidden so icons/badges never spill out) */}
+            {/* Media / Channel Identity (switches cleanly between Live TV and On-Demand Movies/Series) */}
             <div className="flex min-w-[200px] flex-1 items-center gap-2.5 overflow-hidden">
               <div
                 className={
@@ -984,18 +1024,22 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
                     : 'lg-capsule flex h-10 min-w-13 shrink-0 flex-col items-center justify-center rounded-[14px] px-2 text-center'
                 }
               >
-                <span className="whitespace-nowrap text-[9px] font-semibold text-slate-400 luma-tabular">
-                  #{String(channel.number).padStart(3, '0')}
+                <span className="whitespace-nowrap text-[9px] font-semibold uppercase text-slate-400 luma-tabular">
+                  {isOnDemandVod
+                    ? (onDemandMeta?.badgeTop ?? 'VOD')
+                    : `#${String(channel.number).padStart(3, '0')}`}
                 </span>
-                <span className="text-[11px] font-bold tracking-tight text-white">
-                  {channel.shortCode}
+                <span className="whitespace-nowrap text-[11px] font-bold tracking-tight text-white luma-tabular">
+                  {isOnDemandVod
+                    ? (onDemandMeta?.badgeCode ?? 'FILM')
+                    : channel.shortCode}
                 </span>
               </div>
 
               <div className="min-w-0 flex-1 overflow-hidden">
                 <div className="flex min-w-0 items-center gap-1.5 overflow-hidden">
                   <h1 className="min-w-0 truncate text-sm font-semibold tracking-[-0.01em] text-white">
-                    {channel.name}
+                    {isOnDemandVod ? displayTitle : channel.name}
                   </h1>
                   <span
                     className={
@@ -1004,12 +1048,20 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
                         : 'hidden shrink-0 whitespace-nowrap rounded-full bg-white/12 px-2 py-0.5 text-[10px] font-medium text-white/85 @3xl:inline-block'
                     }
                   >
-                    {channel.audioBadge}
+                    {isOnDemandVod
+                      ? (onDemandMeta?.techBadge ?? resolutionLabel)
+                      : channel.audioBadge}
                   </span>
                   <button
                     id="btn-hud-favorite"
                     type="button"
-                    onClick={() => onToggleFavorite(channel.id)}
+                    onClick={() =>
+                      onToggleFavorite(
+                        isOnDemandVod && onDemandMeta
+                          ? onDemandMeta.favoriteTargetId
+                          : channel.id
+                      )
+                    }
                     className="shrink-0 p-0.5 text-slate-300 transition hover:text-amber-300"
                     title={t.favorites}
                   >
@@ -1020,49 +1072,57 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
                     />
                   </button>
                 </div>
-                <p className="truncate text-xs text-slate-200">
-                  <span
-                    className={
-                      isM3 ? 'font-semibold text-[#7FD4FF]' : 'font-medium text-sky-300'
-                    }
-                  >
-                    {displayTitle}
-                  </span>
-                  <span className="mx-1.5 opacity-35">—</span>
-                  <span className="text-slate-300/80">{displaySubtitle}</span>
-                </p>
+                {isOnDemandVod ? (
+                  <p className="truncate text-xs text-slate-300/90">
+                    {displaySubtitle}
+                  </p>
+                ) : (
+                  <p className="truncate text-xs text-slate-200">
+                    <span
+                      className={
+                        isM3 ? 'font-semibold text-[#7FD4FF]' : 'font-medium text-sky-300'
+                      }
+                    >
+                      {displayTitle}
+                    </span>
+                    <span className="mx-1.5 opacity-35">—</span>
+                    <span className="text-slate-300/80">{displaySubtitle}</span>
+                  </p>
+                )}
               </div>
             </div>
 
-            {/* Transport, DVR, Audio DSP & Spatial Controls (Container-responsive, never overlaps Channel Identity) */}
+            {/* Transport, DVR, Audio DSP & Spatial Controls (Container-responsive, never overlaps Identity) */}
             <div className="flex shrink-0 flex-wrap items-center gap-1.5">
-              <div
-                className={
-                  isM3
-                    ? 'hidden shrink-0 items-center rounded-full bg-[#232B3D] p-1 @sm:flex'
-                    : 'lg-capsule hidden shrink-0 items-center rounded-full p-0.5 @sm:flex'
-                }
-              >
-                <button
-                  id="btn-zap-prev"
-                  type="button"
-                  onClick={onPrevChannel}
-                  className="rounded-full p-1.5 text-slate-200 transition hover:bg-white/10 hover:text-white"
-                  title="Previous channel"
+              {!isOnDemandVod && (
+                <div
+                  className={
+                    isM3
+                      ? 'hidden shrink-0 items-center rounded-full bg-[#232B3D] p-1 @sm:flex'
+                      : 'lg-capsule hidden shrink-0 items-center rounded-full p-0.5 @sm:flex'
+                  }
                 >
-                  <ChevronUp className="h-3.5 w-3.5" />
-                </button>
-                <span className="px-1 text-[10px] font-semibold text-slate-300">CH</span>
-                <button
-                  id="btn-zap-next"
-                  type="button"
-                  onClick={onNextChannel}
-                  className="rounded-full p-1.5 text-slate-200 transition hover:bg-white/10 hover:text-white"
-                  title="Next channel"
-                >
-                  <ChevronDown className="h-3.5 w-3.5" />
-                </button>
-              </div>
+                  <button
+                    id="btn-zap-prev"
+                    type="button"
+                    onClick={onPrevChannel}
+                    className="rounded-full p-1.5 text-slate-200 transition hover:bg-white/10 hover:text-white"
+                    title="Previous channel"
+                  >
+                    <ChevronUp className="h-3.5 w-3.5" />
+                  </button>
+                  <span className="px-1 text-[10px] font-semibold text-slate-300">CH</span>
+                  <button
+                    id="btn-zap-next"
+                    type="button"
+                    onClick={onNextChannel}
+                    className="rounded-full p-1.5 text-slate-200 transition hover:bg-white/10 hover:text-white"
+                    title="Next channel"
+                  >
+                    <ChevronDown className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              )}
 
               {isSeekable && (
                 <button
