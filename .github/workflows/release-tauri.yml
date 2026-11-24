@@ -81,7 +81,7 @@ jobs:
           fi
 
   release-android-chromeos:
-    name: Build Android & Chromebook (.apk · Play Protect V2/V3 Signed)
+    name: Build Android & Chromebook (.apk · 4-ABI Universal + Play Protect V1/V2/V3)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -97,15 +97,14 @@ jobs:
           distribution: temurin
           java-version: 21
 
-      - name: Install Android NDK, Build-Tools & Platform SDK via sdkmanager
+      - name: Install Android NDK, Build-Tools & Stable Platform SDK (35 & 36)
         run: |
           SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
           yes | "$SDKM" --licenses >/dev/null || true
-          "$SDKM" "ndk;27.0.12077973" "build-tools;35.0.0" "platforms;android-36"
-          "$SDKM" "platforms;android-37" || true
+          "$SDKM" "ndk;27.0.12077973" "build-tools;35.0.0" "platforms;android-35" "platforms;android-36"
           yes | "$SDKM" --licenses >/dev/null || true
 
-      - name: Setup Rust stable + Android targets
+      - name: Setup Rust stable + all 4 Android & Chromebook ABIs (64-bit & 32-bit)
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
@@ -113,7 +112,7 @@ jobs:
       - name: Install frontend & Tauri CLI dependencies
         run: npm install --no-audit --no-fund
 
-      - name: Build & Sign Google Play Protect Compatible Release APK (app.lumatv.client)
+      - name: Initialize, Patch Chromebook Manifest/SDK & Sign 4-ABI Universal APK
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -124,11 +123,63 @@ jobs:
           export NDK_HOME="$ANDROID_HOME/ndk/27.0.12077973"
           npx tauri android init
 
+          # Patch generated Gradle & AndroidManifest.xml for Googlebook / Chromebook ARCVM
+          # 1. Use stable compileSdk = 36 & targetSdk = 34 (avoids Android 17 preview SDK 37 rejection on ChromeOS ARCVM Android 11/13)
+          # 2. Compute strictly increasing versionCode from package.json (including beta suffix)
+          # 3. Mark touchscreen/faketouch optional for non-touch Chromebooks & Chromeboxes
+          # 4. Enable usesCleartextTraffic="true" + resizeableActivity="true" for HTTP IPTV & ChromeOS windowing
+          node -e '
+            const fs = require("fs");
+            const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+            const m = pkg.version.match(/^(\d+)\.(\d+)\.(\d+)(?:-beta\.(\d+))?/);
+            const verCode = m
+              ? Number(m[1]) * 1000000 + Number(m[2]) * 10000 + Number(m[3]) * 100 + (m[4] ? Number(m[4]) : 99)
+              : 80003;
+
+            const gradlePath = "src-tauri/gen/android/app/build.gradle.kts";
+            let gradle = fs.readFileSync(gradlePath, "utf8");
+            gradle = gradle.replace(/compileSdk\s*=\s*\d+/g, "compileSdk = 36");
+            gradle = gradle.replace(/targetSdk\s*=\s*\d+/g, "targetSdk = 34");
+            gradle = gradle.replace(/minSdk\s*=\s*\d+/g, "minSdk = 26");
+            gradle = gradle.replace(/versionCode\s*=\s*[^\n]+/g, `versionCode = ${verCode}`);
+            fs.writeFileSync(gradlePath, gradle);
+            console.log("Patched build.gradle.kts with compileSdk=36, targetSdk=34, minSdk=26, versionCode=" + verCode);
+
+            const manifestPath = "src-tauri/gen/android/app/src/main/AndroidManifest.xml";
+            let manifest = fs.readFileSync(manifestPath, "utf8");
+            if (!manifest.includes("android.hardware.touchscreen")) {
+              manifest = manifest.replace(
+                "<application",
+                `    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />\n    <uses-feature android:name="android.hardware.faketouch" android:required="false" />\n    <uses-feature android:name="android.hardware.type.pc" android:required="false" />\n    <application`
+              );
+            }
+            if (/android:usesCleartextTraffic="[^"]*"/.test(manifest)) {
+              manifest = manifest.replace(
+                /android:usesCleartextTraffic="[^"]*"/g,
+                `android:usesCleartextTraffic="true"`
+              );
+            } else {
+              manifest = manifest.replace(
+                "<application",
+                `<application android:usesCleartextTraffic="true"`
+              );
+            }
+            if (!manifest.includes("resizeableActivity")) {
+              manifest = manifest.replace(
+                "<activity",
+                `<activity android:resizeableActivity="true"`
+              );
+            }
+            fs.writeFileSync(manifestPath, manifest);
+            console.log("Patched AndroidManifest.xml for Chromebook & HTTP IPTV compatibility.");
+          '
+
           if [ -n "$ANDROID_KEYSTORE_BASE64" ] && [ -n "$ANDROID_KEYSTORE_PASSWORD" ]; then
-            npx tauri android build --apk --target aarch64 --target x86_64
-            RAW_APK=$(find src-tauri/gen/android/app/build/outputs/apk -name "*release*.apk" | head -n 1)
+            # Build ALL 4 ABIs (aarch64, armv7, x86_64, i686) so both 64-bit and 32-bit ChromeOS ARC/ARCVM containers match
+            npx tauri android build --apk
+            RAW_APK=$(find src-tauri/gen/android/app/build/outputs/apk -name "*universal*release*.apk" | head -n 1)
             if [ -z "$RAW_APK" ]; then
-              RAW_APK=$(find src-tauri/gen/android/app/build/outputs/apk -name "*.apk" | head -n 1)
+              RAW_APK=$(find src-tauri/gen/android/app/build/outputs/apk -name "*release*.apk" | head -n 1)
             fi
 
             printf "%s" "$ANDROID_KEYSTORE_BASE64" | base64 -d > /tmp/luma-release.p12
@@ -142,6 +193,7 @@ jobs:
               --ks-key-alias "${ANDROID_KEY_ALIAS:-luma-release}" \
               --ks-pass env:ANDROID_KEYSTORE_PASSWORD \
               --key-pass env:ANDROID_KEY_PASSWORD \
+              --min-sdk-version 24 \
               --v1-signing-enabled true \
               --v2-signing-enabled true \
               --v3-signing-enabled true \
@@ -150,7 +202,7 @@ jobs:
             rm -f /tmp/luma-release.p12 ./Luma-TV-Aligned.apk
             "$APKSIGNER" verify --verbose ./Luma-TV-Android-Universal.apk
           else
-            npx tauri android build --apk --debug --target aarch64 --target x86_64
+            npx tauri android build --apk --debug
             APK_PATH=$(find src-tauri/gen/android/app/build/outputs/apk -name "*universal*.apk" | head -n 1)
             if [ -z "$APK_PATH" ]; then
               APK_PATH=$(find src-tauri/gen/android/app/build/outputs/apk -name "*.apk" | head -n 1)

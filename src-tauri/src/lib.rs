@@ -511,7 +511,7 @@ async fn handle_proxy_request(
             serde_json::json!({
                 "ok": true,
                 "service": "lumaNativeRustProxy",
-                "version": "0.8.0-beta.2",
+                "version": "0.8.0-beta.3",
                 "ffmpegAvailable": resolve_ffmpeg_binary().is_some(),
             }),
         ));
