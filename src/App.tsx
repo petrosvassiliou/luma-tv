@@ -59,6 +59,13 @@ import {
   type IngestProgressState,
 } from './services/playlistService';
 import {
+  checkForLumaAppUpdate,
+  triggerLumaUpdateInstall,
+  type LumaUpdateCheckResult,
+  type LumaUpdateProgressPayload,
+} from './services/autoUpdater';
+import { AppUpdateBanner } from './components/common/AppUpdateBanner';
+import {
   ChannelContextMenu,
   type ChannelContextMenuTarget,
 } from './components/common/ChannelContextMenu';
@@ -268,6 +275,15 @@ export function App() {
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
   const [epgOffsetHours, setEpgOffsetHours] = useState<number>(0);
   const [nativeProbe, setNativeProbe] = useState<NativeEngineProbe | null>(null);
+  const [updateCheck, setUpdateCheck] = useState<LumaUpdateCheckResult | null>(null);
+  const [dismissedUpdateVersion, setDismissedUpdateVersion] = useState<string | null>(
+    null
+  );
+  const [isCheckingUpdate, setIsCheckingUpdate] = useState<boolean>(false);
+  const [isInstallingUpdate, setIsInstallingUpdate] = useState<boolean>(false);
+  const [updateProgress, setUpdateProgress] =
+    useState<LumaUpdateProgressPayload | null>(null);
+  const [updateError, setUpdateError] = useState<string | null>(null);
   const [proxyConfig, setProxyConfig] = useState<EngineProxyConfig>({
     enabled: false,
     endpointUrl: 'https://luma-tv-app.web.app/api/stream-proxy',
@@ -299,6 +315,65 @@ export function App() {
       cancelled = true;
     };
   }, []);
+
+  const handleCheckForUpdates = useCallback(
+    async (silent = false) => {
+      if (!silent) {
+        setIsCheckingUpdate(true);
+        setUpdateError(null);
+      }
+      try {
+        const res = await checkForLumaAppUpdate({
+          includePrereleases: preferences.includeBetaUpdates !== false,
+        });
+        setUpdateCheck(res);
+        if (!silent && !res.updateAvailable) {
+          setToastMessage(`Luma TV is up to date (v${res.currentVersion})`);
+          window.setTimeout(() => setToastMessage(null), 3000);
+        }
+      } catch (err) {
+        if (!silent) {
+          setUpdateError(
+            err instanceof Error ? err.message : 'Could not check for updates.'
+          );
+        }
+      } finally {
+        if (!silent) {
+          setIsCheckingUpdate(false);
+        }
+      }
+    },
+    [preferences.includeBetaUpdates]
+  );
+
+  const handleInstallAppUpdate = useCallback(async () => {
+    if (!updateCheck || isInstallingUpdate) return;
+    setIsInstallingUpdate(true);
+    setUpdateError(null);
+    try {
+      await triggerLumaUpdateInstall(updateCheck, (prog) => {
+        setUpdateProgress(prog);
+      });
+      if (updateCheck.strategy === 'android-play-protect-verified') {
+        setToastMessage('Opened Android System Installer (Google Play Protect verified)');
+        window.setTimeout(() => setToastMessage(null), 3600);
+      }
+    } catch (err) {
+      setUpdateError(
+        err instanceof Error ? err.message : 'Update installation failed.'
+      );
+    } finally {
+      setIsInstallingUpdate(false);
+    }
+  }, [updateCheck, isInstallingUpdate]);
+
+  useEffect(() => {
+    if (preferences.autoCheckUpdates === false) return;
+    const timer = window.setTimeout(() => {
+      void handleCheckForUpdates(true);
+    }, 4500);
+    return () => window.clearTimeout(timer);
+  }, [preferences.autoCheckUpdates, handleCheckForUpdates]);
 
   const effectiveProxyConfig = useMemo<EngineProxyConfig>(
     () => ({
@@ -1924,6 +1999,18 @@ export function App() {
         nowMs={nowMs}
       />
 
+      {updateCheck?.updateAvailable &&
+        dismissedUpdateVersion !== updateCheck.latestVersion && (
+          <AppUpdateBanner
+            designMode={designMode}
+            updateInfo={updateCheck}
+            installProgress={updateProgress}
+            isInstalling={isInstallingUpdate}
+            onInstallNow={() => void handleInstallAppUpdate()}
+            onDismiss={() => setDismissedUpdateVersion(updateCheck.latestVersion)}
+          />
+        )}
+
       <div className="relative z-10 flex min-h-0 flex-1 overflow-hidden">
         <Sidebar
           designMode={designMode}
@@ -2223,6 +2310,13 @@ export function App() {
                 window.setTimeout(() => setToastMessage(null), 3200);
               }}
               onOpenShortcutsModal={() => setShortcutsOpen(true)}
+              updateCheck={updateCheck}
+              isCheckingUpdate={isCheckingUpdate}
+              isInstallingUpdate={isInstallingUpdate}
+              updateProgress={updateProgress}
+              updateError={updateError}
+              onCheckForUpdates={() => void handleCheckForUpdates(false)}
+              onInstallUpdate={() => void handleInstallAppUpdate()}
             />
           )}
         </main>

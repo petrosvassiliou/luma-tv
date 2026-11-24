@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   release-macos:
-    name: Build macOS Universal (.dmg & .app)
+    name: Build macOS Universal (.dmg + Ed25519 In-App Updater)
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -29,8 +29,16 @@ jobs:
       - name: Install frontend & Tauri CLI dependencies
         run: npm install --no-audit --no-fund
 
-      - name: Build Universal macOS App & DMG (app.lumatv.client)
-        run: npx tauri build --target universal-apple-darwin
+      - name: Build Universal macOS App, DMG & Signed Updater Bundle (app.lumatv.client)
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            npx tauri build --target universal-apple-darwin --config '{"bundle":{"createUpdaterArtifacts":true}}'
+          else
+            npx tauri build --target universal-apple-darwin
+          fi
 
       - name: Upload macOS DMG artifact
         uses: actions/upload-artifact@v4
@@ -38,17 +46,42 @@ jobs:
           name: Luma-macOS-Universal-DMG
           path: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
 
-      - name: Attach macOS DMG to GitHub Release
+      - name: Generate latest.json & Attach macOS DMG + Signed Updater Bundle to GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
+          export TAG
           gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --prerelease --title "Luma TV $TAG" --notes "Automated multi-platform release."
           gh release upload "$TAG" src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg --clobber
 
+          TAR_PATH="src-tauri/target/universal-apple-darwin/release/bundle/macos/Luma.app.tar.gz"
+          SIG_PATH="src-tauri/target/universal-apple-darwin/release/bundle/macos/Luma.app.tar.gz.sig"
+          if [ -f "$TAR_PATH" ] && [ -f "$SIG_PATH" ]; then
+            node -e '
+              const fs = require("fs");
+              const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+              const sig = fs.readFileSync("src-tauri/target/universal-apple-darwin/release/bundle/macos/Luma.app.tar.gz.sig", "utf8").trim();
+              const url = `https://github.com/${process.env.REPO}/releases/download/${process.env.TAG}/Luma.app.tar.gz`;
+              const manifest = {
+                version: pkg.version,
+                notes: `Luma TV ${process.env.TAG} In-App Update`,
+                pub_date: new Date().toISOString(),
+                platforms: {
+                  "darwin-aarch64": { signature: sig, url },
+                  "darwin-x86_64": { signature: sig, url },
+                  "darwin-universal": { signature: sig, url }
+                }
+              };
+              fs.writeFileSync("latest.json", JSON.stringify(manifest, null, 2));
+            '
+            gh release upload "$TAG" "$TAR_PATH" "$SIG_PATH" ./latest.json --clobber
+          fi
+
   release-android-chromeos:
-    name: Build Android & Chromebook (.apk)
+    name: Build Android & Chromebook (.apk · Play Protect V2/V3 Signed)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -64,11 +97,11 @@ jobs:
           distribution: temurin
           java-version: 21
 
-      - name: Install Android NDK & Platform SDK via preinstalled sdkmanager
+      - name: Install Android NDK, Build-Tools & Platform SDK via sdkmanager
         run: |
           SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
           yes | "$SDKM" --licenses >/dev/null || true
-          "$SDKM" "ndk;27.0.12077973" "platforms;android-36"
+          "$SDKM" "ndk;27.0.12077973" "build-tools;35.0.0" "platforms;android-36"
           "$SDKM" "platforms;android-37" || true
           yes | "$SDKM" --licenses >/dev/null || true
 
@@ -80,20 +113,50 @@ jobs:
       - name: Install frontend & Tauri CLI dependencies
         run: npm install --no-audit --no-fund
 
-      - name: Initialize & Build Installable Android/Chromebook APK (app.lumatv.client)
+      - name: Build & Sign Google Play Protect Compatible Release APK (app.lumatv.client)
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           export ANDROID_SDK_ROOT="$ANDROID_HOME"
           export NDK_HOME="$ANDROID_HOME/ndk/27.0.12077973"
           npx tauri android init
-          npx tauri android build --apk --debug --target aarch64 --target x86_64
 
-      - name: Rename installable APK artifact
-        run: |
-          APK_PATH=$(find src-tauri/gen/android/app/build/outputs/apk -name "*universal*.apk" | head -n 1)
-          if [ -z "$APK_PATH" ]; then
-            APK_PATH=$(find src-tauri/gen/android/app/build/outputs/apk -name "*.apk" | head -n 1)
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ] && [ -n "$ANDROID_KEYSTORE_PASSWORD" ]; then
+            npx tauri android build --apk --target aarch64 --target x86_64
+            RAW_APK=$(find src-tauri/gen/android/app/build/outputs/apk -name "*release*.apk" | head -n 1)
+            if [ -z "$RAW_APK" ]; then
+              RAW_APK=$(find src-tauri/gen/android/app/build/outputs/apk -name "*.apk" | head -n 1)
+            fi
+
+            printf "%s" "$ANDROID_KEYSTORE_BASE64" | base64 -d > /tmp/luma-release.p12
+            ZIPALIGN="$ANDROID_HOME/build-tools/35.0.0/zipalign"
+            APKSIGNER="$ANDROID_HOME/build-tools/35.0.0/apksigner"
+
+            "$ZIPALIGN" -p -f 4 "$RAW_APK" ./Luma-TV-Aligned.apk
+            "$APKSIGNER" sign \
+              --ks /tmp/luma-release.p12 \
+              --ks-type PKCS12 \
+              --ks-key-alias "${ANDROID_KEY_ALIAS:-luma-release}" \
+              --ks-pass env:ANDROID_KEYSTORE_PASSWORD \
+              --key-pass env:ANDROID_KEY_PASSWORD \
+              --v1-signing-enabled true \
+              --v2-signing-enabled true \
+              --v3-signing-enabled true \
+              --out ./Luma-TV-Android-Universal.apk \
+              ./Luma-TV-Aligned.apk
+            rm -f /tmp/luma-release.p12 ./Luma-TV-Aligned.apk
+            "$APKSIGNER" verify --verbose ./Luma-TV-Android-Universal.apk
+          else
+            npx tauri android build --apk --debug --target aarch64 --target x86_64
+            APK_PATH=$(find src-tauri/gen/android/app/build/outputs/apk -name "*universal*.apk" | head -n 1)
+            if [ -z "$APK_PATH" ]; then
+              APK_PATH=$(find src-tauri/gen/android/app/build/outputs/apk -name "*.apk" | head -n 1)
+            fi
+            cp "$APK_PATH" ./Luma-TV-Android-Universal.apk
           fi
-          cp "$APK_PATH" ./Luma-TV-Android-Universal.apk
 
       - name: Upload Android APK artifact
         uses: actions/upload-artifact@v4

@@ -30,6 +30,8 @@ export interface LumaPreferences {
   spatialDpadEnabled: boolean;
   autoMiniPlayerOnSwitch?: boolean; // false = Off by default
   autoRefreshHours?: number; // 0 = Off, default 12h
+  autoCheckUpdates?: boolean; // true by default
+  includeBetaUpdates?: boolean; // true by default
 }
 
 export function normalizeLocale(input: unknown): LumaLocale {

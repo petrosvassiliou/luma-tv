@@ -17,7 +17,7 @@ use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpListener;
@@ -57,6 +57,61 @@ struct ProxyRuntimeContext {
 static CACHED_MPV_BINARY: OnceLock<PathBuf> = OnceLock::new();
 static CACHED_FFMPEG_BINARY: OnceLock<PathBuf> = OnceLock::new();
 static LOCAL_PROXY_INSTANCE: OnceCell<LocalProxyServer> = OnceCell::const_new();
+static UPDATE_PROGRESS_STATE: OnceLock<Mutex<NativeUpdateProgress>> = OnceLock::new();
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeUpdateProgress {
+    pub phase: String,
+    pub downloaded_bytes: u64,
+    pub total_bytes: u64,
+    pub percent: u8,
+    pub message: String,
+}
+
+fn update_progress_store() -> &'static Mutex<NativeUpdateProgress> {
+    UPDATE_PROGRESS_STATE.get_or_init(|| {
+        Mutex::new(NativeUpdateProgress {
+            phase: "idle".to_string(),
+            downloaded_bytes: 0,
+            total_bytes: 0,
+            percent: 0,
+            message: String::new(),
+        })
+    })
+}
+
+fn set_native_update_progress(
+    phase: &str,
+    downloaded_bytes: u64,
+    total_bytes: u64,
+    percent: u8,
+    message: impl Into<String>,
+) {
+    if let Ok(mut guard) = update_progress_store().lock() {
+        guard.phase = phase.to_string();
+        guard.downloaded_bytes = downloaded_bytes;
+        guard.total_bytes = total_bytes;
+        guard.percent = percent;
+        guard.message = message.into();
+    }
+}
+
+pub fn validate_trusted_release_https_url(raw_url: &str) -> Result<Url, String> {
+    let parsed = Url::parse(raw_url.trim()).map_err(|e| format!("Invalid update URL: {e}"))?;
+    if parsed.scheme() != "https" {
+        return Err("Auto-update requires HTTPS.".to_string());
+    }
+    let host = parsed.host_str().unwrap_or_default().to_ascii_lowercase();
+    let trusted = host == "github.com"
+        || host == "api.github.com"
+        || host.ends_with(".githubusercontent.com")
+        || host == "play.google.com";
+    if !trusted {
+        return Err(format!("Untrusted update host '{host}' blocked."));
+    }
+    Ok(parsed)
+}
 
 fn generate_session_token() -> String {
     let mut h1 = RandomState::new().build_hasher();
@@ -456,7 +511,7 @@ async fn handle_proxy_request(
             serde_json::json!({
                 "ok": true,
                 "service": "lumaNativeRustProxy",
-                "version": "0.8.0-beta.1",
+                "version": "0.8.0-beta.2",
                 "ffmpegAvailable": resolve_ffmpeg_binary().is_some(),
             }),
         ));
@@ -930,9 +985,197 @@ async fn luma_native_launch_mpv(
     Ok(format!("MPV Hardware-Session gestartet ({})", mpv_bin.display()))
 }
 
+#[tauri::command]
+fn luma_native_get_update_progress() -> NativeUpdateProgress {
+    update_progress_store()
+        .lock()
+        .map(|g| g.clone())
+        .unwrap_or(NativeUpdateProgress {
+            phase: "idle".to_string(),
+            downloaded_bytes: 0,
+            total_bytes: 0,
+            percent: 0,
+            message: String::new(),
+        })
+}
+
+#[tauri::command]
+async fn luma_native_open_external_url(url: String) -> Result<(), String> {
+    let validated = validate_trusted_release_https_url(&url)?;
+
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("/usr/bin/open")
+            .arg(validated.as_str())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("Failed to open URL: {e}"))?;
+        return Ok(());
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        Command::new("xdg-open")
+            .arg(validated.as_str())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("Failed to open URL: {e}"))?;
+        return Ok(());
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("rundll32")
+            .args(["url.dll,FileProtocolHandler", validated.as_str()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("Failed to open URL: {e}"))?;
+        return Ok(());
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        let _ = validated;
+        Err("Use WebView anchor navigation on mobile.".to_string())
+    }
+}
+
+/// Cryptographically verifies (Ed25519), downloads, and installs a macOS / Desktop
+/// update right inside Luma.app, then restarts the application automatically.
+#[tauri::command]
+async fn luma_native_install_macos_update(
+    app: tauri::AppHandle,
+    latest_json_url: String,
+) -> Result<String, String> {
+    let endpoint = validate_trusted_release_https_url(&latest_json_url)?;
+
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        use tauri_plugin_updater::UpdaterExt;
+
+        set_native_update_progress(
+            "downloading",
+            0,
+            0,
+            4,
+            "Checking signed update manifest…",
+        );
+
+        let updater = app
+            .updater_builder()
+            .endpoints(vec![endpoint])
+            .map_err(|e| format!("Updater configuration error: {e}"))?
+            .build()
+            .map_err(|e| format!("Updater initialization error: {e}"))?;
+
+        let Some(update) = updater
+            .check()
+            .await
+            .map_err(|e| format!("Update verification failed: {e}"))?
+        else {
+            set_native_update_progress("ready", 0, 0, 100, "Already on the latest version.");
+            return Ok("Already up to date.".to_string());
+        };
+
+        let target_ver = update.version.clone();
+        let downloaded_total = std::sync::atomic::AtomicU64::new(0);
+
+        update
+            .download_and_install(
+                |chunk_len, content_len| {
+                    let prev = downloaded_total
+                        .fetch_add(chunk_len as u64, std::sync::atomic::Ordering::Relaxed);
+                    let cur = prev + chunk_len as u64;
+                    let total = content_len.unwrap_or(0);
+                    let pct = if total > 0 {
+                        ((cur.saturating_mul(92)) / total).min(92) as u8
+                    } else {
+                        50
+                    };
+                    set_native_update_progress(
+                        "downloading",
+                        cur,
+                        total,
+                        pct.max(6),
+                        format!("Downloading v{target_ver}…"),
+                    );
+                },
+                || {
+                    let final_bytes =
+                        downloaded_total.load(std::sync::atomic::Ordering::Relaxed);
+                    set_native_update_progress(
+                        "installing",
+                        final_bytes,
+                        final_bytes,
+                        96,
+                        "Verifying Ed25519 signature & installing inside Luma.app…",
+                    );
+                },
+            )
+            .await
+            .map_err(|e| {
+                set_native_update_progress("error", 0, 0, 0, format!("Update failed: {e}"));
+                format!("In-app installation failed: {e}")
+            })?;
+
+        // Clear any extended quarantine attributes on the updated .app bundle before restarting
+        #[cfg(target_os = "macos")]
+        {
+            if let Ok(exe_path) = std::env::current_exe() {
+                if let Some(app_bundle) = exe_path
+                    .ancestors()
+                    .find(|p| p.extension().and_then(|e| e.to_str()) == Some("app"))
+                {
+                    let _ = Command::new("/usr/bin/xattr")
+                        .args(["-cr"])
+                        .arg(app_bundle)
+                        .stdin(Stdio::null())
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .status();
+                }
+            }
+        }
+
+        let completed_bytes = downloaded_total.load(std::sync::atomic::Ordering::Relaxed);
+        set_native_update_progress(
+            "restarting",
+            completed_bytes,
+            completed_bytes,
+            100,
+            format!("Luma TV v{target_ver} installed — restarting…"),
+        );
+
+        let app_clone = app.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(450)).await;
+            app_clone.restart();
+        });
+
+        return Ok(format!("Updated to v{target_ver}"));
+    }
+
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        let _ = (app, endpoint);
+        Err("In-app archive replacement is desktop-only; use Google Play Protect verified installer on Android.".to_string())
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+
+    builder
         .setup(|_app| {
             tauri::async_runtime::spawn(async {
                 let _ = ensure_local_proxy_url().await;
@@ -942,7 +1185,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             luma_native_probe_engine,
             luma_native_fetch_text,
-            luma_native_launch_mpv
+            luma_native_launch_mpv,
+            luma_native_get_update_progress,
+            luma_native_open_external_url,
+            luma_native_install_macos_update
         ])
         .run(tauri::generate_context!())
         .expect("Fehler beim Starten von Luma TV (app.lumatv.client)");
@@ -986,6 +1232,14 @@ mod tests {
         // LAN IPTV tuners (HDHomeRun / Threadfin / TVHeadend) and public HTTP/HTTPS streams are allowed
         assert!(validate_proxy_upstream_url("http://192.168.178.50:9981/stream/chan1", 45000).is_ok());
         assert!(validate_proxy_upstream_url("https://cdn.example.com/live/master.m3u8", 45000).is_ok());
+    }
+
+    #[test]
+    fn enforces_https_and_trusted_domains_for_auto_updater() {
+        assert!(validate_trusted_release_https_url("http://github.com/petrosvassiliou/luma-tv/releases/latest.json").is_err());
+        assert!(validate_trusted_release_https_url("https://evil.example.com/latest.json").is_err());
+        assert!(validate_trusted_release_https_url("https://github.com/petrosvassiliou/luma-tv/releases/download/v0.9.0/latest.json").is_ok());
+        assert!(validate_trusted_release_https_url("https://objects.githubusercontent.com/github-production-release-asset/latest.json").is_ok());
     }
 
     #[test]

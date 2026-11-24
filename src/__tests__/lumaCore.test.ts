@@ -28,6 +28,10 @@ import {
   TRANSLATIONS,
 } from '../i18n/translations';
 import {
+  compareLumaVersions,
+  evaluateGitHubReleasesForUpdate,
+} from '../services/autoUpdater';
+import {
   isProviderDividerChannel,
   normalizeSearchText,
   searchChannelsRanked,
@@ -698,5 +702,77 @@ describe('Luma TV v0.1 beta — Zero-Knowledge AES-256-GCM Sync Vault & 20k EPG 
     expect(detectSubtitleLanguageFromFilename('Dune.2024.4K.de.srt').lang).toBe('de');
     expect(detectSubtitleLanguageFromFilename('Movie.2025.greek.vtt').lang).toBe('el');
     expect(detectSubtitleLanguageFromFilename('Episode.S01E02.eng.srt').lang).toBe('en');
+  });
+
+  it('compares SemVer pre-releases accurately and resolves macOS in-app & Android Play Protect updates', () => {
+    expect(compareLumaVersions('0.8.0-beta.2', '0.8.0-beta.1')).toBe(1);
+    expect(compareLumaVersions('0.8.0', '0.8.0-beta.9')).toBe(1);
+    expect(compareLumaVersions('0.8.0-beta.1', '0.8.0-beta.1')).toBe(0);
+    expect(compareLumaVersions('v0.7.0-beta.4', '0.8.0-beta.1')).toBe(-1);
+
+    const mockReleases = [
+      {
+        tag_name: 'v0.8.1-beta.1',
+        name: 'Luma TV v0.8.1-beta.1',
+        body: 'Signed in-app macOS updater & Play Protect V3 APK.',
+        prerelease: true,
+        draft: false,
+        published_at: '2026-11-25T10:00:00Z',
+        html_url: 'https://github.com/petrosvassiliou/luma-tv/releases/tag/v0.8.1-beta.1',
+        assets: [
+          {
+            name: 'latest.json',
+            browser_download_url:
+              'https://github.com/petrosvassiliou/luma-tv/releases/download/v0.8.1-beta.1/latest.json',
+          },
+          {
+            name: 'Luma_0.8.1-beta.1_universal.dmg',
+            browser_download_url:
+              'https://github.com/petrosvassiliou/luma-tv/releases/download/v0.8.1-beta.1/Luma_0.8.1-beta.1_universal.dmg',
+          },
+          {
+            name: 'Luma-TV-Android-Universal.apk',
+            size: 324_000_000,
+            digest: 'sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789',
+            browser_download_url:
+              'https://github.com/petrosvassiliou/luma-tv/releases/download/v0.8.1-beta.1/Luma-TV-Android-Universal.apk',
+          },
+        ],
+      },
+    ];
+
+    const macRes = evaluateGitHubReleasesForUpdate({
+      releases: mockReleases,
+      currentVersion: '0.8.0-beta.1',
+      includePrereleases: true,
+      runtimePlatform: 'macos',
+    });
+    expect(macRes.updateAvailable).toBe(true);
+    expect(macRes.latestVersion).toBe('0.8.1-beta.1');
+    expect(macRes.strategy).toBe('macos-in-app-ed25519');
+    expect(macRes.canInstallInApp).toBe(true);
+    expect(macRes.latestJsonUrl).toContain('/latest.json');
+
+    const androidRes = evaluateGitHubReleasesForUpdate({
+      releases: mockReleases,
+      currentVersion: '0.8.0-beta.1',
+      includePrereleases: true,
+      runtimePlatform: 'android',
+    });
+    expect(androidRes.updateAvailable).toBe(true);
+    expect(androidRes.strategy).toBe('android-play-protect-verified');
+    expect(androidRes.playProtectCompatible).toBe(true);
+    expect(androidRes.androidApkSha256).toBe(
+      'abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789'
+    );
+
+    // Opting out of beta pre-releases ignores prerelease tags
+    const stableOnly = evaluateGitHubReleasesForUpdate({
+      releases: mockReleases,
+      currentVersion: '0.8.0-beta.1',
+      includePrereleases: false,
+      runtimePlatform: 'macos',
+    });
+    expect(stableOnly.updateAvailable).toBe(false);
   });
 });

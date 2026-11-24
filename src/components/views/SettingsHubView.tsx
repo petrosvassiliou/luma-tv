@@ -1,17 +1,21 @@
 import React, { useState } from 'react';
 import {
+  CheckCircle2,
   Download,
   FileUp,
   Gamepad2,
   Globe,
   Keyboard,
+  Loader2,
   Lock,
   LockOpen,
   Moon,
   PictureInPicture2,
   RefreshCw,
   ShieldAlert,
+  ShieldCheck,
   Sliders,
+  Sparkles,
 } from 'lucide-react';
 import {
   TRANSLATIONS,
@@ -19,6 +23,10 @@ import {
   type LumaLocale,
   type LumaPreferences,
 } from '../../i18n/translations';
+import type {
+  LumaUpdateCheckResult,
+  LumaUpdateProgressPayload,
+} from '../../services/autoUpdater';
 import { LanguageDropdown } from '../common/LanguageDropdown';
 import {
   LUMA_APP_VERSION,
@@ -48,6 +56,13 @@ interface SettingsHubViewProps {
     preferences?: LumaPreferences;
   }) => void;
   onOpenShortcutsModal: () => void;
+  updateCheck?: LumaUpdateCheckResult | null;
+  isCheckingUpdate?: boolean;
+  isInstallingUpdate?: boolean;
+  updateProgress?: LumaUpdateProgressPayload | null;
+  updateError?: string | null;
+  onCheckForUpdates?: () => void;
+  onInstallUpdate?: () => void;
 }
 
 export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
@@ -65,6 +80,13 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
   onChangeParentalConfig,
   onImportFullBackup,
   onOpenShortcutsModal,
+  updateCheck = null,
+  isCheckingUpdate = false,
+  isInstallingUpdate = false,
+  updateProgress = null,
+  updateError = null,
+  onCheckForUpdates,
+  onInstallUpdate,
 }) => {
   const isM3 = designMode === 'm3-expressive';
   const t = TRANSLATIONS[preferences.locale];
@@ -143,6 +165,169 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
           <Keyboard className="h-4 w-4 text-sky-300" />
           <span>{t.shortcutsGuideBtn}</span>
         </button>
+      </div>
+
+      {/* Software Updates & Auto-Updater Center */}
+      <div className={`${panelClass} space-y-3.5`}>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5">
+            <Sparkles className="h-4 w-4 text-sky-400" />
+            <div>
+              <div className="flex flex-wrap items-center gap-2 text-xs font-semibold text-white">
+                <span>Software Updates</span>
+                <span className="rounded-full bg-white/10 px-2.5 py-0.5 font-mono text-[10px] text-sky-200 luma-tabular">
+                  v{LUMA_APP_VERSION}
+                </span>
+                {isAppleDevice ? (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-sky-400/15 px-2.5 py-0.5 text-[10px] font-semibold text-sky-200 ring-1 ring-sky-400/30">
+                    <ShieldCheck className="h-3 w-3" />
+                    <span>macOS In-App Ed25519 Updater</span>
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-emerald-400/15 px-2.5 py-0.5 text-[10px] font-semibold text-emerald-300 ring-1 ring-emerald-400/30">
+                    <ShieldCheck className="h-3 w-3" />
+                    <span>Google Play Protect Compatible · V3 Release Signed</span>
+                  </span>
+                )}
+              </div>
+              <p className="mt-0.5 text-[11px] text-slate-400">
+                {isAppleDevice
+                  ? 'Cryptographically signed updates download and install directly inside Luma.app with automatic restart.'
+                  : 'Verified V2/V3 release-signed APK updates via the trusted Android System Installer with zero risky sideload permissions.'}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            {onCheckForUpdates && (
+              <button
+                id="btn-settings-check-updates"
+                type="button"
+                disabled={isCheckingUpdate || isInstallingUpdate}
+                onClick={onCheckForUpdates}
+                className={`inline-flex items-center gap-1.5 rounded-full px-3.5 py-2 text-xs font-semibold transition disabled:opacity-50 ${
+                  isM3 ? 'm3-secondary-tonal' : 'lg-capsule text-white'
+                }`}
+              >
+                {isCheckingUpdate ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <RefreshCw className="h-3.5 w-3.5" />
+                )}
+                <span>{isCheckingUpdate ? 'Checking…' : 'Check for Updates'}</span>
+              </button>
+            )}
+
+            {updateCheck?.updateAvailable && onInstallUpdate && (
+              <button
+                id="btn-settings-install-update"
+                type="button"
+                disabled={isInstallingUpdate}
+                onClick={onInstallUpdate}
+                className={`inline-flex items-center gap-1.5 rounded-full px-4 py-2 text-xs font-bold transition disabled:opacity-50 ${
+                  isM3 ? 'm3-primary-pill' : 'lg-pill-active'
+                }`}
+              >
+                {isInstallingUpdate ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Download className="h-3.5 w-3.5" />
+                )}
+                <span>
+                  {isInstallingUpdate
+                    ? 'Updating…'
+                    : updateCheck.strategy === 'macos-in-app-ed25519' &&
+                        updateCheck.canInstallInApp
+                      ? `Install v${updateCheck.latestVersion} & Restart`
+                      : `Update to v${updateCheck.latestVersion}`}
+                </span>
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Live Progress or Up-to-Date Status */}
+        {isInstallingUpdate && updateProgress && (
+          <div className="space-y-1.5 rounded-2xl bg-black/25 p-3">
+            <div className="flex items-center justify-between text-[11px] text-sky-200 luma-tabular">
+              <span>{updateProgress.message || updateProgress.phase}</span>
+              <span>{updateProgress.percent}%</span>
+            </div>
+            <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/15">
+              <div
+                className={`h-full transition-all duration-200 ${
+                  isM3 ? 'bg-[#7FD4FF]' : 'luma-accent-gradient'
+                }`}
+                style={{ width: `${Math.max(5, updateProgress.percent)}%` }}
+              />
+            </div>
+          </div>
+        )}
+
+        {updateError && (
+          <div className="rounded-xl bg-rose-500/15 px-3.5 py-2 text-xs text-rose-200 ring-1 ring-rose-400/30">
+            {updateError}
+          </div>
+        )}
+
+        {updateCheck && !updateCheck.updateAvailable && !updateError && (
+          <div className="flex items-center gap-2 text-xs text-emerald-300">
+            <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
+            <span>
+              Luma TV is up to date (v{updateCheck.currentVersion}).
+            </span>
+          </div>
+        )}
+
+        {updateCheck?.updateAvailable && (
+          <div className="space-y-1.5 rounded-2xl bg-white/[0.04] p-3.5 text-xs text-slate-200">
+            <div className="flex flex-wrap items-center justify-between gap-2 font-semibold text-white">
+              <span>{updateCheck.releaseTitle}</span>
+              {updateCheck.androidApkSha256 && (
+                <span className="font-mono text-[10px] font-normal text-slate-400">
+                  APK SHA-256: {updateCheck.androidApkSha256.slice(0, 20)}…
+                </span>
+              )}
+            </div>
+            {updateCheck.releaseNotes && (
+              <p className="line-clamp-4 whitespace-pre-line text-[11px] leading-relaxed text-slate-300">
+                {updateCheck.releaseNotes}
+              </p>
+            )}
+          </div>
+        )}
+
+        <div className="flex flex-wrap items-center gap-5 border-t border-white/10 pt-2.5">
+          <label className="flex items-center gap-2 text-xs text-slate-200">
+            <input
+              type="checkbox"
+              checked={preferences.autoCheckUpdates !== false}
+              onChange={(e) =>
+                onChangePreferences({
+                  ...preferences,
+                  autoCheckUpdates: e.target.checked,
+                })
+              }
+              className="h-4 w-4 accent-sky-400"
+            />
+            <span>Automatically check for updates on startup</span>
+          </label>
+
+          <label className="flex items-center gap-2 text-xs text-slate-200">
+            <input
+              type="checkbox"
+              checked={preferences.includeBetaUpdates !== false}
+              onChange={(e) =>
+                onChangePreferences({
+                  ...preferences,
+                  includeBetaUpdates: e.target.checked,
+                })
+              }
+              className="h-4 w-4 accent-sky-400"
+            />
+            <span>Include Beta releases</span>
+          </label>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
