@@ -148,14 +148,13 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
   const [isPlaying, setIsPlaying] = useState(true);
   const [fallbackMutedState, setFallbackMutedState] = useState(false);
   const [fallbackVolumeState, setFallbackVolumeState] = useState(0.85);
-  const [autoplayForcedMute, setAutoplayForcedMute] = useState(false);
   const [hudVisible, setHudVisible] = useState(true);
   const [hudHovered, setHudHovered] = useState(false);
   const hudHideTimerRef = useRef<number | null>(null);
 
   const isMuted = controlledMuted ?? fallbackMutedState;
   const volume = controlledVolume ?? fallbackVolumeState;
-  const effectiveMuted = isMuted || autoplayForcedMute;
+  const effectiveMuted = isMuted;
 
   const setMutedValue = (next: boolean) => {
     setFallbackMutedState(next);
@@ -372,18 +371,7 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
     if (!video) return;
     video.muted = isMuted;
     video.volume = volume;
-    if (!isMuted) setAutoplayForcedMute(false);
-
-    const onVolumeChange = () => {
-      if (video.muted && !isMuted) {
-        setAutoplayForcedMute(true);
-      } else if (!video.muted) {
-        setAutoplayForcedMute(false);
-      }
-    };
-    video.addEventListener('volumechange', onVolumeChange);
-    return () => video.removeEventListener('volumechange', onVolumeChange);
-  }, [isMuted, volume]);
+  }, [isMuted, volume, activeUrl]);
 
   const revealHud = () => {
     setHudVisible(true);
@@ -473,7 +461,6 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
   const toggleMute = () => {
     const video = videoRef.current;
     const nextMuted = !effectiveMuted;
-    setAutoplayForcedMute(false);
     if (video) {
       video.muted = nextMuted;
       if (!nextMuted && volume === 0) {
@@ -489,7 +476,6 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
 
   const handleVolumeChange = (nextVol: number) => {
     const video = videoRef.current;
-    setAutoplayForcedMute(false);
     setVolumeValue(nextVol);
     if (video) {
       video.volume = nextVol;
@@ -696,7 +682,6 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
 
         <video
           ref={videoRef}
-          crossOrigin="anonymous"
           playsInline
           autoPlay
           muted={effectiveMuted}

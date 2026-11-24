@@ -1,8 +1,12 @@
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
+  Check,
+  ChevronDown,
+  Database,
   Grid2x2,
   Moon,
   PanelLeft,
+  Plus,
   Search,
 } from 'lucide-react';
 import {
@@ -17,6 +21,12 @@ import type {
 } from '../../types/luma';
 import { LumaLogo } from '../brand/LumaLogo';
 
+export interface QuickPlaylistOption {
+  id: string;
+  name: string;
+  channelCount: number;
+}
+
 interface CustomTitlebarProps {
   designMode: PlatformDesignMode;
   locale: LumaLocale;
@@ -27,6 +37,9 @@ interface CustomTitlebarProps {
   onOpenCommandBar: () => void;
   activeSection: NavigationSection;
   onSelectSection: (section: NavigationSection) => void;
+  playlists?: QuickPlaylistOption[];
+  activeSourceId?: string;
+  onSelectSourceId?: (sourceId: string) => void;
   nowMs: number;
 }
 
@@ -40,11 +53,40 @@ export const CustomTitlebar: React.FC<CustomTitlebarProps> = ({
   onOpenCommandBar,
   activeSection,
   onSelectSection,
+  playlists = [],
+  activeSourceId,
+  onSelectSourceId,
   nowMs,
 }) => {
   const isM3 = designMode === 'm3-expressive';
   const t = TRANSLATIONS[locale];
   const bcp47 = LOCALE_META[locale].bcp47;
+
+  const [playlistMenuOpen, setPlaylistMenuOpen] = useState(false);
+  const menuContainerRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!playlistMenuOpen) return;
+    const onPointerDown = (e: PointerEvent) => {
+      if (
+        menuContainerRef.current &&
+        !menuContainerRef.current.contains(e.target as Node)
+      ) {
+        setPlaylistMenuOpen(false);
+      }
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setPlaylistMenuOpen(false);
+    };
+    window.addEventListener('pointerdown', onPointerDown);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('pointerdown', onPointerDown);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [playlistMenuOpen]);
+
+  const activePlaylist = playlists.find((p) => p.id === activeSourceId) ?? null;
 
   const formattedClock = new Intl.DateTimeFormat(bcp47, {
     hour: '2-digit',
@@ -136,13 +178,105 @@ export const CustomTitlebar: React.FC<CustomTitlebarProps> = ({
         </button>
       </div>
 
-      {/* Right Region: Minimal Essential Controls */}
+      {/* Right Region: Quick Playlist Switcher + Essential Controls */}
       <div className="app-no-drag flex items-center gap-2">
         {sleepRemainingSec !== null && (
           <span className="hidden items-center gap-1 rounded-full bg-amber-400/20 px-2.5 py-1 text-[11px] font-semibold text-amber-200 md:inline-flex luma-tabular">
             <Moon className="h-3 w-3" />
             {Math.ceil(sleepRemainingSec / 60)}m
           </span>
+        )}
+
+        {/* Quick Playlist Switcher */}
+        {onSelectSourceId && (
+          <div ref={menuContainerRef} className="relative">
+            <button
+              id="btn-quick-playlist-switcher"
+              type="button"
+              onClick={() => {
+                if (playlists.length === 0) {
+                  onSelectSection('sources');
+                } else {
+                  setPlaylistMenuOpen((v) => !v);
+                }
+              }}
+              className={
+                isM3
+                  ? 'm3-secondary-tonal inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[11px] font-semibold'
+                  : 'lg-capsule inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium text-slate-200 hover:text-white'
+              }
+              title={t.navSources}
+            >
+              <Database className="h-3.5 w-3.5 shrink-0 text-sky-300" />
+              <span className="max-w-[120px] truncate">
+                {activePlaylist ? activePlaylist.name : t.navSources}
+              </span>
+              {playlists.length > 0 && (
+                <ChevronDown className="h-3 w-3 shrink-0 opacity-70" />
+              )}
+            </button>
+
+            {playlistMenuOpen && (
+              <div
+                className={`absolute top-full right-0 z-50 mt-2 w-64 overflow-hidden p-1.5 shadow-2xl ${
+                  isM3
+                    ? 'rounded-[22px] bg-[#1E2536] ring-1 ring-white/15'
+                    : 'lg-modal rounded-[20px]'
+                }`}
+              >
+                <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                  Switch Playlist
+                </div>
+
+                <div className="luma-scroll max-h-64 overflow-y-auto space-y-0.5">
+                  {playlists.map((pl) => {
+                    const isSelected = pl.id === activeSourceId;
+                    return (
+                      <button
+                        key={pl.id}
+                        type="button"
+                        onClick={() => {
+                          onSelectSourceId(pl.id);
+                          setPlaylistMenuOpen(false);
+                        }}
+                        className={`flex w-full items-center justify-between gap-2 rounded-xl px-3 py-2 text-left text-xs transition ${
+                          isSelected
+                            ? isM3
+                              ? 'm3-tonal-active font-semibold'
+                              : 'lg-pill-active font-semibold'
+                            : 'text-slate-200 hover:bg-white/10'
+                        }`}
+                      >
+                        <div className="min-w-0">
+                          <div className="truncate">{pl.name}</div>
+                          <div className="text-[10px] opacity-70 luma-tabular">
+                            {pl.channelCount.toLocaleString(bcp47)} {t.channelsUnit}
+                          </div>
+                        </div>
+                        {isSelected && (
+                          <Check className="h-3.5 w-3.5 shrink-0 text-sky-300" />
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div className="mt-1 border-t border-white/10 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPlaylistMenuOpen(false);
+                      onSelectSection('sources');
+                    }}
+                    className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-xs font-medium text-sky-300 hover:bg-white/10"
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    <span>{t.navSources}…</span>
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
         )}
 
         <button
@@ -163,7 +297,7 @@ export const CustomTitlebar: React.FC<CustomTitlebarProps> = ({
           title={t.navMultiview}
         >
           <Grid2x2 className="h-3.5 w-3.5" />
-          <span className="hidden md:inline">Multiview</span>
+          <span className="hidden lg:inline">Multiview</span>
         </button>
 
         <button

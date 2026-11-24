@@ -308,6 +308,9 @@ interface SourcesEngineViewProps {
   locale?: LumaLocale;
   nowMs: number;
   activeSourceId: string;
+  demoSourceDeleted?: boolean;
+  onDeleteDemoSource?: () => void;
+  onRestoreDemoSource?: () => void;
   persistedSources: StoredPlaylistSource[];
   storedChannelsForActive: StoredChannel[];
   ingestState: IngestProgressState;
@@ -356,6 +359,9 @@ export const SourcesEngineView: React.FC<SourcesEngineViewProps> = ({
   locale = 'de',
   nowMs,
   activeSourceId,
+  demoSourceDeleted = false,
+  onDeleteDemoSource,
+  onRestoreDemoSource,
   persistedSources,
   storedChannelsForActive,
   ingestState,
@@ -635,38 +641,55 @@ export const SourcesEngineView: React.FC<SourcesEngineViewProps> = ({
           <div className="flex items-center justify-between">
             <span className="text-xs font-semibold text-white">Playlists</span>
             <span className="rounded-full bg-emerald-400/15 px-2.5 py-0.5 text-[10px] font-semibold text-emerald-300 luma-tabular">
-              {persistedSources.length + 1}
+              {persistedSources.length + (demoSourceDeleted ? 0 : 1)}
             </span>
           </div>
 
-          {/* Built-in Demo */}
-          <div
-            onClick={() => onSelectSourceId('builtin-reference')}
-            className={`cursor-pointer p-3.5 transition ${
-              isM3 ? 'rounded-[20px]' : 'rounded-[18px]'
-            } ${
-              activeSourceId === 'builtin-reference'
-                ? isM3
-                  ? 'm3-tonal-active ring-1 ring-[#7FD4FF]/60'
-                  : 'lg-pill-active'
-                : isM3
-                  ? 'bg-[#232B3D] hover:bg-[#2E384F]'
-                  : 'lg-capsule'
-            }`}
-          >
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold text-white">
-                Luma Demo Channels (Built-in)
-              </span>
-              <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase text-sky-300">
-                <CheckCircle2 className="h-3 w-3" />
-                DEMO
-              </span>
+          {/* Built-in Demo (Deletable & Restorable) */}
+          {!demoSourceDeleted && (
+            <div
+              onClick={() => onSelectSourceId('builtin-reference')}
+              className={`cursor-pointer p-3.5 transition ${
+                isM3 ? 'rounded-[20px]' : 'rounded-[18px]'
+              } ${
+                activeSourceId === 'builtin-reference'
+                  ? isM3
+                    ? 'm3-tonal-active ring-1 ring-[#7FD4FF]/60'
+                    : 'lg-pill-active'
+                  : isM3
+                    ? 'bg-[#232B3D] hover:bg-[#2E384F]'
+                    : 'lg-capsule'
+              }`}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="truncate text-xs font-semibold text-white">
+                  Luma Demo Channels (Built-in)
+                </span>
+                <div
+                  className="flex items-center gap-1.5"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase text-sky-300">
+                    <CheckCircle2 className="h-3 w-3" />
+                    DEMO
+                  </span>
+                  {onDeleteDemoSource && (
+                    <button
+                      type="button"
+                      onClick={onDeleteDemoSource}
+                      className="rounded-full p-1 text-slate-300 hover:bg-rose-500/25 hover:text-rose-200"
+                      title="Delete demo source"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                </div>
+              </div>
+              <div className="mt-1 text-[11px] opacity-80 luma-tabular">
+                2,400 Demo Channels · 6 Movies
+              </div>
             </div>
-            <div className="mt-1 text-[11px] opacity-80 luma-tabular">
-              2,400 Demo Channels · 6 Movies
-            </div>
-          </div>
+          )}
 
           {/* User Playlists */}
           {persistedSources.map((src) => {
@@ -780,9 +803,9 @@ export const SourcesEngineView: React.FC<SourcesEngineViewProps> = ({
             );
           })}
 
-          {/* Upload Extra XMLTV (.xml / .xml.gz) */}
-          {activeSourceId !== 'builtin-reference' && (
-            <div className="pt-1">
+          {/* Upload Extra XMLTV (.xml / .xml.gz) & Restore Demo */}
+          <div className="flex flex-wrap items-center gap-2 pt-1">
+            {activeSourceId !== 'builtin-reference' && activeSourceId !== 'none' && (
               <label
                 className={`inline-flex cursor-pointer items-center gap-2 rounded-full px-4 py-2 text-xs font-semibold ${
                   isM3 ? 'm3-secondary-tonal' : 'lg-capsule text-white'
@@ -797,8 +820,21 @@ export const SourcesEngineView: React.FC<SourcesEngineViewProps> = ({
                   className="hidden"
                 />
               </label>
-            </div>
-          )}
+            )}
+
+            {demoSourceDeleted && onRestoreDemoSource && (
+              <button
+                type="button"
+                onClick={onRestoreDemoSource}
+                className={`inline-flex items-center gap-1.5 rounded-full px-3.5 py-2 text-xs font-semibold ${
+                  isM3 ? 'm3-secondary-tonal' : 'lg-capsule text-sky-200'
+                }`}
+              >
+                <RefreshCw className="h-3.5 w-3.5 text-sky-300" />
+                <span>Restore Demo Source</span>
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Right Column: Connect New Playlist */}

@@ -28,6 +28,7 @@ export interface LumaPreferences {
   bufferProfile: BufferProfile;
   sleepTimerMinutes: number; // 0 = Off
   spatialDpadEnabled: boolean;
+  autoMiniPlayerOnSwitch?: boolean; // false = Off by default
 }
 
 export function normalizeLocale(input: unknown): LumaLocale {
@@ -131,6 +132,7 @@ export interface TranslationDictionary {
   sleepTimerTitle: string;
   sleepOff: string;
   dpadToggleLabel: string;
+  autoMiniPlayerToggleLabel: string;
   bufferProfileTitle: string;
   bufferSportLabel: string;
   bufferSportSub: string;
@@ -220,6 +222,8 @@ export const TRANSLATIONS: Record<LumaLocale, TranslationDictionary> = {
     sleepOff: 'Aus',
     dpadToggleLabel:
       '10-Foot Spatial D-Pad / Pfeiltasten-Fokus aktivieren (Android TV & Gamepad)',
+    autoMiniPlayerToggleLabel:
+      'Mini-Player beim Wechseln der Ansicht automatisch einblenden',
     bufferProfileTitle: 'Stream-Puffer & Latenz-Profil',
     bufferSportLabel: 'Live Sport (1.5s)',
     bufferSportSub: 'Ultra-Low-Latency',
@@ -308,6 +312,8 @@ export const TRANSLATIONS: Record<LumaLocale, TranslationDictionary> = {
     sleepOff: 'Off',
     dpadToggleLabel:
       'Enable 10-Foot Spatial D-Pad / Arrow Focus Engine (Android TV & Gamepad)',
+    autoMiniPlayerToggleLabel:
+      'Automatically show Mini Player when switching views',
     bufferProfileTitle: 'Stream Buffer & Latency Profile',
     bufferSportLabel: 'Live Sports (1.5s)',
     bufferSportSub: 'Ultra-Low Latency',
@@ -396,6 +402,8 @@ export const TRANSLATIONS: Record<LumaLocale, TranslationDictionary> = {
     sleepOff: 'Off',
     dpadToggleLabel:
       'Attiva navigazione spaziale D-Pad / frecce 10-Foot (Android TV & Gamepad)',
+    autoMiniPlayerToggleLabel:
+      'Mostra automaticamente il Mini Player quando cambi vista',
     bufferProfileTitle: 'Buffer Stream & Profilo Latenza',
     bufferSportLabel: 'Sport Live (1.5s)',
     bufferSportSub: 'Latenza ultra-bassa',
@@ -484,6 +492,8 @@ export const TRANSLATIONS: Record<LumaLocale, TranslationDictionary> = {
     sleepOff: 'Arrêt',
     dpadToggleLabel:
       'Activer la navigation spatiale D-Pad / flèches 10-Foot (Android TV & Manette)',
+    autoMiniPlayerToggleLabel:
+      'Afficher automatiquement le Mini-lecteur lors du changement de vue',
     bufferProfileTitle: 'Tampon de flux & Profil de latence',
     bufferSportLabel: 'Sport Direct (1.5s)',
     bufferSportSub: 'Ultra-faible latence',
@@ -572,6 +582,8 @@ export const TRANSLATIONS: Record<LumaLocale, TranslationDictionary> = {
     sleepOff: 'Apagado',
     dpadToggleLabel:
       'Activar enfoque espacial D-Pad / flechas 10-Foot (Android TV y Gamepad)',
+    autoMiniPlayerToggleLabel:
+      'Mostrar automáticamente el Mini Reproductor al cambiar de vista',
     bufferProfileTitle: 'Búfer de Stream y Perfil de Latencia',
     bufferSportLabel: 'Deporte en Vivo (1.5s)',
     bufferSportSub: 'Latencia ultrabaja',
@@ -660,6 +672,8 @@ export const TRANSLATIONS: Record<LumaLocale, TranslationDictionary> = {
     sleepOff: 'Ανενεργό',
     dpadToggleLabel:
       'Ενεργοποίηση χωρικής πλοήγησης D-Pad / βελών 10-Foot (Android TV & Gamepad)',
+    autoMiniPlayerToggleLabel:
+      'Αυτόματη εμφάνιση Mini Player κατά την αλλαγή προβολής',
     bufferProfileTitle: 'Buffer Ροής & Προφίλ Καθυστέρησης',
     bufferSportLabel: 'Live Αθλητικά (1.5s)',
     bufferSportSub: 'Εξαιρετικά χαμηλή καθυστέρηση',

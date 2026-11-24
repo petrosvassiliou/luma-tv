@@ -47,6 +47,7 @@ export class LumaPlayerEngine {
   private video: HTMLVideoElement | null = null;
   private statsTimer: number | null = null;
   private fallbackTimer: number | null = null;
+  private unlockAudioCleanup: (() => void) | null = null;
   private retriedWithProxy = false;
   private telemetry: StreamTelemetry = { ...INITIAL_TELEMETRY };
   private onTelemetry: (telemetry: StreamTelemetry) => void;
@@ -58,6 +59,48 @@ export class LumaPlayerEngine {
   private emit(patch: Partial<StreamTelemetry>) {
     this.telemetry = { ...this.telemetry, ...patch };
     this.onTelemetry(this.telemetry);
+  }
+
+  /**
+   * Starts playback while preserving the caller's desired `video.muted` state.
+   * Never mutes on `AbortError` (which fires routinely during channel zapping / MSE swaps).
+   * Only falls back to temporary mute if the browser throws `NotAllowedError` before
+   * any user gesture, and automatically restores sound on the first pointer/key event.
+   */
+  private attemptPlayRespectingMute(
+    video: HTMLVideoElement,
+    desiredMuted: boolean,
+    playAction?: () => Promise<void> | void
+  ) {
+    video.muted = desiredMuted;
+    const playPromise = Promise.resolve(playAction ? playAction() : video.play());
+    playPromise.catch((err: unknown) => {
+      const errName =
+        err && typeof err === 'object' && 'name' in err
+          ? String((err as { name?: unknown }).name)
+          : '';
+
+      if (errName === 'NotAllowedError' && !desiredMuted) {
+        video.muted = true;
+        Promise.resolve(playAction ? playAction() : video.play()).catch(() => undefined);
+
+        if (typeof window !== 'undefined' && !this.unlockAudioCleanup) {
+          const unlock = () => {
+            if (this.video) {
+              this.video.muted = false;
+            }
+            this.unlockAudioCleanup?.();
+          };
+          window.addEventListener('pointerdown', unlock, { once: true, capture: true });
+          window.addEventListener('keydown', unlock, { once: true, capture: true });
+          this.unlockAudioCleanup = () => {
+            window.removeEventListener('pointerdown', unlock, { capture: true });
+            window.removeEventListener('keydown', unlock, { capture: true });
+            this.unlockAudioCleanup = null;
+          };
+        }
+      }
+    });
   }
 
   public load(
@@ -79,8 +122,10 @@ export class LumaPlayerEngine {
     explicitStreamType: 'hls' | 'mpegts' | undefined,
     forceProxy: boolean
   ) {
+    const desiredMuted = video.muted;
     this.destroyDriversOnly();
     this.video = video;
+    video.muted = desiredMuted;
 
     const useProxy = forceProxy || shouldProactivelyProxyStream(rawStreamUrl, proxyConfig);
     const effectiveProxy: EngineProxyConfig = useProxy
@@ -133,6 +178,9 @@ export class LumaPlayerEngine {
     }, 3400);
 
     const markPlaying = () => {
+      if (!video.muted && this.unlockAudioCleanup) {
+        this.unlockAudioCleanup();
+      }
       if (this.fallbackTimer !== null) {
         window.clearTimeout(this.fallbackTimer);
         this.fallbackTimer = null;
@@ -147,6 +195,9 @@ export class LumaPlayerEngine {
 
     video.onplaying = markPlaying;
     video.onloadeddata = () => {
+      if (autoPlay && video.paused) {
+        this.attemptPlayRespectingMute(video, desiredMuted);
+      }
       if (!video.paused) markPlaying();
     };
     video.onwaiting = () => {
@@ -179,10 +230,7 @@ export class LumaPlayerEngine {
       player.load();
 
       if (autoPlay) {
-        Promise.resolve(player.play()).catch(() => {
-          video.muted = true;
-          Promise.resolve(player.play()).catch(() => undefined);
-        });
+        this.attemptPlayRespectingMute(video, desiredMuted, () => player.play());
       }
 
       player.on(mpegts.Events.MEDIA_INFO, (info: { width?: number; height?: number }) => {
@@ -257,10 +305,7 @@ export class LumaPlayerEngine {
       };
       video.src = finalUrl;
       if (autoPlay) {
-        video.play().catch(() => {
-          video.muted = true;
-          video.play().catch(() => undefined);
-        });
+        this.attemptPlayRespectingMute(video, desiredMuted);
       }
       this.startTelemetryLoop();
       return;
@@ -324,10 +369,7 @@ export class LumaPlayerEngine {
         });
 
         if (autoPlay) {
-          video.play().catch(() => {
-            video.muted = true;
-            video.play().catch(() => undefined);
-          });
+          this.attemptPlayRespectingMute(video, desiredMuted);
         }
       });
 
@@ -418,10 +460,7 @@ export class LumaPlayerEngine {
       });
       video.src = finalUrl;
       if (autoPlay) {
-        video.play().catch(() => {
-          video.muted = true;
-          video.play().catch(() => undefined);
-        });
+        this.attemptPlayRespectingMute(video, desiredMuted);
       }
     } else {
       this.emit({
@@ -488,6 +527,9 @@ export class LumaPlayerEngine {
   }
 
   public markExternalMpvSession() {
+    if (this.unlockAudioCleanup) {
+      this.unlockAudioCleanup();
+    }
     if (this.fallbackTimer !== null) {
       window.clearTimeout(this.fallbackTimer);
       this.fallbackTimer = null;
@@ -502,6 +544,9 @@ export class LumaPlayerEngine {
   }
 
   private destroyDriversOnly() {
+    if (this.unlockAudioCleanup) {
+      this.unlockAudioCleanup();
+    }
     if (this.fallbackTimer !== null) {
       window.clearTimeout(this.fallbackTimer);
       this.fallbackTimer = null;

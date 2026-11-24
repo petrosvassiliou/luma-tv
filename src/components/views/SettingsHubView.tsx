@@ -8,6 +8,7 @@ import {
   Lock,
   LockOpen,
   Moon,
+  PictureInPicture2,
   ShieldAlert,
   Sliders,
 } from 'lucide-react';
@@ -247,7 +248,23 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
             ))}
           </div>
 
-          <div className="border-t border-white/10 pt-3">
+          <div className="border-t border-white/10 pt-3 space-y-2.5">
+            <label className="flex items-center gap-2.5 text-xs text-slate-200">
+              <input
+                type="checkbox"
+                checked={Boolean(preferences.autoMiniPlayerOnSwitch)}
+                onChange={(e) =>
+                  onChangePreferences({
+                    ...preferences,
+                    autoMiniPlayerOnSwitch: e.target.checked,
+                  })
+                }
+                className="h-4 w-4 accent-sky-400"
+              />
+              <PictureInPicture2 className="h-4 w-4 shrink-0 text-sky-300" />
+              <span>{t.autoMiniPlayerToggleLabel}</span>
+            </label>
+
             <label className="flex items-center gap-2.5 text-xs text-slate-200">
               <input
                 type="checkbox"
@@ -260,7 +277,7 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
                 }
                 className="h-4 w-4 accent-sky-400"
               />
-              <Gamepad2 className="h-4 w-4 text-sky-300" />
+              <Gamepad2 className="h-4 w-4 shrink-0 text-sky-300" />
               <span>{t.dpadToggleLabel}</span>
             </label>
           </div>

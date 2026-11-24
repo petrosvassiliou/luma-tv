@@ -162,6 +162,7 @@ export function App() {
           bufferProfile: parsed.bufferProfile ?? 'balanced',
           sleepTimerMinutes: parsed.sleepTimerMinutes ?? 0,
           spatialDpadEnabled: parsed.spatialDpadEnabled ?? true,
+          autoMiniPlayerOnSwitch: Boolean(parsed.autoMiniPlayerOnSwitch ?? false),
         };
       }
     } catch {
@@ -172,6 +173,7 @@ export function App() {
       bufferProfile: 'balanced',
       sleepTimerMinutes: 0,
       spatialDpadEnabled: true,
+      autoMiniPlayerOnSwitch: false,
     };
   });
 
@@ -200,15 +202,17 @@ export function App() {
   const [commandBarOpen, setCommandBarOpen] = useState<boolean>(false);
   const [globalAmbientRgb, setGlobalAmbientRgb] = useState<string>('56, 189, 248');
 
-  // Persistent Player Audio State (never resets to muted across view switches)
+  // Persistent Player Audio State (defaults unmuted; unmutes cleanly on channel selection)
   const [playerAudio, setPlayerAudio] = useState<{ muted: boolean; volume: number }>(() => {
     try {
-      const raw = localStorage.getItem('luma.audio.v1');
+      const raw = localStorage.getItem('luma.audio.v2');
       if (raw) {
         const parsed = JSON.parse(raw) as { muted?: boolean; volume?: number };
+        const vol =
+          typeof parsed.volume === 'number' && parsed.volume > 0 ? parsed.volume : 0.85;
         return {
           muted: Boolean(parsed.muted ?? false),
-          volume: typeof parsed.volume === 'number' ? parsed.volume : 0.85,
+          volume: vol,
         };
       }
     } catch {
@@ -221,7 +225,7 @@ export function App() {
     setPlayerAudio((prev) => {
       const next = { ...prev, muted };
       try {
-        localStorage.setItem('luma.audio.v1', JSON.stringify(next));
+        localStorage.setItem('luma.audio.v2', JSON.stringify(next));
       } catch {
         // Ignore
       }
@@ -233,7 +237,23 @@ export function App() {
     setPlayerAudio((prev) => {
       const next = { ...prev, volume };
       try {
-        localStorage.setItem('luma.audio.v1', JSON.stringify(next));
+        localStorage.setItem('luma.audio.v2', JSON.stringify(next));
+      } catch {
+        // Ignore
+      }
+      return next;
+    });
+  }, []);
+
+  const ensureAudioUnmutedForSwitch = useCallback(() => {
+    setPlayerAudio((prev) => {
+      if (!prev.muted && prev.volume > 0) return prev;
+      const next = {
+        muted: false,
+        volume: prev.volume > 0 ? prev.volume : 0.85,
+      };
+      try {
+        localStorage.setItem('luma.audio.v2', JSON.stringify(next));
       } catch {
         // Ignore
       }
@@ -242,7 +262,8 @@ export function App() {
   }, []);
 
   const [detachedPipInEpg, setDetachedPipInEpg] = useState<boolean>(false);
-  const [autoPipWhenBrowsing, setAutoPipWhenBrowsing] = useState<boolean>(true);
+  const [pipDismissedWhileBrowsing, setPipDismissedWhileBrowsing] =
+    useState<boolean>(false);
 
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
   const [epgOffsetHours, setEpgOffsetHours] = useState<number>(0);
@@ -392,9 +413,42 @@ export function App() {
     }
   }, []);
 
-  const [activeSourceId, setActiveSourceId] = useState<string>('builtin-reference');
+  const [demoSourceDeleted, setDemoSourceDeleted] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('luma.demoDeleted.v1') === '1';
+    } catch {
+      return false;
+    }
+  });
+
+  const [activeSourceId, setActiveSourceIdState] = useState<string>(() => {
+    try {
+      const demoRemoved = localStorage.getItem('luma.demoDeleted.v1') === '1';
+      const saved = localStorage.getItem('luma.activeSource.v1');
+      if (saved && !(demoRemoved && saved === 'builtin-reference')) {
+        return saved;
+      }
+      return demoRemoved ? 'none' : 'builtin-reference';
+    } catch {
+      return 'builtin-reference';
+    }
+  });
+
+  const handleSelectSourceId = useCallback((nextId: string) => {
+    setActiveSourceIdState(nextId);
+    setSelectedGroupId('all');
+    try {
+      localStorage.setItem('luma.activeSource.v1', nextId);
+    } catch {
+      // Ignore
+    }
+  }, []);
+
   const [persistedSources, setPersistedSources] = useState<StoredPlaylistSource[]>([]);
   const [persistedChannels, setPersistedChannels] = useState<StoredChannel[]>([]);
+  const [crossSourceLookupChannels, setCrossSourceLookupChannels] = useState<
+    StoredChannel[]
+  >([]);
   const [persistedVod, setPersistedVod] = useState<StoredVodItem[]>([]);
   const [persistedSeries, setPersistedSeries] = useState<StoredSeriesItem[]>([]);
   const [loadingSeriesIds, setLoadingSeriesIds] = useState<Set<string>>(() => new Set());
@@ -420,12 +474,35 @@ export function App() {
       .orderBy('createdAt')
       .reverse()
       .toArray()
-      .then((list) => setPersistedSources(list))
+      .then((list) => {
+        setPersistedSources(list);
+        setActiveSourceIdState((cur) => {
+          if (list.some((s) => s.id === cur)) return cur;
+          // Auto-select user's real playlist if no explicit valid playlist was active
+          if (list.length > 0) {
+            const saved = localStorage.getItem('luma.activeSource.v1');
+            if (!saved || cur === 'none' || demoSourceDeleted) {
+              localStorage.setItem('luma.activeSource.v1', list[0].id);
+              return list[0].id;
+            }
+          }
+          if (!demoSourceDeleted && cur !== 'none') return 'builtin-reference';
+          return list[0]?.id ?? 'none';
+        });
+      })
       .catch(() => undefined);
-  }, []);
+  }, [demoSourceDeleted]);
 
   const refreshActiveSourceBundle = useCallback(async (sourceId: string) => {
-    if (sourceId === 'builtin-reference') return;
+    if (sourceId === 'builtin-reference' || sourceId === 'none') {
+      if (sourceId === 'none') {
+        setPersistedChannels([]);
+        setPersistedVod([]);
+        setPersistedSeries([]);
+        setXmltvMap(new Map());
+      }
+      return;
+    }
     const bundle = await loadPersistedSourceBundle(sourceId);
     setPersistedChannels(bundle.channels);
     setPersistedVod(bundle.vodItems);
@@ -434,7 +511,7 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (activeSourceId === 'builtin-reference') return;
+    if (activeSourceId === 'builtin-reference' || activeSourceId === 'none') return;
     let cancelled = false;
     loadPersistedSourceBundle(activeSourceId)
       .then((bundle) => {
@@ -450,6 +527,31 @@ export function App() {
     };
   }, [activeSourceId]);
 
+  // Resolve any Favorite or Collection channel IDs stored in IndexedDB across ALL playlists
+  useEffect(() => {
+    const neededIds = new Set<string>(favoriteIds);
+    for (const bq of customBouquets) {
+      for (const cid of bq.channelIds) neededIds.add(cid);
+    }
+    if (neededIds.size === 0) {
+      setCrossSourceLookupChannels([]);
+      return;
+    }
+    let cancelled = false;
+    lumaDb.channels
+      .bulkGet(Array.from(neededIds))
+      .then((rows) => {
+        if (cancelled) return;
+        setCrossSourceLookupChannels(
+          rows.filter((r): r is StoredChannel => Boolean(r))
+        );
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [favoriteIds, customBouquets, persistedSources]);
+
   const builtinCatalog = useMemo(
     () => buildChannelCatalog(stressMode20k ? 20_400 : 2_400),
     [stressMode20k]
@@ -460,9 +562,29 @@ export function App() {
     [persistedSources, activeSourceId]
   );
 
+  const quickPlaylistOptions = useMemo(() => {
+    const list: { id: string; name: string; channelCount: number }[] =
+      persistedSources.map((s) => ({
+        id: s.id,
+        name: s.name,
+        channelCount: s.channelCount,
+      }));
+    if (!demoSourceDeleted) {
+      list.push({
+        id: 'builtin-reference',
+        name: 'Luma Demo',
+        channelCount: builtinCatalog.channels.length,
+      });
+    }
+    return list;
+  }, [persistedSources, demoSourceDeleted, builtinCatalog.channels.length]);
+
   const { channels, baseGroups }: { channels: Channel[]; baseGroups: ChannelGroup[] } =
     useMemo(() => {
-      if (activeSourceId === 'builtin-reference') {
+      if (activeSourceId === 'none') {
+        return { channels: [], baseGroups: [] };
+      }
+      if (activeSourceId === 'builtin-reference' && !demoSourceDeleted) {
         return { channels: builtinCatalog.channels, baseGroups: builtinCatalog.groups };
       }
       const hiddenGroups = new Set(activeStoredSource?.hiddenGroupIds ?? []);
@@ -489,10 +611,31 @@ export function App() {
             ? visibleStored
             : persistedChannels.length > 0
               ? persistedChannels.slice(0, 1)
-              : builtinCatalog.channels,
+              : demoSourceDeleted
+                ? []
+                : builtinCatalog.channels,
         baseGroups: derivedGroups,
       };
-    }, [activeSourceId, activeStoredSource, persistedChannels, builtinCatalog]);
+    }, [
+      activeSourceId,
+      demoSourceDeleted,
+      activeStoredSource,
+      persistedChannels,
+      builtinCatalog,
+    ]);
+
+  // Unified lookup pool for Favorites & Collections (includes hidden-group & cross-playlist channels)
+  const collectionAndFavoritePool: Channel[] = useMemo(() => {
+    const map = new Map<string, Channel>();
+    for (const ch of persistedChannels) map.set(ch.id, ch);
+    for (const ch of crossSourceLookupChannels) map.set(ch.id, ch);
+    if (!demoSourceDeleted) {
+      for (const ch of builtinCatalog.channels) {
+        if (!map.has(ch.id)) map.set(ch.id, ch);
+      }
+    }
+    return Array.from(map.values());
+  }, [persistedChannels, crossSourceLookupChannels, demoSourceDeleted, builtinCatalog]);
 
   const groups: ChannelGroup[] = useMemo(() => {
     const bouquetGroups: ChannelGroup[] = customBouquets.map((bq) => ({
@@ -517,18 +660,18 @@ export function App() {
 
   const combinedVodCatalog: VodItem[] = useMemo(
     () =>
-      activeSourceId === 'builtin-reference' || persistedVod.length === 0
+      activeSourceId === 'builtin-reference' && !demoSourceDeleted
         ? DEMO_VOD_CATALOG
-        : [...persistedVod, ...DEMO_VOD_CATALOG],
-    [activeSourceId, persistedVod]
+        : persistedVod,
+    [activeSourceId, demoSourceDeleted, persistedVod]
   );
 
   const combinedSeriesCatalog: SeriesItem[] = useMemo(
     () =>
-      activeSourceId === 'builtin-reference' || persistedSeries.length === 0
+      activeSourceId === 'builtin-reference' && !demoSourceDeleted
         ? DEMO_SERIES_CATALOG
-        : [...persistedSeries, ...DEMO_SERIES_CATALOG],
-    [activeSourceId, persistedSeries]
+        : persistedSeries,
+    [activeSourceId, demoSourceDeleted, persistedSeries]
   );
 
   const [activeChannelId, setActiveChannelId] = useState<string>('ch-redbull-tv');
@@ -604,24 +747,26 @@ export function App() {
   const visibleChannels = useMemo(() => {
     if (selectedGroupId === 'all') return channels;
     if (selectedGroupId === 'favorites') {
-      return channels.filter((c) => favoriteIds.has(c.id));
+      return collectionAndFavoritePool.filter((c) => favoriteIds.has(c.id));
     }
     const customBq = customBouquets.find((b) => b.id === selectedGroupId);
     if (customBq) {
-      const byId = new Map(channels.map((c) => [c.id, c]));
+      const byId = new Map(collectionAndFavoritePool.map((c) => [c.id, c]));
       return customBq.channelIds
         .map((id) => byId.get(id))
         .filter((c): c is Channel => Boolean(c));
     }
     return channels.filter((c) => c.groupId === selectedGroupId);
-  }, [channels, selectedGroupId, favoriteIds, customBouquets]);
+  }, [channels, collectionAndFavoritePool, selectedGroupId, favoriteIds, customBouquets]);
 
   const activeChannel: Channel = useMemo(
     () =>
       channels.find((c) => c.id === activeChannelId) ??
+      collectionAndFavoritePool.find((c) => c.id === activeChannelId) ??
       channels.find((c) => !isProviderDividerChannel(c.name)) ??
-      channels[0],
-    [channels, activeChannelId]
+      channels[0] ??
+      builtinCatalog.channels[0],
+    [channels, collectionAndFavoritePool, activeChannelId, builtinCatalog.channels]
   );
 
   const [watchHistory, setWatchHistory] = useState<WatchHistoryEntry[]>(() => {
@@ -673,6 +818,7 @@ export function App() {
 
   const selectLiveChannel = useCallback(
     (ch: Channel) => {
+      ensureAudioUnmutedForSwitch();
       setActiveChannelId(ch.id);
       setActiveOnDemand(null);
       setTimeshiftProgram(null);
@@ -689,7 +835,7 @@ export function App() {
         updatedAt: Date.now(),
       });
     },
-    [recordHistory]
+    [ensureAudioUnmutedForSwitch, recordHistory]
   );
 
   const handleSelectSidebarGroup = useCallback(
@@ -712,6 +858,7 @@ export function App() {
 
   const handleStartTimeshift = useCallback(
     (ch: Channel, program: EpgProgram) => {
+      ensureAudioUnmutedForSwitch();
       const catchupUrl = buildCatchupStreamUrl(ch, program, Date.now());
       const durationSec = Math.max(60, Math.round((program.endMs - program.startMs) / 1000));
       const existingResume =
@@ -733,11 +880,12 @@ export function App() {
       });
       setActiveSection((cur) => (cur === 'live-epg' ? 'live-epg' : 'live'));
     },
-    [recordHistory, watchHistory]
+    [ensureAudioUnmutedForSwitch, recordHistory, watchHistory]
   );
 
   const handlePlayVod = useCallback(
     (vod: VodItem, explicitResumeSec?: number) => {
+      ensureAudioUnmutedForSwitch();
       const existingResume =
         explicitResumeSec ??
         watchHistory.find((w) => w.itemId === vod.id)?.resumeSec ??
@@ -766,7 +914,7 @@ export function App() {
         updatedAt: Date.now(),
       });
     },
-    [recordHistory, watchHistory]
+    [ensureAudioUnmutedForSwitch, recordHistory, watchHistory]
   );
 
   const handlePlaySeriesEpisode = useCallback(
@@ -819,6 +967,7 @@ export function App() {
         }
       }
 
+      ensureAudioUnmutedForSwitch();
       setActiveOnDemand({
         itemId: ep.id,
         kind: 'vod',
@@ -842,7 +991,7 @@ export function App() {
         updatedAt: Date.now(),
       });
     },
-    [recordHistory, watchHistory]
+    [ensureAudioUnmutedForSwitch, recordHistory, watchHistory]
   );
 
   const handleEnsureSeriesLoaded = useCallback(
@@ -999,8 +1148,7 @@ export function App() {
         onProgress: (phase, percent) => setIngestState({ active: true, phase, percent }),
       });
       await reloadSourcesList();
-      setActiveSourceId(source.id);
-      setSelectedGroupId('all');
+      handleSelectSourceId(source.id);
       await refreshActiveSourceBundle(source.id);
       setIngestState({
         active: false,
@@ -1033,8 +1181,7 @@ export function App() {
         onProgress: (phase, percent) => setIngestState({ active: true, phase, percent }),
       });
       await reloadSourcesList();
-      setActiveSourceId(source.id);
-      setSelectedGroupId('all');
+      handleSelectSourceId(source.id);
       await refreshActiveSourceBundle(source.id);
       setIngestState({
         active: false,
@@ -1080,11 +1227,55 @@ export function App() {
 
   const handleDeleteSource = async (sourceId: string) => {
     await deletePersistedSource(sourceId);
-    await reloadSourcesList();
+    const remaining = await lumaDb.sources.orderBy('createdAt').reverse().toArray();
+    setPersistedSources(remaining);
     if (activeSourceId === sourceId) {
-      setActiveSourceId('builtin-reference');
+      const nextId =
+        remaining[0]?.id ?? (demoSourceDeleted ? 'none' : 'builtin-reference');
+      handleSelectSourceId(nextId);
     }
   };
+
+  const handleDeleteDemoSource = useCallback(() => {
+    setDemoSourceDeleted(true);
+    try {
+      localStorage.setItem('luma.demoDeleted.v1', '1');
+    } catch {
+      // Ignore
+    }
+    // Remove built-in demo favorites & default demo bouquet so ghost demo items don't linger
+    setFavoriteIds((prev) => {
+      const next = new Set(Array.from(prev).filter((id) => !id.startsWith('ch-')));
+      try {
+        localStorage.setItem('luma.favorites.v1', JSON.stringify(Array.from(next)));
+      } catch {
+        // Ignore
+      }
+      return next;
+    });
+    setCustomBouquets((prev) => {
+      const next = prev.filter((b) => b.id !== 'bq-weekend-sport');
+      try {
+        localStorage.setItem('luma.bouquets.v1', JSON.stringify(next));
+      } catch {
+        // Ignore
+      }
+      return next;
+    });
+    if (activeSourceId === 'builtin-reference') {
+      handleSelectSourceId(persistedSources[0]?.id ?? 'none');
+    }
+  }, [activeSourceId, persistedSources, handleSelectSourceId]);
+
+  const handleRestoreDemoSource = useCallback(() => {
+    setDemoSourceDeleted(false);
+    try {
+      localStorage.removeItem('luma.demoDeleted.v1');
+    } catch {
+      // Ignore
+    }
+    handleSelectSourceId('builtin-reference');
+  }, [handleSelectSourceId]);
 
   const handleRenameChannel = async (channelId: string, nextName: string) => {
     if (!nextName.trim()) return;
@@ -1359,7 +1550,9 @@ export function App() {
 
   const showFloatingInAppPip =
     (isLiveSectionActive && detachedPipInEpg) ||
-    (isBrowsingSecondarySection && autoPipWhenBrowsing);
+    (isBrowsingSecondarySection &&
+      Boolean(preferences.autoMiniPlayerOnSwitch) &&
+      !pipDismissedWhileBrowsing);
 
   const t = TRANSLATIONS[preferences.locale];
 
@@ -1491,10 +1684,11 @@ export function App() {
         activeSection={activeSection}
         onSelectSection={(sec) => {
           setActiveSection(sec);
-          if (sec !== 'live' && sec !== 'live-epg') {
-            setAutoPipWhenBrowsing(true);
-          }
+          setPipDismissedWhileBrowsing(false);
         }}
+        playlists={quickPlaylistOptions}
+        activeSourceId={activeSourceId}
+        onSelectSourceId={handleSelectSourceId}
         nowMs={nowMs}
       />
 
@@ -1506,9 +1700,7 @@ export function App() {
           activeSection={activeSection}
           onSelectSection={(sec) => {
             setActiveSection(sec);
-            if (sec !== 'live' && sec !== 'live-epg') {
-              setAutoPipWhenBrowsing(true);
-            }
+            setPipDismissedWhileBrowsing(false);
           }}
           selectedGroupId={selectedGroupId}
           onSelectGroup={handleSelectSidebarGroup}
@@ -1565,6 +1757,9 @@ export function App() {
               locale={preferences.locale}
               channels={visibleChannels}
               activeGroupLabel={activeGroupLabel}
+              selectedGroupId={selectedGroupId}
+              collections={customBouquets}
+              onSelectGroup={handleSelectSidebarGroup}
               activeChannelId={activeChannel.id}
               favoriteIds={favoriteIds}
               onSelectChannel={selectLiveChannel}
@@ -1603,7 +1798,7 @@ export function App() {
             <FavoritesView
               designMode={designMode}
               locale={preferences.locale}
-              channels={channels}
+              channels={collectionAndFavoritePool}
               favoriteIds={favoriteIds}
               activeChannelId={activeChannel.id}
               nowMs={nowMs}
@@ -1618,7 +1813,7 @@ export function App() {
             <CollectionsView
               designMode={designMode}
               locale={preferences.locale}
-              channels={channels}
+              channels={collectionAndFavoritePool}
               collections={customBouquets}
               activeChannelId={activeChannel.id}
               unlockedGroupIds={unlockedGroupIds}
@@ -1710,13 +1905,13 @@ export function App() {
               locale={preferences.locale}
               nowMs={nowMs}
               activeSourceId={activeSourceId}
+              demoSourceDeleted={demoSourceDeleted}
+              onDeleteDemoSource={handleDeleteDemoSource}
+              onRestoreDemoSource={handleRestoreDemoSource}
               persistedSources={persistedSources}
               storedChannelsForActive={persistedChannels}
               ingestState={ingestState}
-              onSelectSourceId={(id) => {
-                setActiveSourceId(id);
-                setSelectedGroupId('all');
-              }}
+              onSelectSourceId={handleSelectSourceId}
               onDeleteSource={handleDeleteSource}
               onImportM3u={handleImportM3u}
               onImportXtream={handleImportXtream}
@@ -1789,7 +1984,7 @@ export function App() {
             if (isLiveSectionActive) {
               setDetachedPipInEpg(false);
             } else {
-              setAutoPipWhenBrowsing(false);
+              setPipDismissedWhileBrowsing(true);
             }
           }}
         />
@@ -1947,7 +2142,7 @@ export function App() {
             } else if (act === 'ambilight') {
               setAmbilightEnabled((v) => !v);
             } else if (act === 'stress20k') {
-              setActiveSourceId('builtin-reference');
+              handleRestoreDemoSource();
               setStressMode20k((v) => !v);
             } else if (act === 'toggleDesign') {
               handleChangeDesignMode(

@@ -249,13 +249,23 @@ export const CollectionsView: React.FC<CollectionsViewProps> = ({
     ? 'h-8.5 rounded-full bg-[#232B3D] px-3.5 text-xs text-white placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-[#7FD4FF]/60'
     : 'lg-capsule h-8.5 rounded-full px-3.5 text-xs text-white placeholder:text-white/45 focus:outline-none';
 
-  const [selectedId, setSelectedId] = useState<string>(collections[0]?.id ?? '');
+  const [selectedId, setSelectedId] = useState<string>(() => {
+    const latestUserCreated = [...collections]
+      .reverse()
+      .find((c) => c.id.startsWith('col-'));
+    return latestUserCreated?.id ?? collections[0]?.id ?? '';
+  });
   const [newName, setNewName] = useState('');
   const [newPinLocked, setNewPinLocked] = useState(false);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameText, setRenameText] = useState('');
   const [addSearchOpen, setAddSearchOpen] = useState(false);
   const [addQuery, setAddQuery] = useState('');
+
+  const channelById = useMemo(
+    () => new Map(channels.map((c) => [c.id, c])),
+    [channels]
+  );
 
   const activeCollection =
     collections.find((c) => c.id === selectedId) ?? collections[0] ?? null;
@@ -269,11 +279,10 @@ export const CollectionsView: React.FC<CollectionsViewProps> = ({
 
   const collectionChannels = useMemo(() => {
     if (!activeCollection) return [];
-    const byId = new Map(channels.map((c) => [c.id, c]));
     return activeCollection.channelIds
-      .map((id) => byId.get(id))
+      .map((id) => channelById.get(id))
       .filter((c): c is Channel => Boolean(c));
-  }, [activeCollection, channels]);
+  }, [activeCollection, channelById]);
 
   const candidateChannels = useMemo(() => {
     if (!addSearchOpen || !activeCollection) return [];
@@ -389,6 +398,10 @@ export const CollectionsView: React.FC<CollectionsViewProps> = ({
         <div className="flex flex-wrap items-center gap-2">
           {collections.map((col) => {
             const isSelected = activeCollection?.id === col.id;
+            const resolvedCount = col.channelIds.reduce(
+              (acc, id) => (channelById.has(id) ? acc + 1 : acc),
+              0
+            );
             const locked =
               parentalEnabled &&
               (col.isPinLocked || lockedGroupIds.includes(col.id)) &&
@@ -416,7 +429,7 @@ export const CollectionsView: React.FC<CollectionsViewProps> = ({
                 {locked && <Lock className="h-3.5 w-3.5 text-amber-300" />}
                 <span>{col.name}</span>
                 <span className="rounded-full bg-black/25 px-2 py-0.5 text-[10px] luma-tabular">
-                  {col.channelIds.length}
+                  {resolvedCount}
                 </span>
               </button>
             );
