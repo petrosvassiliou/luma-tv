@@ -657,7 +657,7 @@ export const INITIAL_PLAYLIST_SOURCES: PlaylistSource[] = [
   },
   {
     id: 'src-xtream-ready',
-    name: 'Xtream Codes Core (Phase 2 Worker Ready)',
+    name: 'Xtream Codes Live & VOD',
     type: 'xtream',
     endpoint: 'https://xtream.provider-gateway.example:8443',
     channelCount: 18000,

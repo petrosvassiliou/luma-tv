@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   CalendarClock,
+  MoreVertical,
   PanelRightClose,
   PanelRightOpen,
   Search,
@@ -13,6 +14,7 @@ import {
 } from '../../i18n/translations';
 import { searchChannelsRanked } from '../../services/channelSearch';
 import type { Channel, PlatformDesignMode } from '../../types/luma';
+import type { ChannelContextMenuTarget } from '../common/ChannelContextMenu';
 
 interface LiveTvViewProps {
   designMode: PlatformDesignMode;
@@ -23,6 +25,7 @@ interface LiveTvViewProps {
   favoriteIds: Set<string>;
   onSelectChannel: (channel: Channel) => void;
   onToggleFavorite: (channelId: string) => void;
+  onOpenChannelMenu?: (target: ChannelContextMenuTarget) => void;
   onOpenEpgView: () => void;
   children: React.ReactNode; // Renders the cinema-sized PlayerStage
 }
@@ -39,6 +42,7 @@ export const LiveTvView: React.FC<LiveTvViewProps> = ({
   favoriteIds,
   onSelectChannel,
   onToggleFavorite,
+  onOpenChannelMenu,
   onOpenEpgView,
   children,
 }) => {
@@ -202,6 +206,11 @@ export const LiveTvView: React.FC<LiveTvViewProps> = ({
                       height: `${ROW_HEIGHT - 4}px`,
                     }}
                     onClick={() => onSelectChannel(ch)}
+                    onContextMenu={(e) => {
+                      if (!onOpenChannelMenu) return;
+                      e.preventDefault();
+                      onOpenChannelMenu({ channel: ch, x: e.clientX, y: e.clientY });
+                    }}
                     className={`group flex cursor-pointer items-center justify-between gap-2 px-3 text-xs transition ${
                       isM3 ? 'rounded-full' : 'rounded-[13px]'
                     } ${
@@ -220,11 +229,11 @@ export const LiveTvView: React.FC<LiveTvViewProps> = ({
                     </div>
 
                     <div
-                      className="flex shrink-0 items-center gap-1.5"
+                      className="flex shrink-0 items-center gap-0.5"
                       onClick={(e) => e.stopPropagation()}
                     >
                       {ch.resolution === '4K HDR' && (
-                        <span className="rounded bg-sky-400/15 px-1.5 py-0.5 text-[9px] font-bold text-sky-300">
+                        <span className="mr-1 rounded bg-sky-400/15 px-1.5 py-0.5 text-[9px] font-bold text-sky-300">
                           4K
                         </span>
                       )}
@@ -240,6 +249,23 @@ export const LiveTvView: React.FC<LiveTvViewProps> = ({
                       >
                         <Star className={`h-3.5 w-3.5 ${isFav ? 'fill-amber-400' : ''}`} />
                       </button>
+                      {onOpenChannelMenu && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            const rect = e.currentTarget.getBoundingClientRect();
+                            onOpenChannelMenu({
+                              channel: ch,
+                              x: rect.left,
+                              y: rect.bottom + 4,
+                            });
+                          }}
+                          className="rounded-full p-1 text-slate-400 opacity-0 transition group-hover:opacity-100 hover:bg-white/10 hover:text-white"
+                          title={t.addToCollectionHeader}
+                        >
+                          <MoreVertical className="h-3.5 w-3.5" />
+                        </button>
+                      )}
                     </div>
                   </div>
                 );

@@ -14,7 +14,6 @@ import {
   Lock,
   Search,
   Settings,
-  SlidersHorizontal,
   Sparkles,
   Star,
   Trophy,
@@ -43,6 +42,7 @@ interface SidebarProps {
   groups: ChannelGroup[];
   totalChannelCount: number;
   favoritesCount: number;
+  collectionsCount: number;
 }
 
 const GROUP_ICONS: Record<string, React.FC<{ className?: string }>> = {
@@ -66,6 +66,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   groups,
   totalChannelCount,
   favoritesCount,
+  collectionsCount,
 }) => {
   const isM3 = designMode === 'm3-expressive';
   const t = TRANSLATIONS[locale];
@@ -79,15 +80,29 @@ export const Sidebar: React.FC<SidebarProps> = ({
     label: string;
     shortLabel: string;
     icon: React.FC<{ className?: string }>;
+    badge?: number;
   }[] = [
     { id: 'live', label: t.navLiveTv, shortLabel: 'Live', icon: Tv },
     { id: 'live-epg', label: t.navLive, shortLabel: 'EPG', icon: CalendarClock },
-    { id: 'home', label: t.navHome, shortLabel: 'Home', icon: Home },
+    {
+      id: 'favorites',
+      label: t.navFavorites,
+      shortLabel: 'Fav',
+      icon: Star,
+      badge: favoritesCount > 0 ? favoritesCount : undefined,
+    },
+    {
+      id: 'collections',
+      label: t.navCollections,
+      shortLabel: 'Saved',
+      icon: FolderHeart,
+      badge: collectionsCount > 0 ? collectionsCount : undefined,
+    },
     { id: 'vod', label: t.navVod, shortLabel: 'VOD', icon: Film },
     { id: 'series', label: t.navSeries, shortLabel: 'Series', icon: Clapperboard },
     { id: 'catchup', label: t.navCatchup, shortLabel: 'Replay', icon: History },
     { id: 'multiview', label: t.navMultiview, shortLabel: '4x', icon: Grid2x2 },
-    { id: 'studio', label: t.navStudio, shortLabel: 'Studio', icon: SlidersHorizontal },
+    { id: 'home', label: t.navHome, shortLabel: 'Home', icon: Home },
     { id: 'sources', label: t.navSources, shortLabel: 'Sources', icon: Database },
     { id: 'settings', label: t.navSettings, shortLabel: 'Prefs', icon: Settings },
   ];
@@ -144,14 +159,21 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 id={`nav-${item.id}`}
                 type="button"
                 onClick={() => onSelectSection(item.id)}
-                className={`m3-spring flex h-8.5 w-full items-center gap-3 rounded-full px-3.5 text-xs font-semibold ${
+                className={`m3-spring flex h-8.5 w-full items-center justify-between gap-2 rounded-full px-3.5 text-xs font-semibold ${
                   isActive
                     ? 'm3-tonal-active'
                     : 'text-slate-300 hover:bg-[#1E2536] hover:text-white'
                 }`}
               >
-                <Icon className="h-4 w-4 shrink-0" />
-                <span className="truncate">{item.label}</span>
+                <span className="flex min-w-0 items-center gap-3">
+                  <Icon className="h-4 w-4 shrink-0" />
+                  <span className="truncate">{item.label}</span>
+                </span>
+                {item.badge !== undefined && (
+                  <span className="shrink-0 text-[11px] opacity-70 luma-tabular">
+                    {item.badge}
+                  </span>
+                )}
               </button>
             );
           })}
@@ -283,18 +305,25 @@ export const Sidebar: React.FC<SidebarProps> = ({
               type="button"
               onClick={() => onSelectSection(item.id)}
               title={collapsed ? item.label : undefined}
-              className={`group flex w-full items-center gap-2.5 rounded-[13px] px-3 py-1.5 text-xs font-medium transition-all ${
+              className={`group flex w-full items-center justify-between gap-2 rounded-[13px] px-3 py-1.5 text-xs font-medium transition-all ${
                 isActive
                   ? 'lg-pill-active'
                   : 'text-white/75 hover:bg-white/[0.08] hover:text-white'
               }`}
             >
-              <Icon
-                className={`h-4 w-4 shrink-0 ${
-                  isActive ? 'text-sky-300' : 'text-white/60 group-hover:text-white'
-                }`}
-              />
-              {!collapsed && <span className="truncate">{item.label}</span>}
+              <span className="flex min-w-0 items-center gap-2.5">
+                <Icon
+                  className={`h-4 w-4 shrink-0 ${
+                    isActive ? 'text-sky-300' : 'text-white/60 group-hover:text-white'
+                  }`}
+                />
+                {!collapsed && <span className="truncate">{item.label}</span>}
+              </span>
+              {!collapsed && item.badge !== undefined && (
+                <span className="shrink-0 text-[11px] text-white/50 luma-tabular">
+                  {item.badge}
+                </span>
+              )}
             </button>
           );
         })}

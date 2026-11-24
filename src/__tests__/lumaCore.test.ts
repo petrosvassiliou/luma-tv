@@ -31,10 +31,21 @@ import {
   searchChannelsRanked,
 } from '../services/channelSearch';
 import {
+  buildCountryBuckets,
+  computeExclusiveGroupVisibility,
+  detectCountryCodeFromGroupName,
+  filterCountryBuckets,
+} from '../services/countryGroupMatcher';
+import {
   decryptSyncVault,
   encryptSyncVault,
   type LumaSyncPlainPayload,
 } from '../services/lumaCloudSync';
+import {
+  detectPlatformEnvironment,
+  resolveAllowedDesignMode,
+} from '../services/platformDetection';
+import { parseXtreamAccountInfoPayload } from '../services/playlistService';
 import { pickBestSpatialCandidate } from '../services/spatialNavigation';
 import {
   exportChannelsToM3uPlus,
@@ -391,5 +402,118 @@ describe('Luma TV v0.1 beta — Zero-Knowledge AES-256-GCM Sync Vault & 20k EPG 
     expect(allSkyF1.items.map((c) => c.id)).toEqual(
       expect.arrayContaining(['xt-11', 'xt-28501', 'xt-54141'])
     );
+  });
+
+  it('autodetects Apple vs non-Apple platforms and restricts Liquid Glass strictly to Apple devices', () => {
+    const mac = detectPlatformEnvironment(
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_6) AppleWebKit/605.1.15',
+      'MacIntel',
+      0
+    );
+    expect(mac.isApple).toBe(true);
+    expect(mac.defaultDesignMode).toBe('liquid-glass');
+
+    const ipad = detectPlatformEnvironment(
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15',
+      'MacIntel',
+      5
+    );
+    expect(ipad.isApple).toBe(true);
+    expect(ipad.label).toBe('iPadOS / iOS');
+    expect(ipad.defaultDesignMode).toBe('liquid-glass');
+
+    const android = detectPlatformEnvironment(
+      'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36',
+      'Linux armv8l',
+      5
+    );
+    expect(android.isApple).toBe(false);
+    expect(android.defaultDesignMode).toBe('m3-expressive');
+
+    const cros = detectPlatformEnvironment(
+      'Mozilla/5.0 (X11; CrOS x86_64 14541.0.0) AppleWebKit/537.36',
+      'Linux x86_64',
+      0
+    );
+    expect(cros.isApple).toBe(false);
+    expect(cros.defaultDesignMode).toBe('m3-expressive');
+
+    // Liquid Glass cannot be enabled on non-Apple devices even if requested
+    expect(resolveAllowedDesignMode('liquid-glass', false)).toBe('m3-expressive');
+    expect(resolveAllowedDesignMode('liquid-glass', true)).toBe('liquid-glass');
+    expect(resolveAllowedDesignMode('m3-expressive', true)).toBe('m3-expressive');
+  });
+
+  it('groups IPTV categories by country, searches by country name, and toggles exclusive visibility', () => {
+    expect(detectCountryCodeFromGroupName('DE | ENTERTAINMENT')).toBe('DE');
+    expect(detectCountryCodeFromGroupName('|GR| CINEMA HD')).toBe('GR');
+    expect(detectCountryCodeFromGroupName('[UK] SKY SPORTS')).toBe('UK');
+    expect(detectCountryCodeFromGroupName('4K: ULTRA HD')).toBe('4K');
+
+    const groups = [
+      { id: 'g-de-1', name: 'DE | SPORT', count: 120 },
+      { id: 'g-de-2', name: 'DE | MOVIES', count: 80 },
+      { id: 'g-gr-1', name: 'GR: ERT & SPORT', count: 65 },
+      { id: 'g-uk-1', name: 'UK | ENTERTAINMENT', count: 210 },
+      { id: 'g-fr-1', name: 'FR | CINEMA', count: 95 },
+    ];
+
+    const buckets = buildCountryBuckets(groups);
+    expect(buckets.map((b) => b.code)).toEqual(['UK', 'DE', 'FR', 'GR']);
+
+    expect(filterCountryBuckets(buckets, 'germany').map((b) => b.code)).toEqual(['DE']);
+    expect(filterCountryBuckets(buckets, 'greece').map((b) => b.code)).toEqual(['GR']);
+
+    const allIds = groups.map((g) => g.id);
+    const selectedDeAndGr = ['g-de-1', 'g-de-2', 'g-gr-1'];
+
+    // Enable ONLY DE + GR -> UK + FR are hidden
+    expect(
+      computeExclusiveGroupVisibility(allIds, selectedDeAndGr, 'enable-only-selected')
+    ).toEqual(['g-uk-1', 'g-fr-1']);
+
+    // Vice versa: Disable DE + GR -> ONLY DE + GR are hidden, UK + FR remain enabled
+    expect(
+      computeExclusiveGroupVisibility(allIds, selectedDeAndGr, 'disable-only-selected')
+    ).toEqual(['g-de-1', 'g-de-2', 'g-gr-1']);
+  });
+
+  it('parses Xtream Codes user_info expiry timestamps, connections, and unlimited accounts', () => {
+    const parsed = parseXtreamAccountInfoPayload(
+      {
+        user_info: {
+          username: 'max4tv_user',
+          status: 'Active',
+          exp_date: '1800000000',
+          is_trial: '0',
+          active_cons: '1',
+          max_connections: '3',
+        },
+        server_info: {
+          timezone: 'Europe/Berlin',
+        },
+      },
+      'fallback',
+      1795000000000
+    );
+
+    expect(parsed).not.toBeNull();
+    expect(parsed?.username).toBe('max4tv_user');
+    expect(parsed?.status).toBe('Active');
+    expect(parsed?.expiresAtMs).toBe(1800000000 * 1000);
+    expect(parsed?.activeConnections).toBe(1);
+    expect(parsed?.maxConnections).toBe(3);
+    expect(parsed?.isTrial).toBe(false);
+
+    const unlimited = parseXtreamAccountInfoPayload({
+      user_info: {
+        username: 'vip',
+        status: 'Active',
+        exp_date: null,
+        is_trial: '1',
+      },
+    });
+    expect(unlimited?.expiresAtMs).toBeNull();
+    expect(unlimited?.isTrial).toBe(true);
   });
 });

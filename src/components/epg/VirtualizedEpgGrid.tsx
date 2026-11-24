@@ -5,6 +5,7 @@ import {
   Clock,
   Crosshair,
   History,
+  MoreVertical,
   Play,
   Radio,
   Search,
@@ -21,6 +22,7 @@ import {
 } from '../../i18n/translations';
 import { searchChannelsRanked } from '../../services/channelSearch';
 import type { Channel, EpgProgram, PlatformDesignMode } from '../../types/luma';
+import type { ChannelContextMenuTarget } from '../common/ChannelContextMenu';
 
 interface VirtualizedEpgGridProps {
   designMode: PlatformDesignMode;
@@ -35,6 +37,7 @@ interface VirtualizedEpgGridProps {
   onSelectChannel: (channel: Channel) => void;
   onStartTimeshift: (channel: Channel, program: EpgProgram) => void;
   onToggleFavorite: (channelId: string) => void;
+  onOpenChannelMenu?: (target: ChannelContextMenuTarget) => void;
   onToggleReminder?: (channel: Channel, program: EpgProgram) => void;
 }
 
@@ -56,6 +59,7 @@ export const VirtualizedEpgGrid: React.FC<VirtualizedEpgGridProps> = ({
   onSelectChannel,
   onStartTimeshift,
   onToggleFavorite,
+  onOpenChannelMenu,
   onToggleReminder,
 }) => {
   const isM3 = designMode === 'm3-expressive';
@@ -423,7 +427,12 @@ export const VirtualizedEpgGrid: React.FC<VirtualizedEpgGridProps> = ({
                 <div
                   style={{ width: `${CHANNEL_COL_WIDTH}px` }}
                   onClick={() => onSelectChannel(ch)}
-                  className={`sticky left-0 z-20 flex shrink-0 cursor-pointer items-center justify-between gap-2 border-r px-3.5 transition ${
+                  onContextMenu={(e) => {
+                    if (!onOpenChannelMenu) return;
+                    e.preventDefault();
+                    onOpenChannelMenu({ channel: ch, x: e.clientX, y: e.clientY });
+                  }}
+                  className={`group/ch sticky left-0 z-20 flex shrink-0 cursor-pointer items-center justify-between gap-1.5 border-r px-3 transition ${
                     isM3
                       ? isSelectedChannel
                         ? 'border-white/[0.07] bg-[#232B3D] text-white'
@@ -465,21 +474,40 @@ export const VirtualizedEpgGrid: React.FC<VirtualizedEpgGridProps> = ({
                     </div>
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onToggleFavorite(ch.id);
-                    }}
-                    className="shrink-0 p-1 text-slate-400 hover:text-amber-300"
-                    title="Favorit umschalten"
+                  <div
+                    className="flex shrink-0 items-center gap-0.5"
+                    onClick={(e) => e.stopPropagation()}
                   >
-                    <Star
-                      className={`h-3.5 w-3.5 ${
-                        isFav ? 'fill-amber-400 text-amber-400' : ''
-                      }`}
-                    />
-                  </button>
+                    <button
+                      type="button"
+                      onClick={() => onToggleFavorite(ch.id)}
+                      className="shrink-0 p-1 text-slate-400 hover:text-amber-300"
+                      title={t.favorites}
+                    >
+                      <Star
+                        className={`h-3.5 w-3.5 ${
+                          isFav ? 'fill-amber-400 text-amber-400' : ''
+                        }`}
+                      />
+                    </button>
+                    {onOpenChannelMenu && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          const rect = e.currentTarget.getBoundingClientRect();
+                          onOpenChannelMenu({
+                            channel: ch,
+                            x: rect.left,
+                            y: rect.bottom + 4,
+                          });
+                        }}
+                        className="shrink-0 rounded-full p-1 text-slate-400 opacity-0 transition group-hover/ch:opacity-100 hover:bg-white/10 hover:text-white"
+                        title={t.addToCollectionHeader}
+                      >
+                        <MoreVertical className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                  </div>
                 </div>
 
                 {/* Program Tiles */}

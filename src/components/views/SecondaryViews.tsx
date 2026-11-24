@@ -1,5 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import {
+  Calendar,
+  Check,
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
@@ -7,9 +9,11 @@ import {
   Eye,
   EyeOff,
   FileUp,
+  Globe,
   History,
   Layers,
   Loader2,
+  MoreVertical,
   Pencil,
   Play,
   Plus,
@@ -19,7 +23,8 @@ import {
   ShieldCheck,
   Sliders,
   Trash2,
-  Zap,
+  UserCheck,
+  Users,
 } from 'lucide-react';
 import type {
   StoredChannel,
@@ -27,10 +32,6 @@ import type {
   StoredPlaylistSource,
 } from '../../db/lumaDb';
 import { getChannelProgramsInRange } from '../../data/mockCatalog';
-import {
-  isLocalRustProxyEndpoint,
-  probeCorsStreamProxy,
-} from '../../engine/corsProxy';
 import {
   LOCALE_META,
   TRANSLATIONS,
@@ -42,6 +43,11 @@ import {
   searchChannelsRanked,
   tokenizeSearchQuery,
 } from '../../services/channelSearch';
+import {
+  buildCountryBuckets,
+  computeExclusiveGroupVisibility,
+  filterCountryBuckets,
+} from '../../services/countryGroupMatcher';
 import type {
   LumaSyncPlainPayload,
   WatchHistoryEntry,
@@ -54,6 +60,7 @@ import type {
   PlatformDesignMode,
   VodItem,
 } from '../../types/luma';
+import type { ChannelContextMenuTarget } from '../common/ChannelContextMenu';
 import { Phase4PlatformSyncPanel } from './Phase4PlatformSyncPanel';
 
 interface VodViewProps {
@@ -82,9 +89,9 @@ export const VodCatalogView: React.FC<VodViewProps> = ({
   return (
     <div className="luma-scroll flex-1 overflow-y-auto p-5">
       <div className="mb-4">
-        <h2 className="text-base font-semibold text-white">{t.navVod} · 4K HDR &amp; Xtream</h2>
-        <p className="text-xs text-slate-400">
-          HLS, MP4 &amp; MKV On-Demand-Master ({vodCatalog.length})
+        <h2 className="text-base font-semibold text-white">{t.navVod}</h2>
+        <p className="text-xs text-slate-400 luma-tabular">
+          {vodCatalog.length.toLocaleString()} Titles
         </p>
       </div>
 
@@ -159,7 +166,7 @@ export const VodCatalogView: React.FC<VodViewProps> = ({
                       }}
                       className="rounded-full bg-white/10 px-2.5 py-0.5 text-[10px] font-semibold text-sky-300 hover:bg-sky-400/25 hover:text-white"
                     >
-                      Cast &amp; Trailer
+                      Details
                     </button>
                   )}
                 </div>
@@ -298,13 +305,14 @@ export const CatchupArchiveView: React.FC<CatchupViewProps> = ({
 
 interface SourcesEngineViewProps {
   designMode: PlatformDesignMode;
+  locale?: LumaLocale;
+  nowMs: number;
   activeSourceId: string;
   persistedSources: StoredPlaylistSource[];
   storedChannelsForActive: StoredChannel[];
   ingestState: IngestProgressState;
   onSelectSourceId: (sourceId: string) => void;
   onDeleteSource: (sourceId: string) => void;
-  onRunWorkerDemoImport: () => void;
   onImportM3u: (params: {
     name: string;
     url?: string;
@@ -321,56 +329,67 @@ interface SourcesEngineViewProps {
   onUploadXmltvBuffer: (buffer: ArrayBuffer) => void;
   onRenameSource?: (sourceId: string, nextName: string) => void;
   onResyncSource?: (source: StoredPlaylistSource) => void;
+  onRefreshAccountInfo?: (source: StoredPlaylistSource) => Promise<void>;
   onUpdateHiddenGroups?: (sourceId: string, hiddenGroupIds: string[]) => void;
   onBulkSetChannelsHidden?: (channelIds: string[], hidden: boolean) => void;
   onPlayChannel?: (channel: Channel) => void;
+  onOpenChannelMenu?: (target: ChannelContextMenuTarget) => void;
   onRenameChannel: (channelId: string, nextName: string) => void;
   onToggleHideChannel: (channelId: string, hidden: boolean) => void;
   epgOffsetHours: number;
   onChangeEpgOffset: (hours: number) => void;
   proxyConfig: EngineProxyConfig;
   onChangeProxyConfig: (next: EngineProxyConfig) => void;
-  localRustProxyUrl?: string | null;
   favoriteIds: Set<string>;
   watchHistory: WatchHistoryEntry[];
   onRestoreFromSync: (payload: LumaSyncPlainPayload) => void;
 }
 
+const USER_AGENT_PRESETS: { label: string; value: string }[] = [
+  { label: 'Default (Luma TV)', value: 'LumaTV/0.7 (TiviMate-Compatible)' },
+  { label: 'TiviMate', value: 'TiviMate/4.7.0 (Android 13)' },
+  { label: 'VLC Player', value: 'VLC/3.0.20 LibVLC/3.0.20' },
+];
+
 export const SourcesEngineView: React.FC<SourcesEngineViewProps> = ({
   designMode,
+  locale = 'de',
+  nowMs,
   activeSourceId,
   persistedSources,
   storedChannelsForActive,
   ingestState,
   onSelectSourceId,
   onDeleteSource,
-  onRunWorkerDemoImport,
   onImportM3u,
   onImportXtream,
   onUploadXmltvBuffer,
   onRenameSource,
   onResyncSource,
+  onRefreshAccountInfo,
   onUpdateHiddenGroups,
   onBulkSetChannelsHidden,
   onPlayChannel,
+  onOpenChannelMenu,
   onRenameChannel,
   onToggleHideChannel,
   epgOffsetHours,
   onChangeEpgOffset,
   proxyConfig,
   onChangeProxyConfig,
-  localRustProxyUrl = null,
   favoriteIds,
   watchHistory,
   onRestoreFromSync,
 }) => {
   const isM3 = designMode === 'm3-expressive';
+  const t = TRANSLATIONS[locale];
+  const bcp47 = LOCALE_META[locale].bcp47;
   const panelClass = isM3 ? 'rounded-[28px] bg-[#1A202E] p-5' : 'lg-pane rounded-[24px] p-5';
   const inputClass = isM3
     ? 'h-9 w-full rounded-full bg-[#232B3D] px-4 text-xs text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[#7FD4FF]/60'
     : 'lg-capsule h-9 w-full rounded-full px-4 text-xs text-white placeholder:text-white/45 focus:outline-none';
 
-  const [tab, setTab] = useState<'m3u' | 'xtream'>('m3u');
+  const [tab, setTab] = useState<'m3u' | 'xtream'>('xtream');
 
   // M3U form state
   const [m3uName, setM3uName] = useState('');
@@ -385,11 +404,19 @@ export const SourcesEngineView: React.FC<SourcesEngineViewProps> = ({
   const [xtPass, setXtPass] = useState('');
   const [xtFormat, setXtFormat] = useState<'m3u8' | 'ts'>('m3u8');
 
-  // Playlist & 54k+ Channel / Group Organization state
+  // Playlist, Multi-Country & 54k+ Channel Organization state
   const [editingSourceId, setEditingSourceId] = useState<string | null>(null);
   const [editingSourceName, setEditingSourceName] = useState('');
-  const [orgMode, setOrgMode] = useState<'groups' | 'channels'>('groups');
+  const [refreshingAccount, setRefreshingAccount] = useState(false);
+
+  const [orgMode, setOrgMode] = useState<'countries' | 'groups' | 'channels'>('countries');
+  const [countrySearch, setCountrySearch] = useState('');
+  const [selectedCountryCodes, setSelectedCountryCodes] = useState<Set<string>>(
+    () => new Set()
+  );
   const [groupFilterQuery, setGroupFilterQuery] = useState('');
+  const [selectedGroupIds, setSelectedGroupIds] = useState<Set<string>>(() => new Set());
+
   const [chFilterQuery, setChFilterQuery] = useState('');
   const [chGroupFilter, setChGroupFilter] = useState<string>('all');
   const [chVisFilter, setChVisFilter] = useState<
@@ -397,6 +424,9 @@ export const SourcesEngineView: React.FC<SourcesEngineViewProps> = ({
   >('all');
   const [chPage, setChPage] = useState(0);
   const CH_PAGE_SIZE = 60;
+
+  const [editingChannelId, setEditingChannelId] = useState<string | null>(null);
+  const [editingName, setEditingName] = useState('');
 
   const activeStoredSource = useMemo(
     () => persistedSources.find((s) => s.id === activeSourceId) ?? null,
@@ -419,11 +449,37 @@ export const SourcesEngineView: React.FC<SourcesEngineViewProps> = ({
     return Array.from(map.values());
   }, [storedChannelsForActive]);
 
+  const allSourceGroupIds = useMemo(
+    () => derivedSourceGroups.map((g) => g.id),
+    [derivedSourceGroups]
+  );
+
+  const countryBuckets = useMemo(
+    () => buildCountryBuckets(derivedSourceGroups),
+    [derivedSourceGroups]
+  );
+
+  const filteredCountries = useMemo(
+    () => filterCountryBuckets(countryBuckets, countrySearch),
+    [countryBuckets, countrySearch]
+  );
+
   const filteredSourceGroups = useMemo(() => {
     const tokens = tokenizeSearchQuery(groupFilterQuery);
     if (tokens.length === 0) return derivedSourceGroups;
     return derivedSourceGroups.filter((g) => matchesNormalizedQuery(g.name, tokens));
   }, [derivedSourceGroups, groupFilterQuery]);
+
+  // Group IDs belonging to currently selected countries
+  const groupIdsFromSelectedCountries = useMemo(() => {
+    const set = new Set<string>();
+    for (const bucket of countryBuckets) {
+      if (selectedCountryCodes.has(bucket.code)) {
+        for (const gid of bucket.groupIds) set.add(gid);
+      }
+    }
+    return set;
+  }, [countryBuckets, selectedCountryCodes]);
 
   const filteredStoredChannels = useMemo(() => {
     let base = storedChannelsForActive;
@@ -454,11 +510,6 @@ export const SourcesEngineView: React.FC<SourcesEngineViewProps> = ({
     (safeChPage + 1) * CH_PAGE_SIZE
   );
 
-  // Channel organization editing
-  const [editingChannelId, setEditingChannelId] = useState<string | null>(null);
-  const [editingName, setEditingName] = useState('');
-  const [proxyProbeMsg, setProxyProbeMsg] = useState<string>('');
-
   const handleM3uFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -479,35 +530,67 @@ export const SourcesEngineView: React.FC<SourcesEngineViewProps> = ({
     e.target.value = '';
   };
 
+  const toggleCountrySelection = (code: string) => {
+    setSelectedCountryCodes((prev) => {
+      const next = new Set(prev);
+      if (next.has(code)) next.delete(code);
+      else next.add(code);
+      return next;
+    });
+  };
+
+  const toggleGroupSelection = (groupId: string) => {
+    setSelectedGroupIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(groupId)) next.delete(groupId);
+      else next.add(groupId);
+      return next;
+    });
+  };
+
+  const account = activeStoredSource?.accountInfo;
+  const canQueryAccount = Boolean(
+    activeStoredSource &&
+      ((activeStoredSource.type === 'xtream' &&
+        activeStoredSource.username &&
+        activeStoredSource.password) ||
+        activeStoredSource.rawUrlOrHost?.includes('username='))
+  );
+
+  const accountExpirySummary = useMemo(() => {
+    if (!account) return null;
+    if (account.expiresAtMs === null) {
+      return {
+        label: t.accountUnlimited,
+        daysLeft: null as number | null,
+        expired: false,
+      };
+    }
+    const formattedDate = new Intl.DateTimeFormat(bcp47, {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+    }).format(account.expiresAtMs);
+    const daysLeft = Math.ceil((account.expiresAtMs - nowMs) / 86_400_000);
+    return {
+      label: formattedDate,
+      daysLeft,
+      expired: daysLeft <= 0 || account.status.toLowerCase() !== 'active',
+    };
+  }, [account, bcp47, nowMs, t.accountUnlimited]);
+
   return (
     <div className="luma-scroll flex-1 overflow-y-auto p-5 space-y-5">
-      {/* Header + 1-Click End-to-End Worker + IndexedDB Demo */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h2 className="text-base font-semibold text-white">
-            Phase 2 · WebWorker Ingest-Engine &amp; Dexie IndexedDB
-          </h2>
-          <p className="text-xs text-slate-400">
-            Hintergrund-Parsing für M3U_Plus, Xtream Codes API und komprimiertes{' '}
-            <code className="text-sky-300">.xml.gz</code> XMLTV ohne Main-Thread-Blockade.
-          </p>
-        </div>
-
-        <button
-          id="btn-worker-demo-import"
-          type="button"
-          disabled={ingestState.active}
-          onClick={onRunWorkerDemoImport}
-          className={`inline-flex items-center gap-2 rounded-full px-4 py-2 text-xs font-bold shadow-lg disabled:opacity-50 ${
-            isM3 ? 'm3-primary-pill' : 'lg-pill-active'
-          }`}
-        >
-          <Zap className="h-4 w-4" />
-          <span>M3U_Plus + XMLTV.gz Worker-Import testen</span>
-        </button>
+      {/* Clean Page Header */}
+      <div>
+        <h2 className="text-base font-semibold text-white">{t.navSources}</h2>
+        <p className="text-xs text-slate-400">
+          Connect M3U playlists or Xtream accounts, filter countries, and view your
+          subscription status.
+        </p>
       </div>
 
-      {/* Live WebWorker Progress Banner */}
+      {/* Live Import Progress Banner */}
       {(ingestState.active || ingestState.lastSummary || ingestState.error) && (
         <div
           className={`p-4 ${
@@ -523,14 +606,16 @@ export const SourcesEngineView: React.FC<SourcesEngineViewProps> = ({
               )}
               <span>
                 {ingestState.error
-                  ? `Fehler: ${ingestState.error}`
+                  ? ingestState.error
                   : ingestState.active
                     ? ingestState.phase
                     : ingestState.lastSummary}
               </span>
             </span>
             {ingestState.active && (
-              <span className="font-mono text-sky-300 luma-tabular">{ingestState.percent}%</span>
+              <span className="font-mono text-sky-300 luma-tabular">
+                {ingestState.percent}%
+              </span>
             )}
           </div>
           {ingestState.active && (
@@ -545,18 +630,16 @@ export const SourcesEngineView: React.FC<SourcesEngineViewProps> = ({
       )}
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        {/* Left Column: Multi-Playlist Switcher (IndexedDB Persisted) */}
+        {/* Left Column: Connected Playlists */}
         <div className={`${panelClass} space-y-3`}>
           <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-white">
-              Aktive Playlists (IndexedDB Persistenz)
-            </span>
+            <span className="text-xs font-semibold text-white">Playlists</span>
             <span className="rounded-full bg-emerald-400/15 px-2.5 py-0.5 text-[10px] font-semibold text-emerald-300 luma-tabular">
-              {persistedSources.length + 1} Quellen
+              {persistedSources.length + 1}
             </span>
           </div>
 
-          {/* Built-in Reference Showcase */}
+          {/* Built-in Demo */}
           <div
             onClick={() => onSelectSourceId('builtin-reference')}
             className={`cursor-pointer p-3.5 transition ${
@@ -573,7 +656,7 @@ export const SourcesEngineView: React.FC<SourcesEngineViewProps> = ({
           >
             <div className="flex items-center justify-between">
               <span className="text-xs font-semibold text-white">
-                Luma Reference Broadcast (Built-in)
+                Luma Demo Channels (Built-in)
               </span>
               <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase text-sky-300">
                 <CheckCircle2 className="h-3 w-3" />
@@ -581,11 +664,11 @@ export const SourcesEngineView: React.FC<SourcesEngineViewProps> = ({
               </span>
             </div>
             <div className="mt-1 text-[11px] opacity-80 luma-tabular">
-              2.400 / 20.400 Referenz-Kanäle · 6 VOD Master
+              2,400 Demo Channels · 6 Movies
             </div>
           </div>
 
-          {/* IndexedDB Stored Playlists */}
+          {/* User Playlists */}
           {persistedSources.map((src) => {
             const isActive = activeSourceId === src.id;
             const isRenamingSource = editingSourceId === src.id;
@@ -597,6 +680,8 @@ export const SourcesEngineView: React.FC<SourcesEngineViewProps> = ({
                 key={src.id}
                 onClick={() => {
                   onSelectSourceId(src.id);
+                  setSelectedCountryCodes(new Set());
+                  setSelectedGroupIds(new Set());
                   setChPage(0);
                 }}
                 className={`cursor-pointer p-3.5 transition ${
@@ -634,9 +719,12 @@ export const SourcesEngineView: React.FC<SourcesEngineViewProps> = ({
                       {src.name}
                     </span>
                   )}
-                  <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                  <div
+                    className="flex items-center gap-1"
+                    onClick={(e) => e.stopPropagation()}
+                  >
                     <span className="mr-1 text-[10px] font-bold uppercase text-sky-300">
-                      {src.type}
+                      {src.type === 'xtream' ? 'XTREAM' : 'M3U'}
                     </span>
                     {onRenameSource && (
                       <button
@@ -662,7 +750,7 @@ export const SourcesEngineView: React.FC<SourcesEngineViewProps> = ({
                         disabled={ingestState.active}
                         onClick={() => onResyncSource(src)}
                         className="rounded-full p-1 text-slate-300 hover:bg-white/10 hover:text-sky-200 disabled:opacity-40"
-                        title="Re-sync playlist from server"
+                        title="Update channels from server"
                       >
                         <RefreshCw className="h-3.5 w-3.5" />
                       </button>
@@ -671,7 +759,7 @@ export const SourcesEngineView: React.FC<SourcesEngineViewProps> = ({
                       type="button"
                       onClick={() => onDeleteSource(src.id)}
                       className="rounded-full p-1 text-slate-300 hover:bg-rose-500/25 hover:text-rose-200"
-                      title="Delete playlist"
+                      title="Remove playlist"
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                     </button>
@@ -682,28 +770,26 @@ export const SourcesEngineView: React.FC<SourcesEngineViewProps> = ({
                 </div>
                 <div className="mt-1 flex items-center justify-between text-[11px] opacity-80 luma-tabular">
                   <span>
-                    {src.channelCount.toLocaleString()} Channels · {src.vodCount} VOD
+                    {src.channelCount.toLocaleString(bcp47)} {t.channelsUnit} ·{' '}
+                    {src.vodCount} VOD
                     {src.seriesCount ? ` · ${src.seriesCount} Series` : ''}
-                    {src.hiddenGroupIds.length > 0
-                      ? ` · ${src.hiddenGroupIds.length} groups hidden`
-                      : ''}
                   </span>
-                  <span>{src.lastUpdated}</span>
+                  <span>{src.lastUpdated.replace(/\s*Worker|\s*Sync/gi, '')}</span>
                 </div>
               </div>
             );
           })}
 
-          {/* Upload Extra XMLTV (.xml / .xml.gz) for Active Persisted Source */}
+          {/* Upload Extra XMLTV (.xml / .xml.gz) */}
           {activeSourceId !== 'builtin-reference' && (
-            <div className="pt-2">
+            <div className="pt-1">
               <label
                 className={`inline-flex cursor-pointer items-center gap-2 rounded-full px-4 py-2 text-xs font-semibold ${
                   isM3 ? 'm3-secondary-tonal' : 'lg-capsule text-white'
                 }`}
               >
                 <FileUp className="h-3.5 w-3.5 text-sky-300" />
-                <span>XMLTV (.xml / .xml.gz) Datei für aktive Playlist laden</span>
+                <span>Load XMLTV TV Guide (.xml / .xml.gz)</span>
                 <input
                   type="file"
                   accept=".xml,.gz"
@@ -715,12 +801,12 @@ export const SourcesEngineView: React.FC<SourcesEngineViewProps> = ({
           )}
         </div>
 
-        {/* Right Column: Add New M3U_Plus or Xtream Codes Source */}
+        {/* Right Column: Connect New Playlist */}
         <div className={`${panelClass} space-y-3.5`}>
           <div className="flex items-center justify-between">
             <span className="flex items-center gap-2 text-xs font-semibold text-white">
               <Plus className="h-4 w-4 text-sky-400" />
-              <span>Neue Quelle verbinden</span>
+              <span>Add Playlist</span>
             </span>
 
             <div
@@ -728,19 +814,6 @@ export const SourcesEngineView: React.FC<SourcesEngineViewProps> = ({
                 isM3 ? 'bg-[#232B3D]' : 'lg-capsule'
               }`}
             >
-              <button
-                type="button"
-                onClick={() => setTab('m3u')}
-                className={`rounded-full px-3 py-1 text-[11px] font-semibold ${
-                  tab === 'm3u'
-                    ? isM3
-                      ? 'bg-[#7FD4FF] text-[#00354A]'
-                      : 'lg-pill-active'
-                    : 'text-slate-300'
-                }`}
-              >
-                M3U / M3U_Plus
-              </button>
               <button
                 type="button"
                 onClick={() => setTab('xtream')}
@@ -752,7 +825,20 @@ export const SourcesEngineView: React.FC<SourcesEngineViewProps> = ({
                     : 'text-slate-300'
                 }`}
               >
-                Xtream Codes API
+                Xtream Codes
+              </button>
+              <button
+                type="button"
+                onClick={() => setTab('m3u')}
+                className={`rounded-full px-3 py-1 text-[11px] font-semibold ${
+                  tab === 'm3u'
+                    ? isM3
+                      ? 'bg-[#7FD4FF] text-[#00354A]'
+                      : 'lg-pill-active'
+                    : 'text-slate-300'
+                }`}
+              >
+                M3U Playlist
               </button>
             </div>
           </div>
@@ -763,28 +849,28 @@ export const SourcesEngineView: React.FC<SourcesEngineViewProps> = ({
                 type="text"
                 value={m3uName}
                 onChange={(e) => setM3uName(e.target.value)}
-                placeholder="Playlist-Name (z.B. Heim-IPTV HD)"
+                placeholder="Playlist Name (e.g. Home TV)"
                 className={inputClass}
               />
               <input
                 type="url"
                 value={m3uUrl}
                 onChange={(e) => setM3uUrl(e.target.value)}
-                placeholder="M3U / M3U_Plus URL (https://…/playlist.m3u8)"
+                placeholder="Playlist URL (https://…/playlist.m3u8)"
                 className={inputClass}
               />
               <input
                 type="url"
                 value={m3uXmltvUrl}
                 onChange={(e) => setM3uXmltvUrl(e.target.value)}
-                placeholder="Optional: XMLTV URL (.xml oder .xml.gz)"
+                placeholder="Optional: TV Guide XMLTV URL (.xml or .xml.gz)"
                 className={inputClass}
               />
               <textarea
                 rows={3}
                 value={m3uRawText}
                 onChange={(e) => setM3uRawText(e.target.value)}
-                placeholder="Oder direkten #EXTM3U Text hier einfügen…"
+                placeholder="Or paste #EXTM3U text directly…"
                 className={`w-full p-3 font-mono text-xs text-white placeholder:text-slate-400 focus:outline-none ${
                   isM3 ? 'rounded-[20px] bg-[#232B3D]' : 'lg-capsule rounded-[18px]'
                 }`}
@@ -797,7 +883,7 @@ export const SourcesEngineView: React.FC<SourcesEngineViewProps> = ({
                   }`}
                 >
                   <FileUp className="h-3.5 w-3.5" />
-                  <span>.m3u / .m3u8 Datei öffnen</span>
+                  <span>Open .m3u / .m3u8 File</span>
                   <input
                     type="file"
                     accept=".m3u,.m3u8,.txt"
@@ -811,7 +897,7 @@ export const SourcesEngineView: React.FC<SourcesEngineViewProps> = ({
                   disabled={ingestState.active || (!m3uUrl.trim() && !m3uRawText.trim())}
                   onClick={() => {
                     onImportM3u({
-                      name: m3uName || 'M3U_Plus Quelle',
+                      name: m3uName || 'M3U Playlist',
                       url: m3uUrl.trim() || undefined,
                       rawText: m3uRawText.trim() || undefined,
                       xmltvUrl: m3uXmltvUrl.trim() || undefined,
@@ -822,7 +908,7 @@ export const SourcesEngineView: React.FC<SourcesEngineViewProps> = ({
                     isM3 ? 'm3-primary-pill' : 'lg-pill-active'
                   }`}
                 >
-                  <span>Im WebWorker importieren</span>
+                  <span>Connect Playlist</span>
                 </button>
               </div>
             </div>
@@ -832,14 +918,14 @@ export const SourcesEngineView: React.FC<SourcesEngineViewProps> = ({
                 type="text"
                 value={xtName}
                 onChange={(e) => setXtName(e.target.value)}
-                placeholder="Anzeigename (z.B. Xtream Hauptserver)"
+                placeholder="Display Name (e.g. Main IPTV)"
                 className={inputClass}
               />
               <input
                 type="url"
                 value={xtServer}
                 onChange={(e) => setXtServer(e.target.value)}
-                placeholder="Server-URL (https://provider.example:8443)"
+                placeholder="Server URL (http://provider.example:8080)"
                 className={inputClass}
               />
               <div className="grid grid-cols-2 gap-2">
@@ -847,14 +933,14 @@ export const SourcesEngineView: React.FC<SourcesEngineViewProps> = ({
                   type="text"
                   value={xtUser}
                   onChange={(e) => setXtUser(e.target.value)}
-                  placeholder="Benutzername"
+                  placeholder="Username"
                   className={inputClass}
                 />
                 <input
                   type="password"
                   value={xtPass}
                   onChange={(e) => setXtPass(e.target.value)}
-                  placeholder="Passwort"
+                  placeholder="Password"
                   className={inputClass}
                 />
               </div>
@@ -862,7 +948,7 @@ export const SourcesEngineView: React.FC<SourcesEngineViewProps> = ({
               <div className="flex items-center justify-between pt-1">
                 <div className="flex items-center gap-2 text-xs text-slate-300">
                   <Server className="h-3.5 w-3.5 text-sky-400" />
-                  <span>Stream-Container:</span>
+                  <span>Format:</span>
                   <button
                     type="button"
                     onClick={() => setXtFormat(xtFormat === 'm3u8' ? 'ts' : 'm3u8')}
@@ -875,11 +961,14 @@ export const SourcesEngineView: React.FC<SourcesEngineViewProps> = ({
                 <button
                   type="button"
                   disabled={
-                    ingestState.active || !xtServer.trim() || !xtUser.trim() || !xtPass.trim()
+                    ingestState.active ||
+                    !xtServer.trim() ||
+                    !xtUser.trim() ||
+                    !xtPass.trim()
                   }
                   onClick={() =>
                     onImportXtream({
-                      name: xtName || 'Xtream Codes',
+                      name: xtName || 'Xtream TV',
                       serverUrl: xtServer,
                       username: xtUser,
                       password: xtPass,
@@ -890,7 +979,7 @@ export const SourcesEngineView: React.FC<SourcesEngineViewProps> = ({
                     isM3 ? 'm3-primary-pill' : 'lg-pill-active'
                   }`}
                 >
-                  <span>Xtream API synchronisieren</span>
+                  <span>Connect Xtream</span>
                 </button>
               </div>
             </div>
@@ -898,31 +987,172 @@ export const SourcesEngineView: React.FC<SourcesEngineViewProps> = ({
         </div>
       </div>
 
-      {/* Scalable 50,000+ Group & Channel Manager (for Persisted Playlists) */}
+      {/* Account & Subscription Info Card (Expiry Date, Status, Active / Max Connections) */}
+      {activeStoredSource && (account || canQueryAccount) && (
+        <div className={`${panelClass} space-y-3`}>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2 text-xs font-semibold text-white">
+              <UserCheck className="h-4 w-4 text-sky-400" />
+              <span>
+                {t.accountInfoTitle} · {activeStoredSource.name}
+              </span>
+            </div>
+
+            {canQueryAccount && onRefreshAccountInfo && (
+              <button
+                type="button"
+                disabled={refreshingAccount}
+                onClick={async () => {
+                  setRefreshingAccount(true);
+                  try {
+                    await onRefreshAccountInfo(activeStoredSource);
+                  } finally {
+                    setRefreshingAccount(false);
+                  }
+                }}
+                className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-semibold disabled:opacity-50 ${
+                  isM3 ? 'm3-secondary-tonal' : 'lg-capsule text-sky-200'
+                }`}
+              >
+                <RefreshCw
+                  className={`h-3 w-3 ${refreshingAccount ? 'animate-spin' : ''}`}
+                />
+                <span>Refresh Status</span>
+              </button>
+            )}
+          </div>
+
+          {account ? (
+            <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-4">
+              {/* Status */}
+              <div
+                className={`p-3 ${
+                  isM3 ? 'rounded-[20px] bg-[#232B3D]' : 'lg-capsule rounded-[16px]'
+                }`}
+              >
+                <div className="text-[10px] text-slate-400">Status</div>
+                <div className="mt-1 flex items-center gap-2">
+                  <span
+                    className={`h-2 w-2 rounded-full ${
+                      accountExpirySummary?.expired
+                        ? 'bg-rose-400'
+                        : 'bg-emerald-400'
+                    }`}
+                  />
+                  <span className="text-xs font-semibold text-white">
+                    {accountExpirySummary?.expired ? t.accountExpired : account.status}
+                    {account.isTrial ? ' (Trial)' : ''}
+                  </span>
+                </div>
+              </div>
+
+              {/* Expiry Date */}
+              <div
+                className={`p-3 ${
+                  isM3 ? 'rounded-[20px] bg-[#232B3D]' : 'lg-capsule rounded-[16px]'
+                }`}
+              >
+                <div className="flex items-center gap-1 text-[10px] text-slate-400">
+                  <Calendar className="h-3 w-3 text-sky-300" />
+                  <span>{t.accountExpiresLabel}</span>
+                </div>
+                <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs font-semibold text-white luma-tabular">
+                  <span>{accountExpirySummary?.label}</span>
+                  {accountExpirySummary?.daysLeft !== null &&
+                    accountExpirySummary?.daysLeft !== undefined && (
+                      <span
+                        className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                          accountExpirySummary.daysLeft <= 0
+                            ? 'bg-rose-500/20 text-rose-300'
+                            : accountExpirySummary.daysLeft <= 14
+                              ? 'bg-amber-400/20 text-amber-200'
+                              : 'bg-emerald-500/20 text-emerald-300'
+                        }`}
+                      >
+                        {accountExpirySummary.daysLeft > 0
+                          ? `${accountExpirySummary.daysLeft}d`
+                          : t.accountExpired}
+                      </span>
+                    )}
+                </div>
+              </div>
+
+              {/* Connections */}
+              <div
+                className={`p-3 ${
+                  isM3 ? 'rounded-[20px] bg-[#232B3D]' : 'lg-capsule rounded-[16px]'
+                }`}
+              >
+                <div className="flex items-center gap-1 text-[10px] text-slate-400">
+                  <Users className="h-3 w-3 text-sky-300" />
+                  <span>{t.accountConnectionsLabel}</span>
+                </div>
+                <div className="mt-1 text-xs font-semibold text-white luma-tabular">
+                  {account.maxConnections !== undefined
+                    ? `${account.activeConnections ?? 0} / ${account.maxConnections}`
+                    : '—'}
+                </div>
+              </div>
+
+              {/* Account / Server */}
+              <div
+                className={`p-3 ${
+                  isM3 ? 'rounded-[20px] bg-[#232B3D]' : 'lg-capsule rounded-[16px]'
+                }`}
+              >
+                <div className="text-[10px] text-slate-400">Account</div>
+                <div className="mt-1 truncate text-xs font-semibold text-white">
+                  {account.username ?? activeStoredSource.username ?? '—'}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="text-xs text-slate-400">
+              {refreshingAccount
+                ? 'Loading subscription details…'
+                : 'Click "Refresh Status" to load your subscription expiry date and connection limit.'}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Multi-Country, Group & 54k+ Channel Manager */}
       {activeSourceId !== 'builtin-reference' && storedChannelsForActive.length > 0 && (
         <div className={`${panelClass} space-y-4`}>
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <h3 className="text-sm font-semibold text-white">
-                Playlist Manager · {activeStoredSource?.name}
+                Channel &amp; Country Manager · {activeStoredSource?.name}
               </h3>
               <p className="text-xs text-slate-400 luma-tabular">
-                {
-                  storedChannelsForActive.filter(
-                    (c) => !c.isHidden && !hiddenGroupSet.has(c.groupId)
-                  ).length
-                }{' '}
-                active / {storedChannelsForActive.length.toLocaleString()} total channels ·{' '}
+                {storedChannelsForActive
+                  .filter((c) => !c.isHidden && !hiddenGroupSet.has(c.groupId))
+                  .length.toLocaleString(bcp47)}{' '}
+                enabled / {storedChannelsForActive.length.toLocaleString(bcp47)} total ·{' '}
                 {derivedSourceGroups.length - hiddenGroupSet.size} /{' '}
-                {derivedSourceGroups.length} groups visible
+                {derivedSourceGroups.length} groups enabled
               </p>
             </div>
 
             <div
-              className={`flex items-center rounded-full p-1 ${
+              className={`flex flex-wrap items-center rounded-full p-1 ${
                 isM3 ? 'bg-[#232B3D]' : 'lg-capsule'
               }`}
             >
+              <button
+                type="button"
+                onClick={() => setOrgMode('countries')}
+                className={`inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-xs font-semibold transition ${
+                  orgMode === 'countries'
+                    ? isM3
+                      ? 'm3-primary-pill'
+                      : 'lg-pill-active'
+                    : 'text-slate-300 hover:text-white'
+                }`}
+              >
+                <Globe className="h-3.5 w-3.5" />
+                <span>Countries ({countryBuckets.length})</span>
+              </button>
               <button
                 type="button"
                 onClick={() => setOrgMode('groups')}
@@ -935,7 +1165,7 @@ export const SourcesEngineView: React.FC<SourcesEngineViewProps> = ({
                 }`}
               >
                 <Layers className="h-3.5 w-3.5" />
-                <span>Groups / Countries ({derivedSourceGroups.length})</span>
+                <span>Groups ({derivedSourceGroups.length})</span>
               </button>
               <button
                 type="button"
@@ -949,12 +1179,216 @@ export const SourcesEngineView: React.FC<SourcesEngineViewProps> = ({
                 }`}
               >
                 <Eye className="h-3.5 w-3.5" />
-                <span>All Channels ({storedChannelsForActive.length.toLocaleString()})</span>
+                <span>
+                  Channels ({storedChannelsForActive.length.toLocaleString(bcp47)})
+                </span>
               </button>
             </div>
           </div>
 
-          {orgMode === 'groups' ? (
+          {orgMode === 'countries' && (
+            <div className="space-y-3">
+              {/* Search Countries + Persistent Selection Action Bar */}
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="relative min-w-[240px] flex-1">
+                  <Search className="pointer-events-none absolute left-3.5 top-2.5 h-4 w-4 text-slate-400" />
+                  <input
+                    type="text"
+                    value={countrySearch}
+                    onChange={(e) => setCountrySearch(e.target.value)}
+                    placeholder="Search countries (e.g. Germany, Greece, UK, Italy, US, 4K)…"
+                    className={`${inputClass} pl-10`}
+                  />
+                  {countrySearch && (
+                    <button
+                      type="button"
+                      onClick={() => setCountrySearch('')}
+                      className="absolute right-3 top-2 text-xs text-slate-400 hover:text-white"
+                    >
+                      ✕
+                    </button>
+                  )}
+                </div>
+
+                {countrySearch.trim() && filteredCountries.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedCountryCodes((prev) => {
+                        const next = new Set(prev);
+                        for (const c of filteredCountries) next.add(c.code);
+                        return next;
+                      });
+                    }}
+                    className={`rounded-full px-3.5 py-1.5 text-xs font-semibold ${
+                      isM3 ? 'm3-secondary-tonal' : 'lg-capsule text-sky-200'
+                    }`}
+                  >
+                    + Select Matching ({filteredCountries.length})
+                  </button>
+                )}
+
+                {onUpdateHiddenGroups && (
+                  <button
+                    type="button"
+                    onClick={() => onUpdateHiddenGroups(activeSourceId, [])}
+                    className={`rounded-full px-3.5 py-1.5 text-xs font-semibold ${
+                      isM3 ? 'm3-secondary-tonal' : 'lg-capsule text-slate-200'
+                    }`}
+                  >
+                    Enable All Countries
+                  </button>
+                )}
+              </div>
+
+              {/* Selected Countries Action Strip (Enable ONLY selected vs Disable ONLY selected) */}
+              {selectedCountryCodes.size > 0 && onUpdateHiddenGroups && (
+                <div
+                  className={`flex flex-wrap items-center justify-between gap-2.5 p-3 ${
+                    isM3
+                      ? 'rounded-[20px] bg-[#232B3D] ring-1 ring-[#7FD4FF]/40'
+                      : 'lg-capsule rounded-[18px]'
+                  }`}
+                >
+                  <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                    <span className="font-semibold text-white">
+                      Selected ({selectedCountryCodes.size}):
+                    </span>
+                    {Array.from(selectedCountryCodes).map((code) => (
+                      <button
+                        key={code}
+                        type="button"
+                        onClick={() => toggleCountrySelection(code)}
+                        className="inline-flex items-center gap-1 rounded-full bg-sky-400/20 px-2.5 py-0.5 text-[11px] font-semibold text-sky-200 hover:bg-sky-400/35"
+                      >
+                        <span>{code}</span>
+                        <span>✕</span>
+                      </button>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={() => setSelectedCountryCodes(new Set())}
+                      className="ml-1 text-[11px] text-slate-400 underline hover:text-white"
+                    >
+                      Clear
+                    </button>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const nextHidden = computeExclusiveGroupVisibility(
+                          allSourceGroupIds,
+                          groupIdsFromSelectedCountries,
+                          'enable-only-selected'
+                        );
+                        onUpdateHiddenGroups(activeSourceId, nextHidden);
+                      }}
+                      className={`rounded-full px-3.5 py-1.5 text-xs font-bold ${
+                        isM3 ? 'm3-primary-pill' : 'lg-pill-active'
+                      }`}
+                    >
+                      Enable Only Selected (Disable Others)
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const nextHidden = computeExclusiveGroupVisibility(
+                          allSourceGroupIds,
+                          groupIdsFromSelectedCountries,
+                          'disable-only-selected'
+                        );
+                        onUpdateHiddenGroups(activeSourceId, nextHidden);
+                      }}
+                      className="rounded-full bg-amber-400/20 px-3.5 py-1.5 text-xs font-semibold text-amber-200 hover:bg-amber-400/30"
+                    >
+                      Disable Selected (Enable Others)
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Country Grid */}
+              <div className="luma-scroll grid max-h-[360px] grid-cols-1 gap-2 overflow-y-auto pr-1 sm:grid-cols-2 lg:grid-cols-3">
+                {filteredCountries.map((bucket) => {
+                  const isSelected = selectedCountryCodes.has(bucket.code);
+                  const enabledGroupsInCountry = bucket.groupIds.filter(
+                    (id) => !hiddenGroupSet.has(id)
+                  ).length;
+                  const allDisabled = enabledGroupsInCountry === 0;
+                  return (
+                    <div
+                      key={bucket.code}
+                      onClick={() => toggleCountrySelection(bucket.code)}
+                      className={`flex cursor-pointer items-center justify-between gap-2 px-3.5 py-2.5 text-xs transition ${
+                        isM3 ? 'rounded-full' : 'rounded-[15px]'
+                      } ${
+                        isSelected
+                          ? isM3
+                            ? 'm3-tonal-active ring-1 ring-[#7FD4FF]/70'
+                            : 'lg-pill-active'
+                          : allDisabled
+                            ? 'bg-white/[0.03] text-slate-500 opacity-60 hover:opacity-90'
+                            : isM3
+                              ? 'bg-[#232B3D] text-white hover:bg-[#2E384F]'
+                              : 'lg-capsule text-white'
+                      }`}
+                    >
+                      <div className="flex min-w-0 items-center gap-2.5">
+                        <span
+                          className={`flex h-4.5 w-4.5 shrink-0 items-center justify-center rounded border ${
+                            isSelected
+                              ? 'border-sky-300 bg-sky-400 text-slate-950'
+                              : 'border-white/25 bg-black/20'
+                          }`}
+                        >
+                          {isSelected && <Check className="h-3 w-3 stroke-[3]" />}
+                        </span>
+                        <span className="truncate font-semibold">{bucket.label}</span>
+                      </div>
+
+                      <div
+                        className="flex shrink-0 items-center gap-2 text-[11px] luma-tabular"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <span className="opacity-75">
+                          {bucket.channelCount.toLocaleString(bcp47)}
+                        </span>
+                        {onUpdateHiddenGroups && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const next = new Set(hiddenGroupSet);
+                              if (allDisabled) {
+                                for (const id of bucket.groupIds) next.delete(id);
+                              } else {
+                                for (const id of bucket.groupIds) next.add(id);
+                              }
+                              onUpdateHiddenGroups(activeSourceId, Array.from(next));
+                            }}
+                            className="rounded-full p-1 hover:bg-white/10"
+                            title={
+                              allDisabled ? 'Enable this country' : 'Disable this country'
+                            }
+                          >
+                            {allDisabled ? (
+                              <EyeOff className="h-3.5 w-3.5 text-amber-300" />
+                            ) : (
+                              <Eye className="h-3.5 w-3.5 text-emerald-300" />
+                            )}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {orgMode === 'groups' && (
             <div className="space-y-3">
               <div className="flex flex-wrap items-center gap-2">
                 <div className="relative min-w-[220px] flex-1">
@@ -963,96 +1397,166 @@ export const SourcesEngineView: React.FC<SourcesEngineViewProps> = ({
                     type="text"
                     value={groupFilterQuery}
                     onChange={(e) => setGroupFilterQuery(e.target.value)}
-                    placeholder="Filter groups / countries (e.g. DE, UK, GR, Sport, 4K)…"
+                    placeholder="Search groups (e.g. Sport, Cinema, Kids, News)…"
                     className={`${inputClass} pl-10`}
                   />
                 </div>
 
+                {groupFilterQuery.trim() && filteredSourceGroups.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedGroupIds((prev) => {
+                        const next = new Set(prev);
+                        for (const g of filteredSourceGroups) next.add(g.id);
+                        return next;
+                      });
+                    }}
+                    className={`rounded-full px-3.5 py-1.5 text-xs font-semibold ${
+                      isM3 ? 'm3-secondary-tonal' : 'lg-capsule text-sky-200'
+                    }`}
+                  >
+                    + Select Matching ({filteredSourceGroups.length})
+                  </button>
+                )}
+
                 {onUpdateHiddenGroups && (
-                  <>
+                  <button
+                    type="button"
+                    onClick={() => onUpdateHiddenGroups(activeSourceId, [])}
+                    className={`rounded-full px-3.5 py-1.5 text-xs font-semibold ${
+                      isM3 ? 'm3-secondary-tonal' : 'lg-capsule text-slate-200'
+                    }`}
+                  >
+                    Enable All Groups
+                  </button>
+                )}
+              </div>
+
+              {selectedGroupIds.size > 0 && onUpdateHiddenGroups && (
+                <div
+                  className={`flex flex-wrap items-center justify-between gap-2.5 p-3 ${
+                    isM3
+                      ? 'rounded-[20px] bg-[#232B3D] ring-1 ring-[#7FD4FF]/40'
+                      : 'lg-capsule rounded-[18px]'
+                  }`}
+                >
+                  <div className="flex items-center gap-2 text-xs">
+                    <span className="font-semibold text-white luma-tabular">
+                      {selectedGroupIds.size} groups selected
+                    </span>
                     <button
                       type="button"
-                      onClick={() => onUpdateHiddenGroups(activeSourceId, [])}
-                      className={`rounded-full px-3.5 py-1.5 text-xs font-semibold ${
-                        isM3 ? 'm3-secondary-tonal' : 'lg-capsule text-slate-200'
-                      }`}
+                      onClick={() => setSelectedGroupIds(new Set())}
+                      className="text-[11px] text-slate-400 underline hover:text-white"
                     >
-                      Show All Groups
+                      Clear
                     </button>
-                    {groupFilterQuery.trim() && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const keepIds = new Set(filteredSourceGroups.map((g) => g.id));
-                          const nextHidden = derivedSourceGroups
-                            .filter((g) => !keepIds.has(g.id))
-                            .map((g) => g.id);
-                          onUpdateHiddenGroups(activeSourceId, nextHidden);
-                        }}
-                        className={`rounded-full px-3.5 py-1.5 text-xs font-bold ${
-                          isM3 ? 'm3-primary-pill' : 'lg-pill-active'
-                        }`}
-                        title="Hides every group except the ones matching your current search"
-                      >
-                        Keep Only Matching ({filteredSourceGroups.length})
-                      </button>
-                    )}
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
                     <button
                       type="button"
                       onClick={() => {
-                        const next = new Set(hiddenGroupSet);
-                        for (const g of filteredSourceGroups) next.add(g.id);
-                        onUpdateHiddenGroups(activeSourceId, Array.from(next));
+                        const nextHidden = computeExclusiveGroupVisibility(
+                          allSourceGroupIds,
+                          selectedGroupIds,
+                          'enable-only-selected'
+                        );
+                        onUpdateHiddenGroups(activeSourceId, nextHidden);
                       }}
-                      className="rounded-full bg-white/[0.07] px-3.5 py-1.5 text-xs font-semibold text-amber-200 hover:bg-amber-500/20"
+                      className={`rounded-full px-3.5 py-1.5 text-xs font-bold ${
+                        isM3 ? 'm3-primary-pill' : 'lg-pill-active'
+                      }`}
                     >
-                      Hide Shown ({filteredSourceGroups.length})
+                      Enable Only Selected (Disable Others)
                     </button>
-                  </>
-                )}
-              </div>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const nextHidden = computeExclusiveGroupVisibility(
+                          allSourceGroupIds,
+                          selectedGroupIds,
+                          'disable-only-selected'
+                        );
+                        onUpdateHiddenGroups(activeSourceId, nextHidden);
+                      }}
+                      className="rounded-full bg-amber-400/20 px-3.5 py-1.5 text-xs font-semibold text-amber-200 hover:bg-amber-400/30"
+                    >
+                      Disable Selected (Enable Others)
+                    </button>
+                  </div>
+                </div>
+              )}
 
               <div className="luma-scroll grid max-h-[380px] grid-cols-1 gap-2 overflow-y-auto pr-1 sm:grid-cols-2 lg:grid-cols-3">
                 {filteredSourceGroups.map((grp) => {
                   const isHidden = hiddenGroupSet.has(grp.id);
+                  const isSelected = selectedGroupIds.has(grp.id);
                   return (
-                    <button
+                    <div
                       key={grp.id}
-                      type="button"
-                      onClick={() => {
-                        if (!onUpdateHiddenGroups) return;
-                        const next = new Set(hiddenGroupSet);
-                        if (next.has(grp.id)) next.delete(grp.id);
-                        else next.add(grp.id);
-                        onUpdateHiddenGroups(activeSourceId, Array.from(next));
-                      }}
-                      className={`flex items-center justify-between gap-2 px-3.5 py-2 text-left text-xs transition ${
+                      onClick={() => toggleGroupSelection(grp.id)}
+                      className={`flex cursor-pointer items-center justify-between gap-2 px-3.5 py-2 text-left text-xs transition ${
                         isM3 ? 'rounded-full' : 'rounded-[14px]'
                       } ${
-                        isHidden
-                          ? 'bg-white/[0.03] text-slate-500 opacity-60 hover:opacity-90'
-                          : isM3
-                            ? 'bg-[#232B3D] text-white hover:bg-[#2E384F]'
-                            : 'lg-capsule text-white'
+                        isSelected
+                          ? isM3
+                            ? 'm3-tonal-active ring-1 ring-[#7FD4FF]/70'
+                            : 'lg-pill-active'
+                          : isHidden
+                            ? 'bg-white/[0.03] text-slate-500 opacity-60 hover:opacity-90'
+                            : isM3
+                              ? 'bg-[#232B3D] text-white hover:bg-[#2E384F]'
+                              : 'lg-capsule text-white'
                       }`}
                     >
-                      <span className="truncate font-medium">{grp.name}</span>
-                      <span className="flex shrink-0 items-center gap-1.5 text-[11px] luma-tabular">
-                        <span className="opacity-70">{grp.count.toLocaleString()}</span>
-                        {isHidden ? (
-                          <EyeOff className="h-3.5 w-3.5 text-amber-300" />
-                        ) : (
-                          <Eye className="h-3.5 w-3.5 text-emerald-300" />
-                        )}
+                      <span className="flex min-w-0 items-center gap-2">
+                        <span
+                          className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border ${
+                            isSelected
+                              ? 'border-sky-300 bg-sky-400 text-slate-950'
+                              : 'border-white/25 bg-black/20'
+                          }`}
+                        >
+                          {isSelected && <Check className="h-2.5 w-2.5 stroke-[3]" />}
+                        </span>
+                        <span className="truncate font-medium">{grp.name}</span>
                       </span>
-                    </button>
+
+                      <span
+                        className="flex shrink-0 items-center gap-1.5 text-[11px] luma-tabular"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <span className="opacity-70">{grp.count.toLocaleString()}</span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (!onUpdateHiddenGroups) return;
+                            const next = new Set(hiddenGroupSet);
+                            if (next.has(grp.id)) next.delete(grp.id);
+                            else next.add(grp.id);
+                            onUpdateHiddenGroups(activeSourceId, Array.from(next));
+                          }}
+                          className="rounded-full p-1 hover:bg-white/10"
+                        >
+                          {isHidden ? (
+                            <EyeOff className="h-3.5 w-3.5 text-amber-300" />
+                          ) : (
+                            <Eye className="h-3.5 w-3.5 text-emerald-300" />
+                          )}
+                        </button>
+                      </span>
+                    </div>
                   );
                 })}
               </div>
             </div>
-          ) : (
+          )}
+
+          {orgMode === 'channels' && (
             <div className="space-y-3">
-              {/* Search + Group + Visibility Filters + Bulk Actions */}
               <div className="flex flex-wrap items-center gap-2">
                 <div className="relative min-w-[220px] flex-1">
                   <Search className="pointer-events-none absolute left-3.5 top-2.5 h-4 w-4 text-slate-400" />
@@ -1063,7 +1567,7 @@ export const SourcesEngineView: React.FC<SourcesEngineViewProps> = ({
                       setChFilterQuery(e.target.value);
                       setChPage(0);
                     }}
-                    placeholder="Search all 50,000+ channels (e.g. Sky F1, UHD, ERT, Rai)…"
+                    placeholder="Search all channels (e.g. Sky F1, UHD, ERT, Rai)…"
                     className={`${inputClass} pl-10`}
                   />
                 </div>
@@ -1090,7 +1594,7 @@ export const SourcesEngineView: React.FC<SourcesEngineViewProps> = ({
                   {(
                     [
                       ['all', 'All'],
-                      ['visible', 'Visible'],
+                      ['visible', 'Enabled'],
                       ['hidden', 'Hidden'],
                       ['dividers', '### Dividers'],
                     ] as const
@@ -1116,11 +1620,10 @@ export const SourcesEngineView: React.FC<SourcesEngineViewProps> = ({
                 </div>
               </div>
 
-              {/* Bulk Channel Actions + Pagination Header */}
               <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-300">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="luma-tabular">
-                    <strong>{filteredStoredChannels.length.toLocaleString()}</strong> matching
+                    <strong>{filteredStoredChannels.length.toLocaleString()}</strong>{' '}
                     channels
                   </span>
                   {onBulkSetChannelsHidden && filteredStoredChannels.length > 0 && (
@@ -1135,7 +1638,7 @@ export const SourcesEngineView: React.FC<SourcesEngineViewProps> = ({
                         }
                         className="rounded-full bg-white/[0.07] px-3 py-1 text-[11px] font-semibold text-amber-200 hover:bg-amber-500/20"
                       >
-                        Hide Filtered ({filteredStoredChannels.length.toLocaleString()})
+                        Hide Shown ({filteredStoredChannels.length.toLocaleString()})
                       </button>
                       <button
                         type="button"
@@ -1147,7 +1650,7 @@ export const SourcesEngineView: React.FC<SourcesEngineViewProps> = ({
                         }
                         className="rounded-full bg-white/[0.07] px-3 py-1 text-[11px] font-semibold text-emerald-200 hover:bg-emerald-500/20"
                       >
-                        Show Filtered
+                        Enable Shown
                       </button>
                     </>
                   )}
@@ -1183,6 +1686,11 @@ export const SourcesEngineView: React.FC<SourcesEngineViewProps> = ({
                   return (
                     <div
                       key={ch.id}
+                      onContextMenu={(e) => {
+                        if (!onOpenChannelMenu) return;
+                        e.preventDefault();
+                        onOpenChannelMenu({ channel: ch, x: e.clientX, y: e.clientY });
+                      }}
                       className={`flex items-center justify-between gap-2 px-3.5 py-2 ${
                         isM3 ? 'rounded-full bg-[#232B3D]' : 'lg-capsule rounded-[15px]'
                       } ${ch.isHidden || groupHidden ? 'opacity-50' : ''}`}
@@ -1217,13 +1725,13 @@ export const SourcesEngineView: React.FC<SourcesEngineViewProps> = ({
                         </div>
                       )}
 
-                      <div className="flex shrink-0 items-center gap-1">
+                      <div className="flex shrink-0 items-center gap-0.5">
                         {onPlayChannel && (
                           <button
                             type="button"
                             onClick={() => onPlayChannel(ch)}
                             className="rounded-full p-1.5 text-sky-300 hover:bg-sky-400/20 hover:text-white"
-                            title="Play channel"
+                            title={t.playNow}
                           >
                             <Play className="h-3.5 w-3.5 fill-current" />
                           </button>
@@ -1249,7 +1757,7 @@ export const SourcesEngineView: React.FC<SourcesEngineViewProps> = ({
                           type="button"
                           onClick={() => onToggleHideChannel(ch.id, !ch.isHidden)}
                           className="rounded-full p-1.5 text-slate-300 hover:bg-white/10 hover:text-white"
-                          title={ch.isHidden ? 'Show channel' : 'Hide channel'}
+                          title={ch.isHidden ? 'Enable channel' : 'Hide channel'}
                         >
                           {ch.isHidden ? (
                             <EyeOff className="h-3.5 w-3.5 text-amber-300" />
@@ -1257,6 +1765,24 @@ export const SourcesEngineView: React.FC<SourcesEngineViewProps> = ({
                             <Eye className="h-3.5 w-3.5" />
                           )}
                         </button>
+
+                        {onOpenChannelMenu && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              const rect = e.currentTarget.getBoundingClientRect();
+                              onOpenChannelMenu({
+                                channel: ch,
+                                x: rect.left,
+                                y: rect.bottom + 4,
+                              });
+                            }}
+                            className="rounded-full p-1.5 text-slate-300 hover:bg-white/10 hover:text-white"
+                            title={t.addToCollectionHeader}
+                          >
+                            <MoreVertical className="h-3.5 w-3.5" />
+                          </button>
+                        )}
                       </div>
                     </div>
                   );
@@ -1267,92 +1793,21 @@ export const SourcesEngineView: React.FC<SourcesEngineViewProps> = ({
         </div>
       )}
 
-      {/* CORS Stream Proxy & Global EPG Offset */}
+      {/* Simplified Stream Compatibility & TV Guide Time Shift */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <div className={`${panelClass} space-y-3`}>
-          <div className="flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2 text-xs font-semibold text-white">
-              <ShieldCheck className="h-4 w-4 text-sky-400" />
-              <span>
-                {isLocalRustProxyEndpoint(proxyConfig.endpointUrl)
-                  ? 'Tauri Rust Loopback-Proxy (127.0.0.1 · HLS & TS)'
-                  : 'Firebase / Edge Stream-Proxy (CORS & Manifest-Rewriter)'}
-              </span>
-            </div>
-            <button
-              type="button"
-              onClick={async () => {
-                setProxyProbeMsg('Prüfe Endpoint…');
-                const res = await probeCorsStreamProxy(proxyConfig.endpointUrl);
-                setProxyProbeMsg(res.detail);
-              }}
-              className={`rounded-full px-3 py-1 text-[11px] font-semibold ${
-                isM3 ? 'm3-secondary-tonal' : 'lg-capsule text-sky-200'
-              }`}
-            >
-              Proxy prüfen
-            </button>
+          <div className="flex items-center gap-2 text-xs font-semibold text-white">
+            <ShieldCheck className="h-4 w-4 text-sky-400" />
+            <span>Stream Compatibility</span>
           </div>
 
-          {localRustProxyUrl && (
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                onClick={() =>
-                  onChangeProxyConfig({
-                    ...proxyConfig,
-                    endpointUrl: localRustProxyUrl,
-                  })
-                }
-                className={`rounded-full px-3 py-1 text-[11px] font-semibold transition ${
-                  isLocalRustProxyEndpoint(proxyConfig.endpointUrl)
-                    ? isM3
-                      ? 'm3-primary-pill'
-                      : 'lg-pill-active'
-                    : isM3
-                      ? 'm3-secondary-tonal'
-                      : 'lg-capsule text-slate-200'
-                }`}
-              >
-                Lokal · Tauri Rust (0 ms)
-              </button>
-              <button
-                type="button"
-                onClick={() =>
-                  onChangeProxyConfig({
-                    ...proxyConfig,
-                    endpointUrl: 'https://luma-tv-app.web.app/api/stream-proxy',
-                  })
-                }
-                className={`rounded-full px-3 py-1 text-[11px] font-semibold transition ${
-                  !isLocalRustProxyEndpoint(proxyConfig.endpointUrl)
-                    ? isM3
-                      ? 'm3-primary-pill'
-                      : 'lg-pill-active'
-                    : isM3
-                      ? 'm3-secondary-tonal'
-                      : 'lg-capsule text-slate-200'
-                }`}
-              >
-                Cloud · Firebase Edge
-              </button>
-            </div>
-          )}
+          <p className="text-[11px] leading-relaxed text-slate-400">
+            Helps channels play smoothly when IPTV servers use HTTP redirects or expect a
+            specific TV app profile.
+          </p>
 
-          <div className="flex flex-wrap items-center gap-4">
-            <label className="flex items-center gap-2 text-xs text-slate-200">
-              <input
-                type="checkbox"
-                checked={proxyConfig.enabled}
-                onChange={(e) =>
-                  onChangeProxyConfig({ ...proxyConfig, enabled: e.target.checked })
-                }
-                className="h-4 w-4 accent-sky-400"
-              />
-              <span>Immer über Proxy leiten</span>
-            </label>
-
-            <label className="flex items-center gap-2 text-xs text-slate-200">
+          <div className="space-y-2 pt-0.5">
+            <label className="flex items-center gap-2.5 text-xs text-slate-200">
               <input
                 type="checkbox"
                 checked={proxyConfig.autoFallbackOnCors ?? true}
@@ -1364,63 +1819,104 @@ export const SourcesEngineView: React.FC<SourcesEngineViewProps> = ({
                 }
                 className="h-4 w-4 accent-sky-400"
               />
-              <span>Auto-Fallback bei CORS-Blockade</span>
+              <span>Automatic stream compatibility (Recommended)</span>
+            </label>
+
+            <label className="flex items-center gap-2.5 text-xs text-slate-200">
+              <input
+                type="checkbox"
+                checked={proxyConfig.enabled}
+                onChange={(e) =>
+                  onChangeProxyConfig({ ...proxyConfig, enabled: e.target.checked })
+                }
+                className="h-4 w-4 accent-sky-400"
+              />
+              <span>Force compatibility mode for all channels</span>
             </label>
           </div>
 
-          <input
-            type="text"
-            value={proxyConfig.endpointUrl}
-            onChange={(e) =>
-              onChangeProxyConfig({ ...proxyConfig, endpointUrl: e.target.value })
-            }
-            placeholder="https://luma-tv-app.web.app/api/stream-proxy"
-            className={inputClass}
-          />
-
-          <input
-            type="text"
-            value={proxyConfig.customUserAgent ?? 'LumaTV/1.0 (TiviMate-Compatible)'}
-            onChange={(e) =>
-              onChangeProxyConfig({ ...proxyConfig, customUserAgent: e.target.value })
-            }
-            placeholder="Custom IPTV User-Agent (z.B. TiviMate/4.7.0 oder VLC/3.0.20)"
-            className={inputClass}
-          />
-
-          {proxyProbeMsg && (
-            <div className="text-[11px] font-medium text-sky-300">{proxyProbeMsg}</div>
-          )}
+          <div className="pt-1">
+            <div className="mb-1.5 text-[11px] text-slate-400">Player Identification</div>
+            <div className="flex flex-wrap gap-1.5">
+              {USER_AGENT_PRESETS.map((preset) => {
+                const isSelected =
+                  (proxyConfig.customUserAgent ?? USER_AGENT_PRESETS[0].value) ===
+                  preset.value;
+                return (
+                  <button
+                    key={preset.label}
+                    type="button"
+                    onClick={() =>
+                      onChangeProxyConfig({
+                        ...proxyConfig,
+                        customUserAgent: preset.value,
+                      })
+                    }
+                    className={`rounded-full px-3 py-1.5 text-[11px] font-semibold transition ${
+                      isSelected
+                        ? isM3
+                          ? 'm3-primary-pill'
+                          : 'lg-pill-active'
+                        : isM3
+                          ? 'm3-secondary-tonal'
+                          : 'lg-capsule text-slate-300'
+                    }`}
+                  >
+                    {preset.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
         </div>
 
         <div className={`${panelClass} space-y-3`}>
           <div className="flex items-center justify-between text-xs">
             <span className="flex items-center gap-2 font-semibold text-white">
               <Sliders className="h-4 w-4 text-sky-400" />
-              Globale XMLTV EPG-Offset-Korrektur
+              TV Guide Time Offset
             </span>
             <span className="rounded-full bg-sky-400/15 px-2.5 py-0.5 font-mono text-[11px] text-sky-300 luma-tabular">
-              {epgOffsetHours >= 0 ? `+${epgOffsetHours}h` : `${epgOffsetHours}h`}
+              {epgOffsetHours === 0
+                ? 'Auto (0h)'
+                : epgOffsetHours > 0
+                  ? `+${epgOffsetHours}h`
+                  : `${epgOffsetHours}h`}
             </span>
           </div>
-          <input
-            type="range"
-            min={-3}
-            max={3}
-            step={1}
-            value={epgOffsetHours}
-            onChange={(e) => onChangeEpgOffset(Number(e.target.value))}
-            className="mt-2 h-1.5 w-full cursor-pointer accent-sky-400"
-          />
-          <p className="text-[11px] text-slate-400">
-            Verschiebt XMLTV-Sendungszeiten in Echtzeit zur Zeitzonen-Anpassung.
+
+          <p className="text-[11px] leading-relaxed text-slate-400">
+            Adjust program times forward or backward if your provider&apos;s TV guide is
+            shifted by a time zone.
           </p>
+
+          <div className="flex flex-wrap gap-1.5 pt-1">
+            {[-3, -2, -1, 0, 1, 2, 3].map((hrs) => (
+              <button
+                key={hrs}
+                type="button"
+                onClick={() => onChangeEpgOffset(hrs)}
+                className={`rounded-full px-3 py-1.5 text-xs font-semibold luma-tabular ${
+                  epgOffsetHours === hrs
+                    ? isM3
+                      ? 'm3-primary-pill'
+                      : 'lg-pill-active'
+                    : isM3
+                      ? 'm3-secondary-tonal'
+                      : 'lg-capsule text-slate-300'
+                }`}
+              >
+                {hrs === 0 ? '0h' : hrs > 0 ? `+${hrs}h` : `${hrs}h`}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
-      {/* Phase 4: Encrypted Luma Cloud Sync & Multi-Target Native/PWA Matrix */}
+      {/* Password-Protected Sync & App Status */}
       <Phase4PlatformSyncPanel
         designMode={designMode}
+        locale={locale}
         favoriteIds={favoriteIds}
         persistedSources={persistedSources}
         epgOffsetHours={epgOffsetHours}

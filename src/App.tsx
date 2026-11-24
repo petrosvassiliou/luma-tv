@@ -39,6 +39,10 @@ import {
   useUniversalGamepadControls,
 } from './services/universalInput';
 import {
+  detectPlatformEnvironment,
+  resolveAllowedDesignMode,
+} from './services/platformDetection';
+import {
   bulkSetChannelsHidden,
   deletePersistedSource,
   fetchXtreamSeriesEpisodes,
@@ -46,14 +50,18 @@ import {
   importXmltvForSource,
   importXtreamSource,
   loadPersistedSourceBundle,
+  refreshSourceAccountInfo,
   renamePersistedSource,
   renameStoredChannel,
   resyncPersistedSource,
-  runEndToEndWorkerDemoImport,
   toggleHideStoredChannel,
   updateSourceHiddenGroups,
   type IngestProgressState,
 } from './services/playlistService';
+import {
+  ChannelContextMenu,
+  type ChannelContextMenuTarget,
+} from './components/common/ChannelContextMenu';
 import { CommandBar } from './components/command/CommandBar';
 import { VirtualizedEpgGrid } from './components/epg/VirtualizedEpgGrid';
 import { CustomTitlebar } from './components/layout/CustomTitlebar';
@@ -61,10 +69,11 @@ import { Sidebar } from './components/layout/Sidebar';
 import { InAppPipWindow } from './components/player/InAppPipWindow';
 import { MultiviewGrid } from './components/player/MultiviewGrid';
 import { PlayerStage } from './components/player/PlayerStage';
+import { ParentalPinModal } from './components/views/ChannelStudioView';
 import {
-  ChannelStudioView,
-  ParentalPinModal,
-} from './components/views/ChannelStudioView';
+  CollectionsView,
+  FavoritesView,
+} from './components/views/FavoritesAndCollectionsViews';
 import {
   HomeHubView,
   SeriesBrowserView,
@@ -117,15 +126,32 @@ const DEFAULT_PARENTAL: ParentalControlConfig = {
   lockedGroupIds: [],
 };
 
-function detectInitialDesignMode(): PlatformDesignMode {
-  if (typeof navigator === 'undefined') return 'm3-expressive';
-  const ua = navigator.userAgent.toLowerCase();
-  if (ua.includes('macintosh') || ua.includes('mac os')) return 'liquid-glass';
-  return 'm3-expressive';
-}
-
 export function App() {
-  const [designMode, setDesignMode] = useState<PlatformDesignMode>(detectInitialDesignMode);
+  const platformEnv = useMemo(() => detectPlatformEnvironment(), []);
+  const [designMode, setDesignModeState] = useState<PlatformDesignMode>(() => {
+    try {
+      const saved = localStorage.getItem('luma.design.v1') as PlatformDesignMode | null;
+      return resolveAllowedDesignMode(
+        saved ?? platformEnv.defaultDesignMode,
+        platformEnv.isApple
+      );
+    } catch {
+      return platformEnv.defaultDesignMode;
+    }
+  });
+
+  const handleChangeDesignMode = useCallback(
+    (requested: PlatformDesignMode) => {
+      const allowed = resolveAllowedDesignMode(requested, platformEnv.isApple);
+      setDesignModeState(allowed);
+      try {
+        localStorage.setItem('luma.design.v1', allowed);
+      } catch {
+        // Ignore
+      }
+    },
+    [platformEnv.isApple]
+  );
   const [preferences, setPreferences] = useState<LumaPreferences>(() => {
     try {
       const raw = localStorage.getItem('luma.prefs.v3');
@@ -161,6 +187,8 @@ export function App() {
   const [sleepDeadlineMs, setSleepDeadlineMs] = useState<number | null>(null);
   const [shortcutsOpen, setShortcutsOpen] = useState<boolean>(false);
   const [inspectMedia, setInspectMedia] = useState<MediaInspectTarget | null>(null);
+  const [channelMenuTarget, setChannelMenuTarget] =
+    useState<ChannelContextMenuTarget | null>(null);
 
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [activeSection, setActiveSection] = useState<NavigationSection>('live');
@@ -222,7 +250,7 @@ export function App() {
   const [proxyConfig, setProxyConfig] = useState<EngineProxyConfig>({
     enabled: false,
     endpointUrl: 'https://luma-tv-app.web.app/api/stream-proxy',
-    customUserAgent: 'LumaTV/0.6-beta (TiviMate-Compatible)',
+    customUserAgent: 'LumaTV/0.7 (TiviMate-Compatible)',
     autoFallbackOnCors: true,
   });
 
@@ -305,6 +333,55 @@ export function App() {
       // Ignore
     }
   }, []);
+
+  const handleToggleChannelInCollection = useCallback(
+    (collectionId: string, channelId: string) => {
+      setCustomBouquets((prev) => {
+        const next = prev.map((col) => {
+          if (col.id !== collectionId) return col;
+          const exists = col.channelIds.includes(channelId);
+          return {
+            ...col,
+            channelIds: exists
+              ? col.channelIds.filter((id) => id !== channelId)
+              : [...col.channelIds, channelId],
+          };
+        });
+        try {
+          localStorage.setItem('luma.bouquets.v1', JSON.stringify(next));
+        } catch {
+          // Ignore
+        }
+        return next;
+      });
+    },
+    []
+  );
+
+  const handleCreateCollectionWithChannel = useCallback(
+    (name: string, channelId: string) => {
+      const trimmed = name.trim();
+      if (!trimmed) return;
+      setCustomBouquets((prev) => {
+        const created: CustomBouquet = {
+          id: `col-${Date.now()}`,
+          name: trimmed,
+          channelIds: [channelId],
+          isPinLocked: false,
+        };
+        const next = [...prev, created];
+        try {
+          localStorage.setItem('luma.bouquets.v1', JSON.stringify(next));
+        } catch {
+          // Ignore
+        }
+        return next;
+      });
+      setToastMessage(`Added to "${trimmed}"`);
+      window.setTimeout(() => setToastMessage(null), 2600);
+    },
+    []
+  );
 
   const handleUpdateParental = useCallback((next: ParentalControlConfig) => {
     setParentalConfig(next);
@@ -829,55 +906,84 @@ export function App() {
     });
   }, [activeChannel, activeOnDemand, timeshiftProgram, nowMs, epgOffsetHours, zapRelative]);
 
-  const handleRestoreFromSync = useCallback((payload: LumaSyncPlainPayload) => {
-    const restoredFavs = new Set(payload.favorites);
-    setFavoriteIds(restoredFavs);
-    setWatchHistory(payload.watchHistory);
-    setEpgOffsetHours(payload.epgOffsetHours);
-    setDesignMode(payload.preferredDesign);
-    try {
-      localStorage.setItem('luma.favorites.v1', JSON.stringify(payload.favorites));
-      localStorage.setItem('luma.watch.history.v1', JSON.stringify(payload.watchHistory));
-    } catch {
-      // Ignore
-    }
-  }, []);
+  const handleRestoreFromSync = useCallback(
+    (payload: LumaSyncPlainPayload) => {
+      const restoredFavs = new Set(payload.favorites);
+      setFavoriteIds(restoredFavs);
+      setWatchHistory(payload.watchHistory);
+      setEpgOffsetHours(payload.epgOffsetHours);
+      handleChangeDesignMode(payload.preferredDesign);
+      try {
+        localStorage.setItem('luma.favorites.v1', JSON.stringify(payload.favorites));
+        localStorage.setItem(
+          'luma.watch.history.v1',
+          JSON.stringify(payload.watchHistory)
+        );
+      } catch {
+        // Ignore
+      }
+    },
+    [handleChangeDesignMode]
+  );
 
   const reloadSourcesList = async () => {
     const list = await lumaDb.sources.orderBy('createdAt').reverse().toArray();
     setPersistedSources(list);
   };
 
-  const handleWorkerDemoImport = async () => {
-    setIngestState({ active: true, phase: 'Starte WebWorker…', percent: 5 });
-    try {
-      const { source, epgCount } = await runEndToEndWorkerDemoImport((phase, percent) =>
-        setIngestState({ active: true, phase, percent })
-      );
-      await reloadSourcesList();
-      setActiveSourceId(source.id);
-      setSelectedGroupId('all');
-      await refreshActiveSourceBundle(source.id);
-      setIngestState({
-        active: false,
-        phase: '',
-        percent: 100,
-        lastSummary: `Importiert: ${source.channelCount} Kanäle + ${epgCount} dekomprimierte XMLTV.gz Sendungen in IndexedDB!`,
-      });
-    } catch (err) {
-      setIngestState({
-        active: false,
-        phase: '',
-        percent: 0,
-        error: err instanceof Error ? err.message : 'Fehler beim Import',
-      });
-    }
-  };
+  const resolveIngestProxyEndpoint = useCallback(
+    () =>
+      proxyConfig.enabled || isLocalRustProxyEndpoint(proxyConfig.endpointUrl)
+        ? proxyConfig.endpointUrl
+        : undefined,
+    [proxyConfig.enabled, proxyConfig.endpointUrl]
+  );
 
-  const resolveIngestProxyEndpoint = () =>
-    proxyConfig.enabled || isLocalRustProxyEndpoint(proxyConfig.endpointUrl)
-      ? proxyConfig.endpointUrl
-      : undefined;
+  const handleRefreshAccountInfo = useCallback(
+    async (source: StoredPlaylistSource) => {
+      const info = await refreshSourceAccountInfo({
+        source,
+        fallbackChannelUrl: persistedChannels[0]?.streamUrl,
+        proxyEndpoint: resolveIngestProxyEndpoint(),
+      });
+      if (info) {
+        setPersistedSources((prev) =>
+          prev.map((s) => (s.id === source.id ? { ...s, accountInfo: info } : s))
+        );
+      }
+    },
+    [persistedChannels, resolveIngestProxyEndpoint]
+  );
+
+  // Automatically fetch Xtream subscription expiry & connections for existing playlists
+  useEffect(() => {
+    if (!activeStoredSource || activeStoredSource.accountInfo) return;
+    const hasXtreamCreds =
+      (activeStoredSource.type === 'xtream' &&
+        Boolean(activeStoredSource.username && activeStoredSource.password)) ||
+      Boolean(activeStoredSource.rawUrlOrHost?.includes('username='));
+    if (!hasXtreamCreds) return;
+
+    let cancelled = false;
+    refreshSourceAccountInfo({
+      source: activeStoredSource,
+      fallbackChannelUrl: persistedChannels[0]?.streamUrl,
+      proxyEndpoint: resolveIngestProxyEndpoint(),
+    })
+      .then((info) => {
+        if (cancelled || !info) return;
+        setPersistedSources((prev) =>
+          prev.map((s) =>
+            s.id === activeStoredSource.id ? { ...s, accountInfo: info } : s
+          )
+        );
+      })
+      .catch(() => undefined);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeStoredSource, persistedChannels, resolveIngestProxyEndpoint]);
 
   const handleImportM3u = async (params: {
     name: string;
@@ -1102,12 +1208,13 @@ export function App() {
     () => [
       'live',
       'live-epg',
-      'home',
+      'favorites',
+      'collections',
       'vod',
       'series',
       'catchup',
       'multiview',
-      'studio',
+      'home',
       'sources',
       'settings',
     ],
@@ -1238,6 +1345,8 @@ export function App() {
   const isM3 = designMode === 'm3-expressive';
 
   const isBrowsingSecondarySection =
+    activeSection === 'favorites' ||
+    activeSection === 'collections' ||
     activeSection === 'home' ||
     activeSection === 'vod' ||
     activeSection === 'series' ||
@@ -1406,6 +1515,7 @@ export function App() {
           groups={groups}
           totalChannelCount={channels.length}
           favoritesCount={favoriteIds.size}
+          collectionsCount={customBouquets.length}
         />
 
         <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
@@ -1459,6 +1569,7 @@ export function App() {
               favoriteIds={favoriteIds}
               onSelectChannel={selectLiveChannel}
               onToggleFavorite={toggleFavorite}
+              onOpenChannelMenu={setChannelMenuTarget}
               onOpenEpgView={() => setActiveSection('live-epg')}
             >
               {!detachedPipInEpg && renderMainPlayerStage('cinema')}
@@ -1482,9 +1593,44 @@ export function App() {
                 onSelectChannel={selectLiveChannel}
                 onStartTimeshift={handleStartTimeshift}
                 onToggleFavorite={toggleFavorite}
+                onOpenChannelMenu={setChannelMenuTarget}
                 onToggleReminder={handleToggleReminder}
               />
             </>
+          )}
+
+          {activeSection === 'favorites' && (
+            <FavoritesView
+              designMode={designMode}
+              locale={preferences.locale}
+              channels={channels}
+              favoriteIds={favoriteIds}
+              activeChannelId={activeChannel.id}
+              nowMs={nowMs}
+              epgOffsetHours={epgOffsetHours}
+              onSelectChannel={selectLiveChannel}
+              onToggleFavorite={toggleFavorite}
+              onOpenChannelMenu={setChannelMenuTarget}
+            />
+          )}
+
+          {(activeSection === 'collections' || activeSection === 'studio') && (
+            <CollectionsView
+              designMode={designMode}
+              locale={preferences.locale}
+              channels={channels}
+              collections={customBouquets}
+              activeChannelId={activeChannel.id}
+              unlockedGroupIds={unlockedGroupIds}
+              parentalEnabled={parentalConfig.enabled}
+              lockedGroupIds={parentalConfig.lockedGroupIds}
+              nowMs={nowMs}
+              epgOffsetHours={epgOffsetHours}
+              onChangeCollections={handleUpdateBouquets}
+              onSelectChannel={selectLiveChannel}
+              onRequestUnlockCollection={(id, name) => setPendingPinGroup({ id, name })}
+              onOpenChannelMenu={setChannelMenuTarget}
+            />
           )}
 
           {activeSection === 'multiview' && (
@@ -1558,21 +1704,11 @@ export function App() {
             />
           )}
 
-          {activeSection === 'studio' && (
-            <ChannelStudioView
-              designMode={designMode}
-              channels={channels}
-              groups={baseGroups}
-              customBouquets={customBouquets}
-              onChangeCustomBouquets={handleUpdateBouquets}
-              parentalConfig={parentalConfig}
-              onChangeParentalConfig={handleUpdateParental}
-            />
-          )}
-
           {activeSection === 'sources' && (
             <SourcesEngineView
               designMode={designMode}
+              locale={preferences.locale}
+              nowMs={nowMs}
               activeSourceId={activeSourceId}
               persistedSources={persistedSources}
               storedChannelsForActive={persistedChannels}
@@ -1582,22 +1718,22 @@ export function App() {
                 setSelectedGroupId('all');
               }}
               onDeleteSource={handleDeleteSource}
-              onRunWorkerDemoImport={handleWorkerDemoImport}
               onImportM3u={handleImportM3u}
               onImportXtream={handleImportXtream}
               onUploadXmltvBuffer={handleUploadXmltvBuffer}
               onRenameSource={handleRenameSource}
               onResyncSource={handleResyncSource}
+              onRefreshAccountInfo={handleRefreshAccountInfo}
               onUpdateHiddenGroups={handleUpdateHiddenGroups}
               onBulkSetChannelsHidden={handleBulkSetChannelsHidden}
               onPlayChannel={(ch) => selectLiveChannel(ch)}
+              onOpenChannelMenu={setChannelMenuTarget}
               onRenameChannel={handleRenameChannel}
               onToggleHideChannel={handleToggleHideChannel}
               epgOffsetHours={epgOffsetHours}
               onChangeEpgOffset={setEpgOffsetHours}
               proxyConfig={proxyConfig}
               onChangeProxyConfig={setProxyConfig}
-              localRustProxyUrl={nativeProbe?.localProxyUrl ?? null}
               favoriteIds={favoriteIds}
               watchHistory={watchHistory}
               onRestoreFromSync={handleRestoreFromSync}
@@ -1607,19 +1743,23 @@ export function App() {
           {activeSection === 'settings' && (
             <SettingsHubView
               designMode={designMode}
-              onChangeDesignMode={setDesignMode}
+              isAppleDevice={platformEnv.isApple}
+              detectedPlatformLabel={platformEnv.label}
+              onChangeDesignMode={handleChangeDesignMode}
               preferences={preferences}
               onChangePreferences={handleUpdatePreferences}
               sleepRemainingSec={sleepRemainingSec}
               favoriteIds={favoriteIds}
               customBouquets={customBouquets}
+              groups={baseGroups}
               parentalConfig={parentalConfig}
+              onChangeParentalConfig={handleUpdateParental}
               onImportFullBackup={(backup) => {
                 if (backup.favorites) setFavoriteIds(new Set(backup.favorites));
                 if (backup.bouquets) handleUpdateBouquets(backup.bouquets);
                 if (backup.parental) handleUpdateParental(backup.parental);
                 if (backup.preferences) handleUpdatePreferences(backup.preferences);
-                setToastMessage('Backup erfolgreich wiederhergestellt!');
+                setToastMessage('Backup restored');
                 window.setTimeout(() => setToastMessage(null), 3200);
               }}
               onOpenShortcutsModal={() => setShortcutsOpen(true)}
@@ -1634,6 +1774,9 @@ export function App() {
           channel={activeChannel}
           overrideTitle={activeOnDemand?.title ?? timeshiftProgram?.title}
           overrideStreamUrl={activeOnDemand?.streamUrl ?? timeshiftStreamUrl ?? undefined}
+          isMuted={playerAudio.muted}
+          volume={playerAudio.volume}
+          onChangeMuted={handleChangeMuted}
           proxyConfig={effectiveProxyConfig}
           nowMs={nowMs}
           onPrevChannel={() => zapRelative(-1)}
@@ -1649,6 +1792,21 @@ export function App() {
               setAutoPipWhenBrowsing(false);
             }
           }}
+        />
+      )}
+
+      {channelMenuTarget && (
+        <ChannelContextMenu
+          designMode={designMode}
+          locale={preferences.locale}
+          target={channelMenuTarget}
+          isFavorite={favoriteIds.has(channelMenuTarget.channel.id)}
+          collections={customBouquets}
+          onClose={() => setChannelMenuTarget(null)}
+          onPlayChannel={(ch) => selectLiveChannel(ch)}
+          onToggleFavorite={toggleFavorite}
+          onToggleChannelInCollection={handleToggleChannelInCollection}
+          onCreateCollectionWithChannel={handleCreateCollectionWithChannel}
         />
       )}
 
@@ -1770,6 +1928,7 @@ export function App() {
       {commandBarOpen && (
         <CommandBar
           designMode={designMode}
+          isAppleDevice={platformEnv.isApple}
           locale={preferences.locale}
           onClose={() => setCommandBarOpen(false)}
           channels={channels}
@@ -1791,8 +1950,8 @@ export function App() {
               setActiveSourceId('builtin-reference');
               setStressMode20k((v) => !v);
             } else if (act === 'toggleDesign') {
-              setDesignMode((prev) =>
-                prev === 'm3-expressive' ? 'liquid-glass' : 'm3-expressive'
+              handleChangeDesignMode(
+                designMode === 'm3-expressive' ? 'liquid-glass' : 'm3-expressive'
               );
             }
           }}

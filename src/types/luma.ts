@@ -1,7 +1,7 @@
 import type { BufferProfile } from '../i18n/translations';
 
-export const LUMA_APP_VERSION = '0.6.0-beta.1';
-export const LUMA_RELEASE_BADGE = '0.6 beta';
+export const LUMA_APP_VERSION = '0.7.0-beta.1';
+export const LUMA_RELEASE_BADGE = '0.7 beta';
 
 export interface EpgReminder {
   programId: string;
@@ -16,6 +16,8 @@ export type PlatformDesignMode = 'm3-expressive' | 'liquid-glass';
 export type NavigationSection =
   | 'live'
   | 'live-epg'
+  | 'favorites'
+  | 'collections'
   | 'home'
   | 'multiview'
   | 'vod'
@@ -148,6 +150,18 @@ export interface SeriesItem {
   seasons: SeriesSeason[];
 }
 
+export interface PlaylistAccountInfo {
+  status: string;
+  username?: string;
+  expiresAtMs: number | null; // null = Unlimited / No expiry
+  createdAtMs?: number | null;
+  isTrial?: boolean;
+  activeConnections?: number;
+  maxConnections?: number;
+  serverTimezone?: string;
+  checkedAtMs: number;
+}
+
 export interface PlaylistSource {
   id: string;
   name: string;
@@ -159,6 +173,7 @@ export interface PlaylistSource {
   epgStatus: 'synced' | 'syncing' | 'ready';
   epgOffsetHours: number;
   lastUpdated: string;
+  accountInfo?: PlaylistAccountInfo;
 }
 
 export interface QualityLevelOption {

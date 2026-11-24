@@ -1,11 +1,14 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   Download,
   FileUp,
   Gamepad2,
   Globe,
   Keyboard,
+  Lock,
+  LockOpen,
   Moon,
+  ShieldAlert,
   Sliders,
 } from 'lucide-react';
 import {
@@ -18,6 +21,7 @@ import {
 } from '../../i18n/translations';
 import {
   LUMA_APP_VERSION,
+  type ChannelGroup,
   type CustomBouquet,
   type ParentalControlConfig,
   type PlatformDesignMode,
@@ -25,13 +29,17 @@ import {
 
 interface SettingsHubViewProps {
   designMode: PlatformDesignMode;
+  isAppleDevice: boolean;
+  detectedPlatformLabel: string;
   onChangeDesignMode: (mode: PlatformDesignMode) => void;
   preferences: LumaPreferences;
   onChangePreferences: (next: LumaPreferences) => void;
   sleepRemainingSec: number | null;
   favoriteIds: Set<string>;
   customBouquets: CustomBouquet[];
+  groups: ChannelGroup[];
   parentalConfig: ParentalControlConfig;
+  onChangeParentalConfig: (next: ParentalControlConfig) => void;
   onImportFullBackup: (backup: {
     favorites?: string[];
     bouquets?: CustomBouquet[];
@@ -43,19 +51,24 @@ interface SettingsHubViewProps {
 
 export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
   designMode,
+  isAppleDevice,
+  detectedPlatformLabel,
   onChangeDesignMode,
   preferences,
   onChangePreferences,
   sleepRemainingSec,
   favoriteIds,
   customBouquets,
+  groups,
   parentalConfig,
+  onChangeParentalConfig,
   onImportFullBackup,
   onOpenShortcutsModal,
 }) => {
   const isM3 = designMode === 'm3-expressive';
   const t = TRANSLATIONS[preferences.locale];
   const panelClass = isM3 ? 'rounded-[28px] bg-[#1A202E] p-5' : 'lg-pane rounded-[24px] p-5';
+  const [newPin, setNewPin] = useState(parentalConfig.pin);
 
   const setLocale = (locale: LumaLocale) =>
     onChangePreferences({ ...preferences, locale });
@@ -65,6 +78,16 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
 
   const setSleep = (sleepTimerMinutes: number) =>
     onChangePreferences({ ...preferences, sleepTimerMinutes });
+
+  const toggleGroupPinLock = (groupId: string) => {
+    const set = new Set(parentalConfig.lockedGroupIds);
+    if (set.has(groupId)) set.delete(groupId);
+    else set.add(groupId);
+    onChangeParentalConfig({
+      ...parentalConfig,
+      lockedGroupIds: Array.from(set),
+    });
+  };
 
   const exportBackupJson = () => {
     const bundle = {
@@ -103,8 +126,10 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
     <div className="luma-scroll flex-1 overflow-y-auto p-5 space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="text-base font-semibold text-white">{t.settingsTitle}</h2>
-          <p className="text-xs text-slate-400">{t.settingsSubtitle}</p>
+          <h2 className="text-base font-semibold text-white">{t.navSettings}</h2>
+          <p className="text-xs text-slate-400">
+            Language, playback buffer, sleep timer, parental PIN, and backups.
+          </p>
         </div>
 
         <button
@@ -120,7 +145,7 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
       </div>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        {/* 6-Language Selector & Design Paradigm */}
+        {/* 6-Language Selector & Platform-Aware Design System */}
         <div className={`${panelClass} space-y-4`}>
           <div className="flex items-center gap-2 text-xs font-semibold text-white">
             <Globe className="h-4 w-4 text-sky-400" />
@@ -152,25 +177,38 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
             })}
           </div>
 
-          <div className="border-t border-white/10 pt-3 flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={() => onChangeDesignMode('m3-expressive')}
-              className={`rounded-full px-4 py-2 text-xs font-semibold ${
-                isM3 ? 'm3-tonal-active ring-1 ring-[#7FD4FF]/60' : 'lg-capsule text-slate-300'
-              }`}
-            >
-              GoogleOS / Android · Material 3 Expressive
-            </button>
-            <button
-              type="button"
-              onClick={() => onChangeDesignMode('liquid-glass')}
-              className={`rounded-full px-4 py-2 text-xs font-semibold ${
-                !isM3 ? 'lg-pill-active' : 'm3-secondary-tonal'
-              }`}
-            >
-              macOS · Apple Liquid Glass
-            </button>
+          <div className="border-t border-white/10 pt-3">
+            {isAppleDevice ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => onChangeDesignMode('liquid-glass')}
+                  className={`rounded-full px-4 py-2 text-xs font-semibold ${
+                    !isM3 ? 'lg-pill-active' : 'm3-secondary-tonal'
+                  }`}
+                >
+                  Apple Liquid Glass ({detectedPlatformLabel})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onChangeDesignMode('m3-expressive')}
+                  className={`rounded-full px-4 py-2 text-xs font-semibold ${
+                    isM3
+                      ? 'm3-tonal-active ring-1 ring-[#7FD4FF]/60'
+                      : 'lg-capsule text-slate-300'
+                  }`}
+                >
+                  Material 3 Expressive
+                </button>
+              </div>
+            ) : (
+              <div className="flex items-center justify-between text-xs text-slate-300">
+                <span>Detected Theme ({detectedPlatformLabel})</span>
+                <span className="m3-tonal-active rounded-full px-3 py-1 text-[11px] font-semibold">
+                  Material 3 Expressive
+                </span>
+              </div>
+            )}
           </div>
         </div>
 
@@ -301,6 +339,77 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
               />
             </label>
           </div>
+        </div>
+      </div>
+
+      {/* Parental Control 4-Digit PIN Lock */}
+      <div className={`${panelClass} space-y-3`}>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2 text-xs font-semibold text-white">
+            <ShieldAlert className="h-4 w-4 text-amber-300" />
+            <span>Parental Control (4-Digit PIN)</span>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <label className="flex items-center gap-2 text-xs text-slate-200">
+              <input
+                type="checkbox"
+                checked={parentalConfig.enabled}
+                onChange={(e) =>
+                  onChangeParentalConfig({
+                    ...parentalConfig,
+                    enabled: e.target.checked,
+                  })
+                }
+                className="h-4 w-4 accent-sky-400"
+              />
+              <span>Enable PIN Lock</span>
+            </label>
+
+            <input
+              type="password"
+              maxLength={4}
+              value={newPin}
+              onChange={(e) => {
+                const digits = e.target.value.replace(/\D/g, '').slice(0, 4);
+                setNewPin(digits);
+                if (digits.length === 4) {
+                  onChangeParentalConfig({ ...parentalConfig, pin: digits });
+                }
+              }}
+              placeholder="PIN"
+              className={
+                isM3
+                  ? 'h-8.5 w-24 rounded-full bg-[#232B3D] px-3 text-center font-mono text-xs text-white focus:outline-none luma-tabular'
+                  : 'lg-capsule h-8.5 w-24 rounded-full px-3 text-center font-mono text-xs text-white focus:outline-none luma-tabular'
+              }
+            />
+          </div>
+        </div>
+
+        <div className="luma-scroll flex max-h-32 flex-wrap gap-1.5 overflow-y-auto">
+          {groups.slice(0, 80).map((g) => {
+            const locked = parentalConfig.lockedGroupIds.includes(g.id);
+            return (
+              <button
+                key={g.id}
+                type="button"
+                onClick={() => toggleGroupPinLock(g.id)}
+                className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-medium transition ${
+                  locked
+                    ? 'bg-amber-400/20 text-amber-200 ring-1 ring-amber-400/50'
+                    : 'bg-white/[0.06] text-slate-300 hover:bg-white/10'
+                }`}
+              >
+                {locked ? (
+                  <Lock className="h-3 w-3 text-amber-300" />
+                ) : (
+                  <LockOpen className="h-3 w-3 text-slate-400" />
+                )}
+                <span>{g.name}</span>
+              </button>
+            );
+          })}
         </div>
       </div>
     </div>

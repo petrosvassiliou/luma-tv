@@ -6,6 +6,7 @@ import type {
   StoredSeriesItem,
   StoredVodItem,
 } from '../db/lumaDb';
+import type { PlaylistAccountInfo } from '../types/luma';
 import {
   makeChannelShortCode,
   parseM3uContent,
@@ -52,6 +53,7 @@ export type WorkerIngestResponse =
       vodItems: StoredVodItem[];
       seriesItems?: StoredSeriesItem[];
       discoveredXmltvUrl?: string;
+      accountInfo?: PlaylistAccountInfo;
       elapsedMs: number;
     }
   | {
@@ -162,7 +164,10 @@ self.onmessage = async (event: MessageEvent<WorkerIngestRequest>) => {
         percent: 18,
       } satisfies WorkerIngestResponse);
 
-      const [catsRes, streamsRes] = await Promise.all([
+      const [authInfoRes, catsRes, streamsRes] = await Promise.all([
+        fetch(
+          wrapProxy(`${base}/player_api.php?${authParams}`, req.proxyEndpoint)
+        ).catch(() => null),
         fetch(
           wrapProxy(
             `${base}/player_api.php?${authParams}&action=get_live_categories`,
@@ -179,6 +184,52 @@ self.onmessage = async (event: MessageEvent<WorkerIngestRequest>) => {
 
       if (!catsRes.ok || !streamsRes.ok) {
         throw new Error(`Xtream Server antwortete mit HTTP ${streamsRes.status}`);
+      }
+
+      let accountInfo: PlaylistAccountInfo | undefined;
+      if (authInfoRes && authInfoRes.ok) {
+        try {
+          const authJson = (await authInfoRes.json()) as {
+            user_info?: {
+              username?: string;
+              status?: string;
+              exp_date?: string | number | null;
+              created_at?: string | number | null;
+              is_trial?: string | number;
+              active_cons?: string | number;
+              max_connections?: string | number;
+            };
+            server_info?: {
+              timezone?: string;
+            };
+          };
+          const ui = authJson.user_info;
+          if (ui) {
+            const parseEpoch = (val: unknown): number | null => {
+              if (val === null || val === undefined || val === '' || val === 'null') {
+                return null;
+              }
+              const n = Number(val);
+              if (!Number.isFinite(n) || n <= 0) return null;
+              return n < 1e11 ? n * 1000 : n;
+            };
+            const activeCons = Number(ui.active_cons);
+            const maxCons = Number(ui.max_connections);
+            accountInfo = {
+              status: String(ui.status || 'Active'),
+              username: ui.username || req.username,
+              expiresAtMs: parseEpoch(ui.exp_date),
+              createdAtMs: parseEpoch(ui.created_at),
+              isTrial: String(ui.is_trial) === '1',
+              activeConnections: Number.isFinite(activeCons) ? activeCons : undefined,
+              maxConnections: Number.isFinite(maxCons) && maxCons > 0 ? maxCons : undefined,
+              serverTimezone: authJson.server_info?.timezone || undefined,
+              checkedAtMs: Date.now(),
+            };
+          }
+        } catch {
+          // Optional account metadata
+        }
       }
 
       const categories = (await catsRes.json()) as {
@@ -363,6 +414,7 @@ self.onmessage = async (event: MessageEvent<WorkerIngestRequest>) => {
         vodItems,
         seriesItems,
         discoveredXmltvUrl: `${base}/xmltv.php?${authParams}`,
+        accountInfo,
         elapsedMs: Math.round(performance.now() - t0),
       } satisfies WorkerIngestResponse);
       return;

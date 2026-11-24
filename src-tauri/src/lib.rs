@@ -367,7 +367,7 @@ async fn handle_proxy_request(
             serde_json::json!({
                 "ok": true,
                 "service": "lumaNativeRustProxy",
-                "version": "0.6.0",
+                "version": "0.7.0",
             }),
         ));
     }
@@ -392,7 +392,7 @@ async fn handle_proxy_request(
 
     let effective_ua = query_ua
         .or(header_ua)
-        .unwrap_or_else(|| "LumaTV/0.6 (Native Tauri Stream Engine)".to_string());
+        .unwrap_or_else(|| "LumaTV/0.7 (Native Tauri Stream Engine)".to_string());
 
     let method = if req.method() == Method::HEAD {
         reqwest::Method::HEAD
@@ -602,7 +602,7 @@ async fn luma_native_fetch_text(
     let ua = sanitize_cli_value(
         user_agent
             .as_deref()
-            .unwrap_or("LumaTV/0.6 (Native Tauri Bridge)"),
+            .unwrap_or("LumaTV/0.7 (Native Tauri Bridge)"),
     );
     let client = reqwest::Client::builder()
         .user_agent(ua)
@@ -645,7 +645,7 @@ async fn luma_native_launch_mpv(
     })?;
 
     let clean_title = sanitize_cli_value(&title);
-    let clean_ua = sanitize_cli_value(user_agent.as_deref().unwrap_or("LumaTV/0.6"));
+    let clean_ua = sanitize_cli_value(user_agent.as_deref().unwrap_or("LumaTV/0.7"));
 
     Command::new(&mpv_bin)
         .arg("--hwdec=auto-safe")

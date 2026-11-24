@@ -23,6 +23,7 @@ import type {
 
 interface CommandBarProps {
   designMode: PlatformDesignMode;
+  isAppleDevice?: boolean;
   locale?: LumaLocale;
   onClose: () => void;
   channels: Channel[];
@@ -52,6 +53,7 @@ interface SearchHit {
 
 export const CommandBar: React.FC<CommandBarProps> = ({
   designMode,
+  isAppleDevice = false,
   locale = 'de',
   onClose,
   channels,
@@ -142,30 +144,30 @@ export const CommandBar: React.FC<CommandBarProps> = ({
     }
 
     if (scope === 'all' && !q) {
-      results.push(
-        {
+      if (isAppleDevice) {
+        results.push({
           id: 'act-design',
           kind: 'action',
-          title: isM3 ? 'Switch to macOS Liquid Glass' : 'Switch to Material 3 Expressive',
+          title: isM3 ? 'Switch to Apple Liquid Glass' : 'Switch to Material 3 Expressive',
           subtitle: 'Design System',
-          badge: 'DESIGN',
+          badge: 'THEME',
           onExecute: () => {
             onTriggerAction('toggleDesign');
             onClose();
           },
+        });
+      }
+      results.push({
+        id: 'act-multiview',
+        kind: 'action',
+        title: t.navMultiview,
+        subtitle: '4x Simultaneous Streams',
+        badge: '4X',
+        onExecute: () => {
+          onTriggerAction('multiview');
+          onClose();
         },
-        {
-          id: 'act-multiview',
-          kind: 'action',
-          title: t.navMultiview,
-          subtitle: '4x Simultaneous Streams',
-          badge: '4X',
-          onExecute: () => {
-            onTriggerAction('multiview');
-            onClose();
-          },
-        }
-      );
+      });
     }
 
     const totalMatchingInScope =
@@ -192,6 +194,7 @@ export const CommandBar: React.FC<CommandBarProps> = ({
     vodCatalog,
     seriesCatalog,
     isM3,
+    isAppleDevice,
     t.navMultiview,
     onSelectChannel,
     onSelectVod,

@@ -12,8 +12,139 @@ import {
 } from '../db/lumaDb';
 import { VERIFIED_HLS_STREAMS } from '../data/mockCatalog';
 import { parseXtreamLiveStreamUrl } from '../engine/catchupUrlBuilder';
-import type { SeriesEpisode, SeriesItem, SeriesSeason } from '../types/luma';
+import type {
+  PlaylistAccountInfo,
+  SeriesEpisode,
+  SeriesItem,
+  SeriesSeason,
+} from '../types/luma';
 import type { WorkerIngestRequest, WorkerIngestResponse } from '../workers/ingest.worker';
+
+function formatSyncTimestamp(ms = Date.now()): string {
+  return new Intl.DateTimeFormat(undefined, {
+    month: 'short',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(ms);
+}
+
+export function parseXtreamAccountInfoPayload(
+  raw: unknown,
+  fallbackUsername?: string,
+  checkedAtMs = Date.now()
+): PlaylistAccountInfo | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const record = raw as {
+    user_info?: {
+      username?: string;
+      status?: string;
+      exp_date?: string | number | null;
+      created_at?: string | number | null;
+      is_trial?: string | number;
+      active_cons?: string | number;
+      max_connections?: string | number;
+    };
+    server_info?: {
+      timezone?: string;
+    };
+  };
+  const ui = record.user_info;
+  if (!ui) return null;
+
+  const parseEpoch = (val: unknown): number | null => {
+    if (val === null || val === undefined || val === '' || val === 'null') {
+      return null;
+    }
+    const n = Number(val);
+    if (!Number.isFinite(n) || n <= 0) return null;
+    return n < 1e11 ? n * 1000 : n;
+  };
+
+  const activeCons = Number(ui.active_cons);
+  const maxCons = Number(ui.max_connections);
+
+  return {
+    status: String(ui.status || 'Active'),
+    username: ui.username || fallbackUsername,
+    expiresAtMs: parseEpoch(ui.exp_date),
+    createdAtMs: parseEpoch(ui.created_at),
+    isTrial: String(ui.is_trial) === '1',
+    activeConnections: Number.isFinite(activeCons) ? activeCons : undefined,
+    maxConnections: Number.isFinite(maxCons) && maxCons > 0 ? maxCons : undefined,
+    serverTimezone: record.server_info?.timezone || undefined,
+    checkedAtMs,
+  };
+}
+
+function extractXtreamCredentialsFromUrl(
+  rawUrl?: string
+): { origin: string; username: string; password: string } | null {
+  if (!rawUrl || !rawUrl.startsWith('http')) return null;
+  try {
+    const u = new URL(rawUrl);
+    const username = u.searchParams.get('username');
+    const password = u.searchParams.get('password');
+    if (username && password) {
+      return { origin: u.origin, username, password };
+    }
+  } catch {
+    // Ignore invalid URL
+  }
+  const liveParsed = parseXtreamLiveStreamUrl(rawUrl);
+  if (liveParsed) {
+    return {
+      origin: liveParsed.origin,
+      username: decodeURIComponent(liveParsed.username),
+      password: decodeURIComponent(liveParsed.password),
+    };
+  }
+  return null;
+}
+
+export async function refreshSourceAccountInfo(params: {
+  source: StoredPlaylistSource;
+  fallbackChannelUrl?: string;
+  proxyEndpoint?: string;
+}): Promise<PlaylistAccountInfo | null> {
+  const { source, fallbackChannelUrl, proxyEndpoint } = params;
+  let origin = '';
+  let username = source.username?.trim() || '';
+  let password = source.password ?? '';
+
+  if (source.type === 'xtream' && source.rawUrlOrHost && username && password) {
+    origin = source.rawUrlOrHost.trim().replace(/\/+$/, '');
+  } else {
+    const fromUrl =
+      extractXtreamCredentialsFromUrl(source.rawUrlOrHost) ??
+      extractXtreamCredentialsFromUrl(fallbackChannelUrl);
+    if (fromUrl) {
+      origin = fromUrl.origin;
+      username = fromUrl.username;
+      password = fromUrl.password;
+    }
+  }
+
+  if (!origin || !username || !password) return null;
+
+  const encUser = encodeURIComponent(username);
+  const encPass = encodeURIComponent(password);
+  const rawApiUrl = `${origin}/player_api.php?username=${encUser}&password=${encPass}`;
+  const finalUrl =
+    proxyEndpoint && proxyEndpoint.trim()
+      ? `${proxyEndpoint.trim().replace(/\/+$/, '')}?url=${encodeURIComponent(rawApiUrl)}`
+      : rawApiUrl;
+
+  const res = await fetch(finalUrl);
+  if (!res.ok) return null;
+
+  const json: unknown = await res.json();
+  const parsed = parseXtreamAccountInfoPayload(json, username);
+  if (parsed) {
+    await lumaDb.sources.update(source.id, { accountInfo: parsed }).catch(() => undefined);
+  }
+  return parsed;
+}
 
 export interface IngestProgressState {
   active: boolean;
@@ -108,7 +239,8 @@ export async function importM3uPlaylist(params: {
     epgStatus: 'synced',
     epgOffsetHours: 0,
     hiddenGroupIds: [],
-    lastUpdated: `${res.elapsedMs} ms Worker`,
+    lastUpdated: formatSyncTimestamp(),
+    accountInfo: res.accountInfo,
     createdAt: Date.now(),
   };
 
@@ -185,7 +317,8 @@ export async function importXtreamSource(params: {
     epgStatus: 'synced',
     epgOffsetHours: 0,
     hiddenGroupIds: [],
-    lastUpdated: `${res.elapsedMs} ms Worker`,
+    lastUpdated: formatSyncTimestamp(),
+    accountInfo: res.accountInfo,
     createdAt: Date.now(),
   };
 
@@ -593,6 +726,7 @@ export async function resyncPersistedSource(params: {
     channelCount: mergedChannels.length,
     vodCount: res.vodItems.length,
     seriesCount: res.seriesItems?.length ?? 0,
-    lastUpdated: `${res.elapsedMs} ms Sync`,
+    lastUpdated: formatSyncTimestamp(),
+    ...(res.accountInfo ? { accountInfo: res.accountInfo } : {}),
   });
 }
