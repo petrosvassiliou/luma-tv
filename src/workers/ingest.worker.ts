@@ -373,7 +373,7 @@ self.onmessage = async (event: MessageEvent<WorkerIngestRequest>) => {
         };
       });
 
-      const seriesItems: StoredSeriesItem[] = seriesStreams.slice(0, 3000).map((s, idx) => {
+      const seriesItems: StoredSeriesItem[] = seriesStreams.slice(0, 25000).map((s, idx) => {
         const title = s.name || `Serie #${s.series_id}`;
         const upper = title.toUpperCase();
         const is4k = upper.includes('4K') || upper.includes('UHD');

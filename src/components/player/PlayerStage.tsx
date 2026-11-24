@@ -649,7 +649,7 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
         handleTouchStart(e);
       }}
       onTouchEnd={handleTouchEnd}
-      className={`relative overflow-hidden transition-all duration-300 ${
+      className={`@container relative overflow-hidden transition-all duration-300 ${
         layoutVariant === 'cinema'
           ? 'h-full min-h-[320px] flex-1'
           : theaterExpanded
@@ -706,26 +706,10 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
         <div className="pointer-events-none absolute inset-x-0 top-0 z-10 h-20 bg-gradient-to-b from-black/70 to-transparent" />
         <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 h-36 bg-gradient-to-t from-black/90 via-black/40 to-transparent" />
 
-        {effectiveMuted && (
-          <button
-            id="btn-quick-unmute"
-            type="button"
-            onClick={toggleMute}
-            className={
-              isM3
-                ? `m3-primary-pill absolute top-3.5 ${layoutVariant === 'cinema' ? 'right-28' : 'right-4'} z-20 flex items-center gap-2 rounded-full px-4 py-1.5 text-xs font-bold shadow-lg`
-                : `lg-capsule absolute top-3.5 ${layoutVariant === 'cinema' ? 'right-28' : 'right-4'} z-20 flex items-center gap-2 rounded-full px-3.5 py-1.5 text-xs font-medium text-white`
-            }
-          >
-            <VolumeX className="h-3.5 w-3.5" />
-            <span>{t.unmute}</span>
-          </button>
-        )}
-
         {/* Decluttered Top-Left Stream Status */}
         <div
           className={`absolute top-3.5 left-4 z-20 flex flex-wrap items-center gap-2 transition-opacity duration-300 ${
-            showChrome ? 'opacity-100' : 'pointer-events-none opacity-0'
+            showChrome || effectiveMuted ? 'opacity-100' : 'pointer-events-none opacity-0'
           }`}
         >
           <span
@@ -754,6 +738,22 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
               <ShieldCheck className="ml-0.5 h-3 w-3 text-emerald-300" />
             )}
           </span>
+
+          {effectiveMuted && (
+            <button
+              id="btn-quick-unmute"
+              type="button"
+              onClick={toggleMute}
+              className={
+                isM3
+                  ? 'm3-primary-pill inline-flex items-center gap-1.5 rounded-full px-3.5 py-1 text-xs font-bold shadow-lg'
+                  : 'lg-capsule inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium text-white shadow-lg'
+              }
+            >
+              <VolumeX className="h-3.5 w-3.5" />
+              <span>{t.unmute}</span>
+            </button>
+          )}
 
           {isRecording && (
             <button
@@ -844,17 +844,17 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
             </div>
           )}
 
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            {/* Channel Identity */}
-            <div className="flex min-w-0 flex-1 items-center gap-3">
+          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+            {/* Channel Identity (guaranteed min-w-[200px] + overflow-hidden so icons/badges never spill out) */}
+            <div className="flex min-w-[200px] flex-1 items-center gap-2.5 overflow-hidden">
               <div
                 className={
                   isM3
-                    ? 'flex h-11 w-14 shrink-0 flex-col items-center justify-center rounded-[16px] bg-[#232B3D] text-center'
-                    : 'lg-capsule flex h-10 w-12 shrink-0 flex-col items-center justify-center rounded-[14px] text-center'
+                    ? 'flex h-11 min-w-14 shrink-0 flex-col items-center justify-center rounded-[16px] bg-[#232B3D] px-2 text-center'
+                    : 'lg-capsule flex h-10 min-w-13 shrink-0 flex-col items-center justify-center rounded-[14px] px-2 text-center'
                 }
               >
-                <span className="text-[9px] font-semibold text-slate-400 luma-tabular">
+                <span className="whitespace-nowrap text-[9px] font-semibold text-slate-400 luma-tabular">
                   #{String(channel.number).padStart(3, '0')}
                 </span>
                 <span className="text-[11px] font-bold tracking-tight text-white">
@@ -862,16 +862,16 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
                 </span>
               </div>
 
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2">
-                  <h1 className="truncate text-sm font-semibold tracking-[-0.01em] text-white">
+              <div className="min-w-0 flex-1 overflow-hidden">
+                <div className="flex min-w-0 items-center gap-1.5 overflow-hidden">
+                  <h1 className="min-w-0 truncate text-sm font-semibold tracking-[-0.01em] text-white">
                     {channel.name}
                   </h1>
                   <span
                     className={
                       isM3
-                        ? 'hidden rounded-full bg-[#29354D] px-2.5 py-0.5 text-[10px] font-semibold text-[#D6E3FF] md:inline-block'
-                        : 'hidden rounded-full bg-white/12 px-2 py-0.5 text-[10px] font-medium text-white/85 md:inline-block'
+                        ? 'hidden shrink-0 whitespace-nowrap rounded-full bg-[#29354D] px-2 py-0.5 text-[10px] font-semibold text-[#D6E3FF] @3xl:inline-block'
+                        : 'hidden shrink-0 whitespace-nowrap rounded-full bg-white/12 px-2 py-0.5 text-[10px] font-medium text-white/85 @3xl:inline-block'
                     }
                   >
                     {channel.audioBadge}
@@ -880,8 +880,8 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
                     id="btn-hud-favorite"
                     type="button"
                     onClick={() => onToggleFavorite(channel.id)}
-                    className="text-slate-300 transition hover:text-amber-300"
-                    title="Favorit umschalten"
+                    className="shrink-0 p-0.5 text-slate-300 transition hover:text-amber-300"
+                    title={t.favorites}
                   >
                     <Star
                       className={`h-4 w-4 ${
@@ -904,13 +904,13 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
               </div>
             </div>
 
-            {/* Transport, DVR, Audio DSP & Spatial Controls */}
-            <div className="flex items-center gap-1.5">
+            {/* Transport, DVR, Audio DSP & Spatial Controls (Container-responsive, never overlaps Channel Identity) */}
+            <div className="flex shrink-0 flex-wrap items-center gap-1.5">
               <div
                 className={
                   isM3
-                    ? 'mr-1 hidden items-center rounded-full bg-[#232B3D] p-1 sm:flex'
-                    : 'lg-capsule mr-1 hidden items-center rounded-full p-0.5 sm:flex'
+                    ? 'hidden shrink-0 items-center rounded-full bg-[#232B3D] p-1 @sm:flex'
+                    : 'lg-capsule hidden shrink-0 items-center rounded-full p-0.5 @sm:flex'
                 }
               >
                 <button
@@ -918,7 +918,7 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
                   type="button"
                   onClick={onPrevChannel}
                   className="rounded-full p-1.5 text-slate-200 transition hover:bg-white/10 hover:text-white"
-                  title="Vorheriger Kanal"
+                  title="Previous channel"
                 >
                   <ChevronUp className="h-3.5 w-3.5" />
                 </button>
@@ -928,7 +928,7 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
                   type="button"
                   onClick={onNextChannel}
                   className="rounded-full p-1.5 text-slate-200 transition hover:bg-white/10 hover:text-white"
-                  title="Nächster Kanal"
+                  title="Next channel"
                 >
                   <ChevronDown className="h-3.5 w-3.5" />
                 </button>
@@ -941,13 +941,13 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
                   onClick={() => skipRelativeSeconds(-10)}
                   className={
                     isM3
-                      ? 'm3-secondary-tonal flex h-10 items-center gap-1 rounded-full px-2.5 text-[11px] font-semibold luma-tabular'
-                      : 'lg-capsule flex h-9 items-center gap-1 rounded-full px-2.5 text-[11px] font-medium text-white/90 luma-tabular'
+                      ? 'm3-secondary-tonal flex h-10 shrink-0 items-center gap-1 rounded-full px-2.5 text-[11px] font-semibold luma-tabular'
+                      : 'lg-capsule flex h-9 shrink-0 items-center gap-1 rounded-full px-2.5 text-[11px] font-medium text-white/90 luma-tabular'
                   }
                   title={t.skipBack10}
                 >
                   <RotateCcw className="h-3.5 w-3.5" />
-                  <span className="hidden sm:inline">10s</span>
+                  <span className="hidden @lg:inline">10s</span>
                 </button>
               )}
 
@@ -957,10 +957,10 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
                 onClick={togglePlay}
                 className={
                   isM3
-                    ? `m3-primary-pill flex h-10 w-12 items-center justify-center ${
+                    ? `m3-primary-pill flex h-10 w-12 shrink-0 items-center justify-center ${
                         isPlaying ? 'rounded-[14px]' : 'rounded-full'
                       }`
-                    : 'lg-pill-active flex h-9 w-9 items-center justify-center rounded-full'
+                    : 'lg-pill-active flex h-9 w-9 shrink-0 items-center justify-center rounded-full'
                 }
                 title={isPlaying ? 'Pause' : t.playNow}
               >
@@ -974,12 +974,12 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
                   onClick={() => skipRelativeSeconds(10)}
                   className={
                     isM3
-                      ? 'm3-secondary-tonal flex h-10 items-center gap-1 rounded-full px-2.5 text-[11px] font-semibold luma-tabular'
-                      : 'lg-capsule flex h-9 items-center gap-1 rounded-full px-2.5 text-[11px] font-medium text-white/90 luma-tabular'
+                      ? 'm3-secondary-tonal flex h-10 shrink-0 items-center gap-1 rounded-full px-2.5 text-[11px] font-semibold luma-tabular'
+                      : 'lg-capsule flex h-9 shrink-0 items-center gap-1 rounded-full px-2.5 text-[11px] font-medium text-white/90 luma-tabular'
                   }
                   title={t.skipFwd10}
                 >
-                  <span className="hidden sm:inline">10s</span>
+                  <span className="hidden @lg:inline">10s</span>
                   <RotateCw className="h-3.5 w-3.5" />
                 </button>
               )}
@@ -991,8 +991,8 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
                   onClick={onPlayNextEpisode}
                   className={
                     isM3
-                      ? 'm3-secondary-tonal hidden h-10 items-center gap-1.5 rounded-full px-3 text-[11px] font-semibold text-[#C4E8FF] md:inline-flex'
-                      : 'lg-capsule hidden h-9 items-center gap-1.5 rounded-full px-3 text-[11px] font-semibold text-sky-200 md:inline-flex'
+                      ? 'm3-secondary-tonal hidden h-10 shrink-0 items-center gap-1.5 rounded-full px-3 text-[11px] font-semibold text-[#C4E8FF] @xl:inline-flex'
+                      : 'lg-capsule hidden h-9 shrink-0 items-center gap-1.5 rounded-full px-3 text-[11px] font-semibold text-sky-200 @xl:inline-flex'
                   }
                   title={`${t.nextEpisode}: ${nextEpisodeLabel}`}
                 >
@@ -1006,7 +1006,7 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
                 id="btn-dvr-record"
                 type="button"
                 onClick={toggleDvrRecording}
-                className={`flex items-center justify-center rounded-full transition ${
+                className={`flex shrink-0 items-center justify-center rounded-full transition ${
                   isM3 ? 'h-10 w-10' : 'h-9 w-9'
                 } ${
                   isRecording
@@ -1017,8 +1017,8 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
                 }`}
                 title={
                   isRecording
-                    ? 'Live-DVR Aufnahme stoppen & auf Gerät speichern'
-                    : 'Sofort-DVR Aufnahme starten (macOS / Android / PWA)'
+                    ? 'Stop & save recording'
+                    : 'Start live recording'
                 }
               >
                 {isRecording ? (
@@ -1032,16 +1032,16 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
               <div
                 className={
                   isM3
-                    ? 'flex h-10 items-center gap-2 rounded-full bg-[#232B3D] px-3'
-                    : 'lg-capsule flex h-9 items-center gap-1.5 rounded-full px-2.5'
+                    ? 'flex h-10 shrink-0 items-center gap-2 rounded-full bg-[#232B3D] px-3'
+                    : 'lg-capsule flex h-9 shrink-0 items-center gap-1.5 rounded-full px-2.5'
                 }
               >
                 <button
                   id="btn-mute-toggle"
                   type="button"
                   onClick={toggleMute}
-                  className="text-slate-100 hover:text-white"
-                  title="Stummschalten"
+                  className="shrink-0 text-slate-100 hover:text-white"
+                  title="Mute / Unmute"
                 >
                   {effectiveMuted ? (
                     <VolumeX className="h-4 w-4 text-[#7FD4FF]" />
@@ -1057,8 +1057,8 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
                   step={0.05}
                   value={effectiveMuted ? 0 : volume}
                   onChange={(e) => handleVolumeChange(Number(e.target.value))}
-                  className="hidden h-1 w-16 cursor-pointer accent-sky-400 md:block"
-                  aria-label="Lautstärke"
+                  className="hidden h-1 w-14 cursor-pointer accent-sky-400 @lg:block"
+                  aria-label="Volume"
                 />
               </div>
 
@@ -1069,30 +1069,30 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
                 onClick={cycleAspect}
                 className={
                   isM3
-                    ? 'm3-secondary-tonal hidden h-10 items-center gap-1.5 rounded-full px-3 text-[11px] font-semibold lg:inline-flex luma-tabular'
-                    : 'lg-capsule hidden h-9 items-center gap-1 rounded-full px-3 text-[11px] font-medium text-white/90 lg:inline-flex luma-tabular'
+                    ? 'm3-secondary-tonal hidden h-10 shrink-0 items-center gap-1.5 rounded-full px-3 text-[11px] font-semibold @3xl:inline-flex luma-tabular'
+                    : 'lg-capsule hidden h-9 shrink-0 items-center gap-1 rounded-full px-2.5 text-[11px] font-medium text-white/90 @3xl:inline-flex luma-tabular'
                 }
-                title="Seitenverhältnis wechseln"
+                title="Aspect Ratio"
               >
                 <Expand className="h-3.5 w-3.5" />
                 <span>{aspectMode.toUpperCase()}</span>
               </button>
 
               {/* Quality, Audio DSP, Audio Tracks & Subtitles Menu */}
-              <div className="relative">
+              <div className="relative shrink-0">
                 <button
                   id="btn-stream-settings"
                   type="button"
                   onClick={() => setShowQualityMenu((v) => !v)}
                   className={
                     isM3
-                      ? 'm3-secondary-tonal flex h-10 items-center gap-1.5 rounded-full px-3 text-[11px] font-semibold'
-                      : 'lg-capsule flex h-9 items-center gap-1 rounded-full px-3 text-[11px] font-medium text-white/90'
+                      ? 'm3-secondary-tonal flex h-10 items-center justify-center gap-1.5 rounded-full px-3 text-[11px] font-semibold'
+                      : 'lg-capsule flex h-9 items-center justify-center gap-1.5 rounded-full px-2.5 text-[11px] font-medium text-white/90'
                   }
-                  title="Qualität, Studio Audio-DSP & Untertitel"
+                  title="Quality, Audio DSP & Subtitles"
                 >
-                  <Settings2 className="h-3.5 w-3.5" />
-                  <span className="hidden xl:inline">DSP &amp; Spuren</span>
+                  <Settings2 className="h-3.5 w-3.5 shrink-0" />
+                  <span className="hidden whitespace-nowrap @4xl:inline">DSP &amp; Spuren</span>
                 </button>
 
                 {showQualityMenu && (
@@ -1252,13 +1252,13 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
                   onClick={handleLaunchMpv}
                   className={
                     isM3
-                      ? 'm3-secondary-tonal hidden h-10 items-center gap-1.5 rounded-full px-3 text-[11px] font-semibold text-[#C4E8FF] sm:inline-flex'
-                      : 'lg-capsule hidden h-9 items-center gap-1.5 rounded-full px-3 text-[11px] font-semibold text-sky-200 sm:inline-flex'
+                      ? 'm3-secondary-tonal hidden h-10 shrink-0 items-center gap-1.5 rounded-full px-3 text-[11px] font-semibold text-[#C4E8FF] @md:inline-flex'
+                      : 'lg-capsule hidden h-9 shrink-0 items-center gap-1.5 rounded-full px-2.5 text-[11px] font-semibold text-sky-200 @md:inline-flex'
                   }
                   title={t.mpvLaunchTitle}
                 >
-                  <ExternalLink className="h-3.5 w-3.5" />
-                  <span>{t.mpvLaunchBtn}</span>
+                  <ExternalLink className="h-3.5 w-3.5 shrink-0" />
+                  <span className="hidden @2xl:inline">{t.mpvLaunchBtn}</span>
                 </button>
               )}
 
@@ -1269,10 +1269,10 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
                 onClick={onDetachInAppPip}
                 className={
                   isM3
-                    ? 'm3-secondary-tonal hidden h-10 w-10 items-center justify-center rounded-full sm:flex'
-                    : 'lg-capsule hidden h-9 w-9 items-center justify-center rounded-full text-white/90 sm:flex'
+                    ? 'm3-secondary-tonal hidden h-10 w-10 shrink-0 items-center justify-center rounded-full @md:flex'
+                    : 'lg-capsule hidden h-9 w-9 shrink-0 items-center justify-center rounded-full text-white/90 @md:flex'
                 }
-                title="Schwebendes In-App PiP Mini-Fenster öffnen"
+                title="Open Mini Player"
               >
                 <AppWindow className="h-3.5 w-3.5" />
               </button>
@@ -1284,10 +1284,10 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
                 onClick={handleOsPip}
                 className={
                   isM3
-                    ? 'm3-secondary-tonal hidden h-10 w-10 items-center justify-center rounded-full md:flex'
-                    : 'lg-capsule hidden h-9 w-9 items-center justify-center rounded-full text-white/90 md:flex'
+                    ? 'm3-secondary-tonal hidden h-10 w-10 shrink-0 items-center justify-center rounded-full @3xl:flex'
+                    : 'lg-capsule hidden h-9 w-9 shrink-0 items-center justify-center rounded-full text-white/90 @3xl:flex'
                 }
-                title="OS-weites Picture-in-Picture"
+                title="System Picture-in-Picture"
               >
                 <PictureInPicture2 className="h-3.5 w-3.5" />
               </button>
@@ -1300,10 +1300,10 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
                   onClick={onToggleTheaterExpanded}
                   className={
                     isM3
-                      ? 'm3-secondary-tonal flex h-10 w-10 items-center justify-center rounded-full'
-                      : 'lg-capsule flex h-9 w-9 items-center justify-center rounded-full text-white/90'
+                      ? 'm3-secondary-tonal flex h-10 w-10 shrink-0 items-center justify-center rounded-full'
+                      : 'lg-capsule flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-white/90'
                   }
-                  title={theaterExpanded ? 'EPG-Split vergrößern' : 'Kino-Stage vergrößern'}
+                  title={theaterExpanded ? 'Compact EPG split' : 'Expand stage'}
                 >
                   {theaterExpanded ? (
                     <Minimize2 className="h-3.5 w-3.5" />
@@ -1320,11 +1320,13 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
                 onClick={handleFullscreen}
                 className={
                   isM3
-                    ? 'm3-secondary-tonal hidden h-10 items-center rounded-full px-3.5 text-[11px] font-semibold lg:inline-flex'
-                    : 'lg-capsule hidden h-9 items-center rounded-full px-3 text-[11px] font-medium text-white/90 lg:inline-flex'
+                    ? 'm3-secondary-tonal inline-flex h-10 shrink-0 items-center justify-center gap-1.5 rounded-full px-3 text-[11px] font-semibold'
+                    : 'lg-capsule inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-full px-2.5 text-[11px] font-medium text-white/90'
                 }
+                title={t.fullscreen}
               >
-                {t.fullscreen}
+                <Maximize2 className="h-3.5 w-3.5 shrink-0" />
+                <span className="hidden whitespace-nowrap @4xl:inline">{t.fullscreen}</span>
               </button>
             </div>
           </div>

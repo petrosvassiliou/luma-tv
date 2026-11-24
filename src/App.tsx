@@ -355,18 +355,33 @@ export function App() {
     }
   }, []);
 
-  const handleToggleChannelInCollection = useCallback(
-    (collectionId: string, channelId: string) => {
+  const handleToggleTargetInCollection = useCallback(
+    (collectionId: string, target: ChannelContextMenuTarget) => {
       setCustomBouquets((prev) => {
         const next = prev.map((col) => {
           if (col.id !== collectionId) return col;
-          const exists = col.channelIds.includes(channelId);
-          return {
-            ...col,
-            channelIds: exists
-              ? col.channelIds.filter((id) => id !== channelId)
-              : [...col.channelIds, channelId],
-          };
+          if (target.channel) {
+            const cid = target.channel.id;
+            const exists = col.channelIds.includes(cid);
+            return {
+              ...col,
+              channelIds: exists
+                ? col.channelIds.filter((id) => id !== cid)
+                : [...col.channelIds, cid],
+            };
+          }
+          if (target.series) {
+            const sid = target.series.id;
+            const prevSeries = col.seriesIds ?? [];
+            const exists = prevSeries.includes(sid);
+            return {
+              ...col,
+              seriesIds: exists
+                ? prevSeries.filter((id) => id !== sid)
+                : [...prevSeries, sid],
+            };
+          }
+          return col;
         });
         try {
           localStorage.setItem('luma.bouquets.v1', JSON.stringify(next));
@@ -379,15 +394,16 @@ export function App() {
     []
   );
 
-  const handleCreateCollectionWithChannel = useCallback(
-    (name: string, channelId: string) => {
+  const handleCreateCollectionWithTarget = useCallback(
+    (name: string, target: ChannelContextMenuTarget) => {
       const trimmed = name.trim();
       if (!trimmed) return;
       setCustomBouquets((prev) => {
         const created: CustomBouquet = {
           id: `col-${Date.now()}`,
           name: trimmed,
-          channelIds: [channelId],
+          channelIds: target.channel ? [target.channel.id] : [],
+          seriesIds: target.series ? [target.series.id] : [],
           isPinLocked: false,
         };
         const next = [...prev, created];
@@ -451,6 +467,9 @@ export function App() {
   >([]);
   const [persistedVod, setPersistedVod] = useState<StoredVodItem[]>([]);
   const [persistedSeries, setPersistedSeries] = useState<StoredSeriesItem[]>([]);
+  const [crossSourceLookupSeries, setCrossSourceLookupSeries] = useState<
+    StoredSeriesItem[]
+  >([]);
   const [loadingSeriesIds, setLoadingSeriesIds] = useState<Set<string>>(() => new Set());
   const [xmltvMap, setXmltvMap] = useState<Map<string, StoredEpgProgram[]>>(() => new Map());
   const [ingestState, setIngestState] = useState<IngestProgressState>({
@@ -468,6 +487,30 @@ export function App() {
     }
     return new Set(DEFAULT_FAVORITES);
   });
+
+  const [favoriteSeriesIds, setFavoriteSeriesIds] = useState<Set<string>>(() => {
+    try {
+      const raw = localStorage.getItem('luma.favoriteSeries.v1');
+      if (raw) return new Set(JSON.parse(raw) as string[]);
+    } catch {
+      // Ignore
+    }
+    return new Set();
+  });
+
+  const toggleFavoriteSeries = useCallback((seriesId: string) => {
+    setFavoriteSeriesIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(seriesId)) next.delete(seriesId);
+      else next.add(seriesId);
+      try {
+        localStorage.setItem('luma.favoriteSeries.v1', JSON.stringify(Array.from(next)));
+      } catch {
+        // Ignore
+      }
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     lumaDb.sources
@@ -551,6 +594,31 @@ export function App() {
       cancelled = true;
     };
   }, [favoriteIds, customBouquets, persistedSources]);
+
+  // Resolve any Favorite or Collection series IDs stored in IndexedDB across ALL playlists
+  useEffect(() => {
+    const neededSeriesIds = new Set<string>(favoriteSeriesIds);
+    for (const bq of customBouquets) {
+      for (const sid of bq.seriesIds ?? []) neededSeriesIds.add(sid);
+    }
+    if (neededSeriesIds.size === 0) {
+      setCrossSourceLookupSeries([]);
+      return;
+    }
+    let cancelled = false;
+    lumaDb.seriesItems
+      .bulkGet(Array.from(neededSeriesIds))
+      .then((rows) => {
+        if (cancelled) return;
+        setCrossSourceLookupSeries(
+          rows.filter((r): r is StoredSeriesItem => Boolean(r))
+        );
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [favoriteSeriesIds, customBouquets, persistedSources]);
 
   const builtinCatalog = useMemo(
     () => buildChannelCatalog(stressMode20k ? 20_400 : 2_400),
@@ -657,6 +725,18 @@ export function App() {
 
     return [...bouquetGroups, ...standardGroups];
   }, [customBouquets, baseGroups, parentalConfig]);
+
+  const collectionAndFavoriteSeriesPool: SeriesItem[] = useMemo(() => {
+    const map = new Map<string, SeriesItem>();
+    for (const ser of persistedSeries) map.set(ser.id, ser);
+    for (const ser of crossSourceLookupSeries) map.set(ser.id, ser);
+    if (!demoSourceDeleted) {
+      for (const ser of DEMO_SERIES_CATALOG) {
+        if (!map.has(ser.id)) map.set(ser.id, ser);
+      }
+    }
+    return Array.from(map.values());
+  }, [persistedSeries, crossSourceLookupSeries, demoSourceDeleted]);
 
   const combinedVodCatalog: VodItem[] = useMemo(
     () =>
@@ -1706,7 +1786,7 @@ export function App() {
           onSelectGroup={handleSelectSidebarGroup}
           groups={groups}
           totalChannelCount={channels.length}
-          favoritesCount={favoriteIds.size}
+          favoritesCount={favoriteIds.size + favoriteSeriesIds.size}
           collectionsCount={customBouquets.length}
         />
 
@@ -1799,12 +1879,19 @@ export function App() {
               designMode={designMode}
               locale={preferences.locale}
               channels={collectionAndFavoritePool}
+              seriesCatalog={collectionAndFavoriteSeriesPool}
               favoriteIds={favoriteIds}
+              favoriteSeriesIds={favoriteSeriesIds}
               activeChannelId={activeChannel.id}
               nowMs={nowMs}
               epgOffsetHours={epgOffsetHours}
               onSelectChannel={selectLiveChannel}
+              onOpenSeries={(serId) => {
+                setFocusedSeriesId(serId);
+                setActiveSection('series');
+              }}
               onToggleFavorite={toggleFavorite}
+              onToggleFavoriteSeries={toggleFavoriteSeries}
               onOpenChannelMenu={setChannelMenuTarget}
             />
           )}
@@ -1814,6 +1901,11 @@ export function App() {
               designMode={designMode}
               locale={preferences.locale}
               channels={collectionAndFavoritePool}
+              seriesCatalog={collectionAndFavoriteSeriesPool}
+              persistedSources={persistedSources}
+              activeSourceId={activeSourceId}
+              demoSourceDeleted={demoSourceDeleted}
+              demoChannels={builtinCatalog.channels}
               collections={customBouquets}
               activeChannelId={activeChannel.id}
               unlockedGroupIds={unlockedGroupIds}
@@ -1823,6 +1915,10 @@ export function App() {
               epgOffsetHours={epgOffsetHours}
               onChangeCollections={handleUpdateBouquets}
               onSelectChannel={selectLiveChannel}
+              onOpenSeries={(serId) => {
+                setFocusedSeriesId(serId);
+                setActiveSection('series');
+              }}
               onRequestUnlockCollection={(id, name) => setPendingPinGroup({ id, name })}
               onOpenChannelMenu={setChannelMenuTarget}
             />
@@ -1878,6 +1974,11 @@ export function App() {
               designMode={designMode}
               seriesCatalog={combinedSeriesCatalog}
               initialSeriesId={focusedSeriesId}
+              onClearInitialSeries={() => setFocusedSeriesId(null)}
+              favoriteSeriesIds={favoriteSeriesIds}
+              collections={customBouquets}
+              onToggleFavoriteSeries={toggleFavoriteSeries}
+              onOpenItemMenu={setChannelMenuTarget}
               watchHistory={watchHistory}
               locale={preferences.locale}
               loadingSeriesIds={loadingSeriesIds}
@@ -1995,13 +2096,33 @@ export function App() {
           designMode={designMode}
           locale={preferences.locale}
           target={channelMenuTarget}
-          isFavorite={favoriteIds.has(channelMenuTarget.channel.id)}
+          isFavorite={
+            channelMenuTarget.channel
+              ? favoriteIds.has(channelMenuTarget.channel.id)
+              : channelMenuTarget.series
+                ? favoriteSeriesIds.has(channelMenuTarget.series.id)
+                : false
+          }
           collections={customBouquets}
           onClose={() => setChannelMenuTarget(null)}
           onPlayChannel={(ch) => selectLiveChannel(ch)}
-          onToggleFavorite={toggleFavorite}
-          onToggleChannelInCollection={handleToggleChannelInCollection}
-          onCreateCollectionWithChannel={handleCreateCollectionWithChannel}
+          onOpenSeries={(ser) => {
+            setFocusedSeriesId(ser.id);
+            setActiveSection('series');
+          }}
+          onToggleFavorite={() => {
+            if (channelMenuTarget.channel) {
+              toggleFavorite(channelMenuTarget.channel.id);
+            } else if (channelMenuTarget.series) {
+              toggleFavoriteSeries(channelMenuTarget.series.id);
+            }
+          }}
+          onToggleInCollection={(collectionId) =>
+            handleToggleTargetInCollection(collectionId, channelMenuTarget)
+          }
+          onCreateCollectionWithTarget={(name) =>
+            handleCreateCollectionWithTarget(name, channelMenuTarget)
+          }
         />
       )}
 

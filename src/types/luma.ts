@@ -1,6 +1,6 @@
 import type { BufferProfile } from '../i18n/translations';
 
-export const LUMA_APP_VERSION = '0.7.0-beta.3';
+export const LUMA_APP_VERSION = '0.7.0-beta.4';
 export const LUMA_RELEASE_BADGE = '0.7 beta';
 
 export interface EpgReminder {
@@ -44,6 +44,7 @@ export interface CustomBouquet {
   id: string;
   name: string;
   channelIds: string[];
+  seriesIds?: string[];
   isPinLocked: boolean;
 }
 

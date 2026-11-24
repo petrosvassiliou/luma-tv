@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   Check,
+  Clapperboard,
   FolderHeart,
   FolderPlus,
   Play,
@@ -12,10 +13,12 @@ import type {
   Channel,
   CustomBouquet,
   PlatformDesignMode,
+  SeriesItem,
 } from '../../types/luma';
 
 export interface ChannelContextMenuTarget {
-  channel: Channel;
+  channel?: Channel;
+  series?: SeriesItem;
   x: number;
   y: number;
 }
@@ -27,10 +30,11 @@ interface ChannelContextMenuProps {
   isFavorite: boolean;
   collections: CustomBouquet[];
   onClose: () => void;
-  onPlayChannel: (channel: Channel) => void;
-  onToggleFavorite: (channelId: string) => void;
-  onToggleChannelInCollection: (collectionId: string, channelId: string) => void;
-  onCreateCollectionWithChannel: (name: string, channelId: string) => void;
+  onPlayChannel?: (channel: Channel) => void;
+  onOpenSeries?: (series: SeriesItem) => void;
+  onToggleFavorite: () => void;
+  onToggleInCollection: (collectionId: string) => void;
+  onCreateCollectionWithTarget: (name: string) => void;
 }
 
 export const ChannelContextMenu: React.FC<ChannelContextMenuProps> = ({
@@ -41,9 +45,10 @@ export const ChannelContextMenu: React.FC<ChannelContextMenuProps> = ({
   collections,
   onClose,
   onPlayChannel,
+  onOpenSeries,
   onToggleFavorite,
-  onToggleChannelInCollection,
-  onCreateCollectionWithChannel,
+  onToggleInCollection,
+  onCreateCollectionWithTarget,
 }) => {
   const isM3 = designMode === 'm3-expressive';
   const t = TRANSLATIONS[locale];
@@ -61,7 +66,7 @@ export const ChannelContextMenu: React.FC<ChannelContextMenuProps> = ({
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [onClose]);
 
-  const menuWidth = 264;
+  const menuWidth = 268;
   const estimatedHeight = 220 + Math.min(collections.length, 6) * 34;
   const clampedLeft =
     typeof window !== 'undefined'
@@ -75,9 +80,16 @@ export const ChannelContextMenu: React.FC<ChannelContextMenuProps> = ({
   const handleCreate = () => {
     const trimmed = newCollectionName.trim();
     if (!trimmed) return;
-    onCreateCollectionWithChannel(trimmed, target.channel.id);
+    onCreateCollectionWithTarget(trimmed);
     setNewCollectionName('');
   };
+
+  const title = target.channel
+    ? `#${target.channel.number} · ${target.channel.name}`
+    : target.series?.title ?? '';
+  const subtitle = target.channel
+    ? target.channel.groupName
+    : `${target.series?.genre ?? ''} · ${target.series?.year ?? ''}`;
 
   return (
     <div
@@ -99,34 +111,46 @@ export const ChannelContextMenu: React.FC<ChannelContextMenuProps> = ({
             : 'lg-modal rounded-[20px]'
         }`}
       >
-        {/* Channel Header */}
+        {/* Header */}
         <div className="border-b border-white/10 px-3 py-2">
-          <div className="truncate text-xs font-semibold text-white">
-            #{target.channel.number} · {target.channel.name}
-          </div>
-          <div className="truncate text-[10px] text-slate-400">
-            {target.channel.groupName}
-          </div>
+          <div className="truncate text-xs font-semibold text-white">{title}</div>
+          <div className="truncate text-[10px] text-slate-400">{subtitle}</div>
         </div>
 
         {/* Primary Actions */}
         <div className="py-1 space-y-0.5">
-          <button
-            type="button"
-            onClick={() => {
-              onPlayChannel(target.channel);
-              onClose();
-            }}
-            className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-xs font-medium text-slate-100 hover:bg-white/10"
-          >
-            <Play className="h-3.5 w-3.5 text-sky-300" />
-            <span>{t.playNow}</span>
-          </button>
+          {target.channel && onPlayChannel && (
+            <button
+              type="button"
+              onClick={() => {
+                onPlayChannel(target.channel!);
+                onClose();
+              }}
+              className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-xs font-medium text-slate-100 hover:bg-white/10"
+            >
+              <Play className="h-3.5 w-3.5 text-sky-300" />
+              <span>{t.playNow}</span>
+            </button>
+          )}
+
+          {target.series && onOpenSeries && (
+            <button
+              type="button"
+              onClick={() => {
+                onOpenSeries(target.series!);
+                onClose();
+              }}
+              className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-xs font-medium text-slate-100 hover:bg-white/10"
+            >
+              <Clapperboard className="h-3.5 w-3.5 text-sky-300" />
+              <span>{t.seasonsUnit} &amp; {t.episodesUnit}</span>
+            </button>
+          )}
 
           <button
             type="button"
             onClick={() => {
-              onToggleFavorite(target.channel.id);
+              onToggleFavorite();
               onClose();
             }}
             className="flex w-full items-center justify-between gap-2 rounded-xl px-3 py-2 text-left text-xs font-medium text-slate-100 hover:bg-white/10"
@@ -153,12 +177,16 @@ export const ChannelContextMenu: React.FC<ChannelContextMenuProps> = ({
           {collections.length > 0 && (
             <div className="luma-scroll max-h-44 overflow-y-auto py-0.5 space-y-0.5">
               {collections.map((col) => {
-                const inCollection = col.channelIds.includes(target.channel.id);
+                const inCollection = target.channel
+                  ? col.channelIds.includes(target.channel.id)
+                  : target.series
+                    ? Boolean(col.seriesIds?.includes(target.series.id))
+                    : false;
                 return (
                   <button
                     key={col.id}
                     type="button"
-                    onClick={() => onToggleChannelInCollection(col.id, target.channel.id)}
+                    onClick={() => onToggleInCollection(col.id)}
                     className={`flex w-full items-center justify-between gap-2 rounded-xl px-3 py-1.5 text-left text-xs transition ${
                       inCollection
                         ? 'bg-sky-400/15 font-semibold text-sky-200'
