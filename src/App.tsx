@@ -78,6 +78,7 @@ import { CommandBar } from './components/command/CommandBar';
 import { VirtualizedEpgGrid } from './components/epg/VirtualizedEpgGrid';
 import { CustomTitlebar } from './components/layout/CustomTitlebar';
 import { Sidebar } from './components/layout/Sidebar';
+import { DualViewStage } from './components/player/DualViewStage';
 import { InAppPipWindow } from './components/player/InAppPipWindow';
 import { MultiviewGrid } from './components/player/MultiviewGrid';
 import { PlayerStage } from './components/player/PlayerStage';
@@ -946,6 +947,28 @@ export function App() {
   const [multiviewAudioSlot, setMultiviewAudioSlot] = useState<number>(0);
   const [multiviewMuted, setMultiviewMuted] = useState<boolean>(true);
 
+  const [dualSlotIds, setDualSlotIds] = useState<[string, string]>(() => {
+    try {
+      const raw = localStorage.getItem('luma.dualview.v1');
+      if (raw) {
+        const parsed = JSON.parse(raw) as unknown;
+        if (
+          Array.isArray(parsed) &&
+          typeof parsed[0] === 'string' &&
+          typeof parsed[1] === 'string'
+        ) {
+          return [parsed[0], parsed[1]];
+        }
+      }
+    } catch {
+      // Ignore
+    }
+    return ['ch-redbull-tv', 'ch-luma-cinema-4k'];
+  });
+  const [dualAudioSlot, setDualAudioSlot] = useState<0 | 1>(0);
+  const [dualMuted, setDualMuted] = useState<boolean>(false);
+  const [dualSidebarOpen, setDualSidebarOpen] = useState<boolean>(false);
+
   const [numericBuffer, setNumericBuffer] = useState<string>('');
   const numericTimerRef = useRef<number | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -1011,6 +1034,48 @@ export function App() {
       builtinCatalog.channels[0],
     [channels, collectionAndFavoritePool, activeChannelId, builtinCatalog.channels]
   );
+
+  const updateDualSlotIds = useCallback(
+    (updater: (prev: [string, string]) => [string, string]) => {
+      setDualSlotIds((prev) => {
+        const next = updater(prev);
+        try {
+          localStorage.setItem('luma.dualview.v1', JSON.stringify(next));
+        } catch {
+          // Ignore
+        }
+        return next;
+      });
+    },
+    []
+  );
+
+  const openDualView = useCallback(() => {
+    const primaryId = activeChannel.id;
+    const pool = visibleChannels.length > 1 ? visibleChannels : channels;
+    updateDualSlotIds((prev) => {
+      const existingSecond = prev[1];
+      const secondValid =
+        existingSecond &&
+        existingSecond !== primaryId &&
+        channels.some((c) => c.id === existingSecond);
+      if (secondValid) {
+        return [primaryId, existingSecond];
+      }
+      const primaryIdx = pool.findIndex((c) => c.id === primaryId);
+      const fallbackSecond =
+        (primaryIdx >= 0 ? pool[(primaryIdx + 1) % pool.length] : null) ??
+        pool.find((c) => c.id !== primaryId && !isProviderDividerChannel(c.name)) ??
+        channels.find((c) => c.id !== primaryId) ??
+        activeChannel;
+      return [primaryId, fallbackSecond.id];
+    });
+    setDualAudioSlot(0);
+    setDualMuted(false);
+    setDualSidebarOpen(false);
+    setPipDismissedWhileBrowsing(false);
+    setActiveSection('dualview');
+  }, [activeChannel, visibleChannels, channels, updateDualSlotIds]);
 
   const [watchHistory, setWatchHistory] = useState<WatchHistoryEntry[]>(() => {
     try {
@@ -1081,10 +1146,13 @@ export function App() {
     [ensureAudioUnmutedForSwitch, recordHistory]
   );
 
+  const [liveDrawerRevealSignal, setLiveDrawerRevealSignal] = useState(0);
+
   const handleSelectSidebarGroup = useCallback(
     (groupId: string) => {
       if (groupId === 'all' || groupId === 'favorites') {
         setSelectedGroupId(groupId);
+        setLiveDrawerRevealSignal((n) => n + 1);
         setActiveSection((cur) => (cur === 'live-epg' ? 'live-epg' : 'live'));
         return;
       }
@@ -1094,6 +1162,7 @@ export function App() {
         return;
       }
       setSelectedGroupId(groupId);
+      setLiveDrawerRevealSignal((n) => n + 1);
       setActiveSection((cur) => (cur === 'live-epg' ? 'live-epg' : 'live'));
     },
     [groups, unlockedGroupIds]
@@ -1745,6 +1814,7 @@ export function App() {
       'vod',
       'series',
       'catchup',
+      'dualview',
       'multiview',
       'home',
       'sources',
@@ -1849,6 +1919,7 @@ export function App() {
     const isVideoView =
       activeSection === 'live' ||
       activeSection === 'live-epg' ||
+      activeSection === 'dualview' ||
       activeSection === 'multiview';
     if (!isVideoView && stageFullscreen) {
       setStageFullscreen(false);
@@ -1885,6 +1956,7 @@ export function App() {
       const isVideoSection =
         activeSection === 'live' ||
         activeSection === 'live-epg' ||
+        activeSection === 'dualview' ||
         activeSection === 'multiview';
       if (
         isVideoSection &&
@@ -1896,6 +1968,44 @@ export function App() {
         e.preventDefault();
         void toggleAppFullscreen();
         return;
+      }
+
+      if (
+        (activeSection === 'live' ||
+          activeSection === 'live-epg' ||
+          activeSection === 'dualview') &&
+        e.key.toLowerCase() === 'd' &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey
+      ) {
+        e.preventDefault();
+        if (activeSection === 'dualview') {
+          setActiveSection('live');
+        } else {
+          openDualView();
+        }
+        return;
+      }
+
+      if (activeSection === 'dualview') {
+        if (e.key === '1' || e.key === '2') {
+          e.preventDefault();
+          setDualAudioSlot(e.key === '1' ? 0 : 1);
+          setDualMuted(false);
+          return;
+        }
+        if (
+          e.key.toLowerCase() === 's' &&
+          !e.metaKey &&
+          !e.ctrlKey &&
+          !e.altKey
+        ) {
+          e.preventDefault();
+          updateDualSlotIds(([a, b]) => [b, a]);
+          setDualAudioSlot((prev) => (prev === 0 ? 1 : 0));
+          return;
+        }
       }
 
       if (activeSection === 'multiview' && ['1', '2', '3', '4'].includes(e.key)) {
@@ -1950,6 +2060,8 @@ export function App() {
     activeSection,
     stageFullscreen,
     toggleAppFullscreen,
+    openDualView,
+    updateDualSlotIds,
     zapRelative,
     channels,
     selectLiveChannel,
@@ -2093,6 +2205,7 @@ export function App() {
       onPrevChannel={() => zapRelative(-1)}
       onNextChannel={() => zapRelative(1)}
       onDetachInAppPip={() => setDetachedPipInEpg(true)}
+      onOpenDualView={openDualView}
       ambilightEnabled={ambilightEnabled}
       theaterExpanded={theaterExpanded}
       onToggleTheaterExpanded={() => setTheaterExpanded((v) => !v)}
@@ -2149,11 +2262,23 @@ export function App() {
             })
           }
           sleepRemainingSec={sleepRemainingSec}
-          sidebarCollapsed={sidebarCollapsed}
-          onToggleSidebar={() => setSidebarCollapsed((v) => !v)}
+          sidebarCollapsed={
+            activeSection === 'dualview' ? !dualSidebarOpen : sidebarCollapsed
+          }
+          onToggleSidebar={() => {
+            if (activeSection === 'dualview') {
+              setDualSidebarOpen((v) => !v);
+            } else {
+              setSidebarCollapsed((v) => !v);
+            }
+          }}
           onOpenCommandBar={() => setCommandBarOpen(true)}
           activeSection={activeSection}
           onSelectSection={(sec) => {
+            if (sec === 'dualview') {
+              openDualView();
+              return;
+            }
             setActiveSection(sec);
             setPipDismissedWhileBrowsing(false);
           }}
@@ -2178,26 +2303,31 @@ export function App() {
         )}
 
       <div className="relative z-10 flex min-h-0 flex-1 overflow-hidden">
-        {!stageFullscreen && (
-          <Sidebar
-            designMode={designMode}
-            locale={preferences.locale}
-            collapsed={sidebarCollapsed}
-            activeSection={activeSection}
-            onSelectSection={(sec) => {
-              setActiveSection(sec);
-              setPipDismissedWhileBrowsing(false);
-            }}
-            selectedGroupId={selectedGroupId}
-            onSelectGroup={handleSelectSidebarGroup}
-            groups={groups}
-            totalChannelCount={channels.length}
-            favoritesCount={
-              favoriteIds.size + favoriteVodIds.size + favoriteSeriesIds.size
-            }
-            collectionsCount={customBouquets.length}
-          />
-        )}
+        {!stageFullscreen &&
+          (activeSection !== 'dualview' || dualSidebarOpen) && (
+            <Sidebar
+              designMode={designMode}
+              locale={preferences.locale}
+              collapsed={activeSection === 'dualview' ? false : sidebarCollapsed}
+              activeSection={activeSection}
+              onSelectSection={(sec) => {
+                if (sec === 'dualview') {
+                  openDualView();
+                  return;
+                }
+                setActiveSection(sec);
+                setPipDismissedWhileBrowsing(false);
+              }}
+              selectedGroupId={selectedGroupId}
+              onSelectGroup={handleSelectSidebarGroup}
+              groups={groups}
+              totalChannelCount={channels.length}
+              favoritesCount={
+                favoriteIds.size + favoriteVodIds.size + favoriteSeriesIds.size
+              }
+              collectionsCount={customBouquets.length}
+            />
+          )}
 
         <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
           {numericBuffer && (
@@ -2257,6 +2387,7 @@ export function App() {
               onOpenChannelMenu={setChannelMenuTarget}
               onOpenEpgView={() => setActiveSection('live-epg')}
               isStageFullscreen={stageFullscreen}
+              revealDrawerSignal={liveDrawerRevealSignal}
             >
               {!detachedPipInEpg && renderMainPlayerStage('cinema')}
             </LiveTvView>
@@ -2340,6 +2471,35 @@ export function App() {
               }}
               onRequestUnlockCollection={(id, name) => setPendingPinGroup({ id, name })}
               onOpenChannelMenu={setChannelMenuTarget}
+            />
+          )}
+
+          {activeSection === 'dualview' && (
+            <DualViewStage
+              designMode={designMode}
+              locale={preferences.locale}
+              channels={channels}
+              favoriteIds={favoriteIds}
+              collections={customBouquets}
+              slotChannelIds={dualSlotIds}
+              activeAudioSlot={dualAudioSlot}
+              globalMuted={dualMuted}
+              isStageFullscreen={stageFullscreen}
+              onChangeStageFullscreen={handleChangeStageFullscreen}
+              onSelectAudioSlot={setDualAudioSlot}
+              onChangeGlobalMuted={setDualMuted}
+              onChangeSlotChannel={(slot, nextId) => {
+                updateDualSlotIds((prev) =>
+                  slot === 0 ? [nextId, prev[1]] : [prev[0], nextId]
+                );
+              }}
+              onSwapSlots={() => {
+                updateDualSlotIds(([a, b]) => [b, a]);
+                setDualAudioSlot((prev) => (prev === 0 ? 1 : 0));
+              }}
+              onExpandSingleChannel={(ch) => selectLiveChannel(ch)}
+              proxyConfig={effectiveProxyConfig}
+              nowMs={nowMs}
             />
           )}
 
@@ -2538,6 +2698,17 @@ export function App() {
           collections={customBouquets}
           onClose={() => setChannelMenuTarget(null)}
           onPlayChannel={(ch) => selectLiveChannel(ch)}
+          onOpenDualChannel={(ch) => {
+            const primaryId =
+              activeChannel.id === ch.id
+                ? (channels.find((c) => c.id !== ch.id)?.id ?? activeChannel.id)
+                : activeChannel.id;
+            updateDualSlotIds(() => [primaryId, ch.id]);
+            setDualAudioSlot(0);
+            setDualMuted(false);
+            setDualSidebarOpen(false);
+            setActiveSection('dualview');
+          }}
           onPlayVod={(vod) => handlePlayVod(vod, 0)}
           onOpenSeries={(ser) => {
             setFocusedSeriesId(ser.id);
@@ -2579,6 +2750,7 @@ export function App() {
           onSuccess={() => {
             setUnlockedGroupIds((prev) => new Set([...prev, pendingPinGroup.id]));
             setSelectedGroupId(pendingPinGroup.id);
+            setLiveDrawerRevealSignal((n) => n + 1);
             setPendingPinGroup(null);
             setActiveSection((cur) => (cur === 'live-epg' ? 'live-epg' : 'live'));
           }}
@@ -2700,7 +2872,13 @@ export function App() {
           }}
           onSelectSeriesEpisode={(ser, sNum, ep) => handlePlaySeriesEpisode(ser, sNum, ep)}
           onTriggerAction={(act) => {
-            if (act === 'multiview') {
+            if (act === 'dualview') {
+              if (activeSection === 'dualview') {
+                setActiveSection('live');
+              } else {
+                openDualView();
+              }
+            } else if (act === 'multiview') {
               setActiveSection((prev) => (prev === 'multiview' ? 'live' : 'multiview'));
             } else if (act === 'ambilight') {
               setAmbilightEnabled((v) => !v);

@@ -1,6 +1,6 @@
 import type { BufferProfile } from '../i18n/translations';
 
-export const LUMA_APP_VERSION = '0.8.0-beta.5';
+export const LUMA_APP_VERSION = '0.8.0-beta.6';
 export const LUMA_RELEASE_BADGE = '0.8 beta';
 
 export interface EpgReminder {
@@ -19,6 +19,7 @@ export type NavigationSection =
   | 'favorites'
   | 'collections'
   | 'home'
+  | 'dualview'
   | 'multiview'
   | 'vod'
   | 'series'
@@ -26,6 +27,8 @@ export type NavigationSection =
   | 'studio'
   | 'sources'
   | 'settings';
+
+export type DualViewOrientation = 'side-by-side' | 'stacked';
 
 export type AspectRatioMode = '16:9' | 'cover' | '21:9';
 

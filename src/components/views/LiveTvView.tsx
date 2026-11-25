@@ -39,6 +39,7 @@ interface LiveTvViewProps {
   onOpenChannelMenu?: (target: ChannelContextMenuTarget) => void;
   onOpenEpgView: () => void;
   isStageFullscreen?: boolean;
+  revealDrawerSignal?: number;
   children: React.ReactNode; // Renders the cinema-sized PlayerStage
 }
 
@@ -61,6 +62,7 @@ export const LiveTvView: React.FC<LiveTvViewProps> = ({
   onOpenChannelMenu,
   onOpenEpgView,
   isStageFullscreen = false,
+  revealDrawerSignal = 0,
   children,
 }) => {
   const isM3 = designMode === 'm3-expressive';
@@ -69,13 +71,22 @@ export const LiveTvView: React.FC<LiveTvViewProps> = ({
 
   const [drawerPref, setDrawerPref] = useState<{
     onDemand: boolean;
+    signal: number;
     open: boolean;
-  }>({ onDemand: false, open: true });
+  }>({ onDemand: isOnDemandActive, signal: revealDrawerSignal, open: !isOnDemandActive });
   const drawerOpen =
-    drawerPref.onDemand === isOnDemandActive ? drawerPref.open : !isOnDemandActive;
+    drawerPref.signal !== revealDrawerSignal
+      ? true
+      : drawerPref.onDemand === isOnDemandActive
+        ? drawerPref.open
+        : !isOnDemandActive;
   const setDrawerOpen = (next: boolean | ((prev: boolean) => boolean)) => {
     const resolved = typeof next === 'function' ? next(drawerOpen) : next;
-    setDrawerPref({ onDemand: isOnDemandActive, open: resolved });
+    setDrawerPref({
+      onDemand: isOnDemandActive,
+      signal: revealDrawerSignal,
+      open: resolved,
+    });
   };
   const [filterQuery, setFilterQuery] = useState('');
   const [scrollTop, setScrollTop] = useState(0);
@@ -90,7 +101,10 @@ export const LiveTvView: React.FC<LiveTvViewProps> = ({
   useEffect(() => {
     const el = listRef.current;
     if (!el) return;
-    const measure = () => setViewportHeight(el.clientHeight || 600);
+    const measure = () => {
+      setViewportHeight(el.clientHeight || 600);
+      setScrollTop(el.scrollTop);
+    };
     measure();
     const ro = new ResizeObserver(measure);
     ro.observe(el);
@@ -110,15 +124,22 @@ export const LiveTvView: React.FC<LiveTvViewProps> = ({
     ) {
       el.scrollTop = Math.max(0, targetTop - el.clientHeight / 2 + ROW_HEIGHT);
     }
-  }, [activeChannelId, filteredChannels, filterQuery]);
+  }, [activeChannelId, filteredChannels, filterQuery, drawerOpen]);
 
   const isCollectionActive = collections.some((c) => c.id === selectedGroupId);
 
   const totalHeight = filteredChannels.length * ROW_HEIGHT;
-  const startIndex = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN);
+  const clampedScrollTop = Math.min(
+    scrollTop,
+    Math.max(0, totalHeight - viewportHeight)
+  );
+  const startIndex = Math.max(
+    0,
+    Math.floor(clampedScrollTop / ROW_HEIGHT) - OVERSCAN
+  );
   const endIndex = Math.min(
     filteredChannels.length - 1,
-    Math.ceil((scrollTop + viewportHeight) / ROW_HEIGHT) + OVERSCAN
+    Math.ceil((clampedScrollTop + viewportHeight) / ROW_HEIGHT) + OVERSCAN
   );
 
   const visibleSlice =

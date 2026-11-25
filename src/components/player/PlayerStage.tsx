@@ -6,6 +6,7 @@ import {
   ChevronDown,
   ChevronUp,
   Circle,
+  Columns2,
   Cpu,
   Expand,
   ExternalLink,
@@ -94,6 +95,7 @@ interface PlayerStageProps {
   onPrevChannel: () => void;
   onNextChannel: () => void;
   onDetachInAppPip: () => void;
+  onOpenDualView?: () => void;
   ambilightEnabled: boolean;
   theaterExpanded: boolean;
   onToggleTheaterExpanded: () => void;
@@ -133,6 +135,7 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
   onPrevChannel,
   onNextChannel,
   onDetachInAppPip,
+  onOpenDualView,
   ambilightEnabled,
   theaterExpanded,
   onToggleTheaterExpanded,
@@ -1637,6 +1640,23 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
                 >
                   <ExternalLink className="h-3.5 w-3.5 shrink-0" />
                   <span className="hidden @2xl:inline">{t.mpvLaunchBtn}</span>
+                </button>
+              )}
+
+              {/* Dual View 2x Quick Split */}
+              {!isOnDemandVod && onOpenDualView && (
+                <button
+                  id="btn-open-dualview"
+                  type="button"
+                  onClick={onOpenDualView}
+                  className={
+                    isM3
+                      ? 'm3-secondary-tonal flex h-10 w-10 shrink-0 items-center justify-center rounded-full'
+                      : 'lg-capsule flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-white/90'
+                  }
+                  title={t.navDualview}
+                >
+                  <Columns2 className="h-3.5 w-3.5" />
                 </button>
               )}
 

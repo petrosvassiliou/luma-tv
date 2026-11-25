@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import {
   Check,
   Clapperboard,
+  Columns2,
   FolderHeart,
   FolderPlus,
   Play,
@@ -33,6 +34,7 @@ interface ChannelContextMenuProps {
   collections: CustomBouquet[];
   onClose: () => void;
   onPlayChannel?: (channel: Channel) => void;
+  onOpenDualChannel?: (channel: Channel) => void;
   onPlayVod?: (vod: VodItem) => void;
   onOpenSeries?: (series: SeriesItem) => void;
   onToggleFavorite: () => void;
@@ -48,6 +50,7 @@ export const ChannelContextMenu: React.FC<ChannelContextMenuProps> = ({
   collections,
   onClose,
   onPlayChannel,
+  onOpenDualChannel,
   onPlayVod,
   onOpenSeries,
   onToggleFavorite,
@@ -138,6 +141,20 @@ export const ChannelContextMenu: React.FC<ChannelContextMenuProps> = ({
             >
               <Play className="h-3.5 w-3.5 text-sky-300" />
               <span>{t.playNow}</span>
+            </button>
+          )}
+
+          {target.channel && onOpenDualChannel && (
+            <button
+              type="button"
+              onClick={() => {
+                onOpenDualChannel(target.channel!);
+                onClose();
+              }}
+              className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-xs font-medium text-slate-100 hover:bg-white/10"
+            >
+              <Columns2 className="h-3.5 w-3.5 text-sky-300" />
+              <span>{t.navDualview}</span>
             </button>
           )}
 

@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import {
   Check,
   ChevronDown,
+  Columns2,
   Database,
   Grid2x2,
   Moon,
@@ -282,6 +283,27 @@ export const CustomTitlebar: React.FC<CustomTitlebarProps> = ({
             )}
           </div>
         )}
+
+        <button
+          id="btn-titlebar-dualview"
+          type="button"
+          onClick={() =>
+            onSelectSection(activeSection === 'dualview' ? 'live' : 'dualview')
+          }
+          className={
+            isM3
+              ? `m3-spring inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[11px] font-semibold ${
+                  activeSection === 'dualview' ? 'm3-primary-pill' : 'm3-secondary-tonal'
+                }`
+              : `inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium ${
+                  activeSection === 'dualview' ? 'lg-pill-active' : 'lg-capsule text-slate-200'
+                }`
+          }
+          title={t.navDualview}
+        >
+          <Columns2 className="h-3.5 w-3.5" />
+          <span className="hidden md:inline">Dual</span>
+        </button>
 
         <button
           id="btn-titlebar-multiview"

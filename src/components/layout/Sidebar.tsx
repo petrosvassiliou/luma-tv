@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import {
   CalendarClock,
   Clapperboard,
+  Columns2,
   Compass,
   Database,
   Film,
@@ -101,6 +102,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: 'vod', label: t.navVod, shortLabel: 'VOD', icon: Film },
     { id: 'series', label: t.navSeries, shortLabel: 'Series', icon: Clapperboard },
     { id: 'catchup', label: t.navCatchup, shortLabel: 'Replay', icon: History },
+    { id: 'dualview', label: t.navDualview, shortLabel: '2x', icon: Columns2 },
     { id: 'multiview', label: t.navMultiview, shortLabel: '4x', icon: Grid2x2 },
     { id: 'home', label: t.navHome, shortLabel: 'Home', icon: Home },
     { id: 'sources', label: t.navSources, shortLabel: 'Sources', icon: Database },

@@ -37,7 +37,9 @@ interface CommandBarProps {
     seasonNum: number,
     episode: SeriesEpisode
   ) => void;
-  onTriggerAction: (action: 'multiview' | 'ambilight' | 'stress20k' | 'toggleDesign') => void;
+  onTriggerAction: (
+    action: 'dualview' | 'multiview' | 'ambilight' | 'stress20k' | 'toggleDesign'
+  ) => void;
 }
 
 type SearchScope = 'all' | 'channels' | 'vod' | 'series';
@@ -158,6 +160,17 @@ export const CommandBar: React.FC<CommandBarProps> = ({
         });
       }
       results.push({
+        id: 'act-dualview',
+        kind: 'action',
+        title: t.navDualview,
+        subtitle: '2x Side-by-Side Live Streams',
+        badge: '2X',
+        onExecute: () => {
+          onTriggerAction('dualview');
+          onClose();
+        },
+      });
+      results.push({
         id: 'act-multiview',
         kind: 'action',
         title: t.navMultiview,
@@ -195,6 +208,7 @@ export const CommandBar: React.FC<CommandBarProps> = ({
     seriesCatalog,
     isM3,
     isAppleDevice,
+    t.navDualview,
     t.navMultiview,
     onSelectChannel,
     onSelectVod,

@@ -73,6 +73,7 @@ export interface TranslationDictionary {
   navLive: string;
   navFavorites: string;
   navCollections: string;
+  navDualview: string;
   navMultiview: string;
   navVod: string;
   navSeries: string;
@@ -161,6 +162,7 @@ export const TRANSLATIONS: Record<LumaLocale, TranslationDictionary> = {
     navLive: 'Live TV & EPG',
     navFavorites: 'Favoriten',
     navCollections: 'Sammlungen',
+    navDualview: 'Dual-Ansicht 2x',
     navMultiview: 'Multiview 4x',
     navVod: 'Filme (VOD)',
     navSeries: 'Serien',
@@ -251,6 +253,7 @@ export const TRANSLATIONS: Record<LumaLocale, TranslationDictionary> = {
     navLive: 'Live TV & EPG',
     navFavorites: 'Favorites',
     navCollections: 'Collections',
+    navDualview: 'Dual View 2x',
     navMultiview: 'Multiview 4x',
     navVod: 'Movies (VOD)',
     navSeries: 'Series',
@@ -341,6 +344,7 @@ export const TRANSLATIONS: Record<LumaLocale, TranslationDictionary> = {
     navLive: 'TV Live & EPG',
     navFavorites: 'Preferiti',
     navCollections: 'Collezioni',
+    navDualview: 'Vista Doppia 2x',
     navMultiview: 'Multiview 4x',
     navVod: 'Film (VOD)',
     navSeries: 'Serie',
@@ -431,6 +435,7 @@ export const TRANSLATIONS: Record<LumaLocale, TranslationDictionary> = {
     navLive: 'TV en Direct & EPG',
     navFavorites: 'Favoris',
     navCollections: 'Collections',
+    navDualview: 'Double Vue 2x',
     navMultiview: 'Multiview 4x',
     navVod: 'Films (VOD)',
     navSeries: 'Séries',
@@ -521,6 +526,7 @@ export const TRANSLATIONS: Record<LumaLocale, TranslationDictionary> = {
     navLive: 'TV en Vivo y EPG',
     navFavorites: 'Favoritos',
     navCollections: 'Colecciones',
+    navDualview: 'Vista Doble 2x',
     navMultiview: 'Multiview 4x',
     navVod: 'Películas (VOD)',
     navSeries: 'Series',
@@ -611,6 +617,7 @@ export const TRANSLATIONS: Record<LumaLocale, TranslationDictionary> = {
     navLive: 'Live TV & EPG',
     navFavorites: 'Αγαπημένα',
     navCollections: 'Συλλογές',
+    navDualview: 'Διπλή Προβολή 2x',
     navMultiview: 'Multiview 4x',
     navVod: 'Ταινίες (VOD)',
     navSeries: 'Σειρές',
