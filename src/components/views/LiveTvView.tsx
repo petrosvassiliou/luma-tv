@@ -38,6 +38,7 @@ interface LiveTvViewProps {
   onToggleFavorite: (channelId: string) => void;
   onOpenChannelMenu?: (target: ChannelContextMenuTarget) => void;
   onOpenEpgView: () => void;
+  isStageFullscreen?: boolean;
   children: React.ReactNode; // Renders the cinema-sized PlayerStage
 }
 
@@ -59,6 +60,7 @@ export const LiveTvView: React.FC<LiveTvViewProps> = ({
   onToggleFavorite,
   onOpenChannelMenu,
   onOpenEpgView,
+  isStageFullscreen = false,
   children,
 }) => {
   const isM3 = designMode === 'm3-expressive';
@@ -135,72 +137,78 @@ export const LiveTvView: React.FC<LiveTvViewProps> = ({
   };
 
   return (
-    <div className="relative flex min-h-0 flex-1 gap-2.5 overflow-hidden p-2.5">
+    <div
+      className={`relative flex min-h-0 flex-1 overflow-hidden ${
+        isStageFullscreen ? 'gap-0 p-0' : 'gap-2.5 p-2.5'
+      }`}
+    >
       {/* Main Cinema Video Stage */}
       <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
         {children}
 
         {/* Subtle Top-Right Collections, EPG & Drawer Quick Switcher */}
-        <div className="absolute top-3.5 right-3.5 z-30 flex items-center gap-1.5">
-          {!isOnDemandActive && collections.length > 0 && onSelectGroup && (
-            <button
-              type="button"
-              onClick={handleQuickCollectionToggle}
-              className={
-                isM3
-                  ? `hidden items-center gap-1.5 rounded-full px-3 py-1.5 text-[11px] font-semibold shadow-md sm:inline-flex ${
-                      isCollectionActive ? 'm3-primary-pill' : 'm3-secondary-tonal'
-                    }`
-                  : `hidden items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-medium shadow-md sm:inline-flex ${
-                      isCollectionActive
-                        ? 'lg-pill-active'
-                        : 'lg-capsule text-white/90'
-                    }`
-              }
-              title={t.collections}
-            >
-              <FolderHeart className="h-3.5 w-3.5 text-sky-300" />
-              <span>{t.collections}</span>
-            </button>
-          )}
-
-          {!isOnDemandActive && (
-            <button
-              type="button"
-              onClick={onOpenEpgView}
-              className={
-                isM3
-                  ? 'm3-secondary-tonal hidden items-center gap-1.5 rounded-full px-3 py-1.5 text-[11px] font-semibold shadow-md sm:inline-flex'
-                  : 'lg-capsule hidden items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-medium text-white/90 shadow-md sm:inline-flex'
-              }
-              title={t.navLive}
-            >
-              <CalendarClock className="h-3.5 w-3.5 text-sky-300" />
-              <span>EPG</span>
-            </button>
-          )}
-
-          <button
-            type="button"
-            onClick={() => setDrawerOpen((v) => !v)}
-            className={
-              isM3
-                ? 'm3-secondary-tonal flex h-8 w-8 items-center justify-center rounded-full shadow-md'
-                : 'lg-capsule flex h-8 w-8 items-center justify-center rounded-full text-white/90 shadow-md'
-            }
-            title={t.channelListToggle}
-          >
-            {drawerOpen ? (
-              <PanelRightClose className="h-4 w-4" />
-            ) : (
-              <PanelRightOpen className="h-4 w-4" />
+        {!isStageFullscreen && (
+          <div className="absolute top-3.5 right-3.5 z-30 flex items-center gap-1.5">
+            {!isOnDemandActive && collections.length > 0 && onSelectGroup && (
+              <button
+                type="button"
+                onClick={handleQuickCollectionToggle}
+                className={
+                  isM3
+                    ? `hidden items-center gap-1.5 rounded-full px-3 py-1.5 text-[11px] font-semibold shadow-md sm:inline-flex ${
+                        isCollectionActive ? 'm3-primary-pill' : 'm3-secondary-tonal'
+                      }`
+                    : `hidden items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-medium shadow-md sm:inline-flex ${
+                        isCollectionActive
+                          ? 'lg-pill-active'
+                          : 'lg-capsule text-white/90'
+                      }`
+                }
+                title={t.collections}
+              >
+                <FolderHeart className="h-3.5 w-3.5 text-sky-300" />
+                <span>{t.collections}</span>
+              </button>
             )}
-          </button>
-        </div>
+
+            {!isOnDemandActive && (
+              <button
+                type="button"
+                onClick={onOpenEpgView}
+                className={
+                  isM3
+                    ? 'm3-secondary-tonal hidden items-center gap-1.5 rounded-full px-3 py-1.5 text-[11px] font-semibold shadow-md sm:inline-flex'
+                    : 'lg-capsule hidden items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-medium text-white/90 shadow-md sm:inline-flex'
+                }
+                title={t.navLive}
+              >
+                <CalendarClock className="h-3.5 w-3.5 text-sky-300" />
+                <span>EPG</span>
+              </button>
+            )}
+
+            <button
+              type="button"
+              onClick={() => setDrawerOpen((v) => !v)}
+              className={
+                isM3
+                  ? 'm3-secondary-tonal flex h-8 w-8 items-center justify-center rounded-full shadow-md'
+                  : 'lg-capsule flex h-8 w-8 items-center justify-center rounded-full text-white/90 shadow-md'
+              }
+              title={t.channelListToggle}
+            >
+              {drawerOpen ? (
+                <PanelRightClose className="h-4 w-4" />
+              ) : (
+                <PanelRightOpen className="h-4 w-4" />
+              )}
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Collapsible Virtualized 54,000+ Channel & Collection Zapper Drawer */}
-      {drawerOpen && (
+      {!isStageFullscreen && drawerOpen && (
         <aside
           className={`flex w-72 shrink-0 flex-col overflow-hidden xl:w-80 ${
             isM3

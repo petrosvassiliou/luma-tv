@@ -123,56 +123,9 @@ jobs:
           export NDK_HOME="$ANDROID_HOME/ndk/27.0.12077973"
           npx tauri android init
 
-          # Patch generated Gradle & AndroidManifest.xml for Googlebook / Chromebook ARCVM
-          # 1. Use stable compileSdk = 36 & targetSdk = 34 (avoids Android 17 preview SDK 37 rejection on ChromeOS ARCVM Android 11/13)
-          # 2. Compute strictly increasing versionCode from package.json (including beta suffix)
-          # 3. Mark touchscreen/faketouch optional for non-touch Chromebooks & Chromeboxes
-          # 4. Enable usesCleartextTraffic="true" + resizeableActivity="true" for HTTP IPTV & ChromeOS windowing
-          node -e '
-            const fs = require("fs");
-            const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
-            const m = pkg.version.match(/^(\d+)\.(\d+)\.(\d+)(?:-beta\.(\d+))?/);
-            const verCode = m
-              ? Number(m[1]) * 1000000 + Number(m[2]) * 10000 + Number(m[3]) * 100 + (m[4] ? Number(m[4]) : 99)
-              : 80003;
-
-            const gradlePath = "src-tauri/gen/android/app/build.gradle.kts";
-            let gradle = fs.readFileSync(gradlePath, "utf8");
-            gradle = gradle.replace(/compileSdk\s*=\s*\d+/g, "compileSdk = 36");
-            gradle = gradle.replace(/targetSdk\s*=\s*\d+/g, "targetSdk = 34");
-            gradle = gradle.replace(/minSdk\s*=\s*\d+/g, "minSdk = 26");
-            gradle = gradle.replace(/versionCode\s*=\s*[^\n]+/g, `versionCode = ${verCode}`);
-            fs.writeFileSync(gradlePath, gradle);
-            console.log("Patched build.gradle.kts with compileSdk=36, targetSdk=34, minSdk=26, versionCode=" + verCode);
-
-            const manifestPath = "src-tauri/gen/android/app/src/main/AndroidManifest.xml";
-            let manifest = fs.readFileSync(manifestPath, "utf8");
-            if (!manifest.includes("android.hardware.touchscreen")) {
-              manifest = manifest.replace(
-                "<application",
-                `    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />\n    <uses-feature android:name="android.hardware.faketouch" android:required="false" />\n    <uses-feature android:name="android.hardware.type.pc" android:required="false" />\n    <application`
-              );
-            }
-            if (/android:usesCleartextTraffic="[^"]*"/.test(manifest)) {
-              manifest = manifest.replace(
-                /android:usesCleartextTraffic="[^"]*"/g,
-                `android:usesCleartextTraffic="true"`
-              );
-            } else {
-              manifest = manifest.replace(
-                "<application",
-                `<application android:usesCleartextTraffic="true"`
-              );
-            }
-            if (!manifest.includes("resizeableActivity")) {
-              manifest = manifest.replace(
-                "<activity",
-                `<activity android:resizeableActivity="true"`
-              );
-            }
-            fs.writeFileSync(manifestPath, manifest);
-            console.log("Patched AndroidManifest.xml for Chromebook & HTTP IPTV compatibility.");
-          '
+          # Patch generated Gradle, AndroidManifest.xml, MainActivity.kt (immersive fullscreen bridge),
+          # and ProGuard rules for Googlebook / Chromebook ARCVM, Android TV & Android phones/tablets
+          node ./scripts/patch-android-chromeos.cjs
 
           if [ -n "$ANDROID_KEYSTORE_BASE64" ] && [ -n "$ANDROID_KEYSTORE_PASSWORD" ]; then
             # Build ALL 4 ABIs (aarch64, armv7, x86_64, i686) so both 64-bit and 32-bit ChromeOS ARC/ARCVM containers match

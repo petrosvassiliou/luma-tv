@@ -49,6 +49,11 @@ import {
   detectSubtitleLanguageFromFilename,
   fetchRemoteSubtitleText,
 } from '../../services/subtitleConverter';
+import {
+  enterLumaFullscreen,
+  exitLumaFullscreen,
+  getNativeDomFullscreenElement,
+} from '../../services/fullscreenService';
 import type {
   AspectRatioMode,
   Channel,
@@ -92,6 +97,8 @@ interface PlayerStageProps {
   ambilightEnabled: boolean;
   theaterExpanded: boolean;
   onToggleTheaterExpanded: () => void;
+  isStageFullscreen?: boolean;
+  onChangeStageFullscreen?: (fullscreen: boolean) => void;
   layoutVariant?: 'split' | 'cinema';
   isMuted?: boolean;
   onChangeMuted?: (muted: boolean) => void;
@@ -129,6 +136,8 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
   ambilightEnabled,
   theaterExpanded,
   onToggleTheaterExpanded,
+  isStageFullscreen,
+  onChangeStageFullscreen,
   layoutVariant = 'split',
   isMuted: controlledMuted,
   onChangeMuted,
@@ -173,7 +182,15 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
   const [fallbackVolumeState, setFallbackVolumeState] = useState(0.85);
   const [hudVisible, setHudVisible] = useState(true);
   const [hudHovered, setHudHovered] = useState(false);
+  const [localFullscreenState, setLocalFullscreenState] = useState(false);
   const hudHideTimerRef = useRef<number | null>(null);
+
+  const effectiveFullscreen = isStageFullscreen ?? localFullscreenState;
+  const setStageFullscreenValue = (next: boolean) => {
+    setLocalFullscreenState(next);
+    onChangeStageFullscreen?.(next);
+  };
+  const autoHideHudMode = layoutVariant === 'cinema' || effectiveFullscreen;
 
   const isMuted = controlledMuted ?? fallbackMutedState;
   const volume = controlledVolume ?? fallbackVolumeState;
@@ -404,7 +421,7 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
     if (hudHideTimerRef.current !== null) {
       window.clearTimeout(hudHideTimerRef.current);
     }
-    if (layoutVariant === 'cinema') {
+    if (autoHideHudMode) {
       hudHideTimerRef.current = window.setTimeout(() => {
         setHudVisible(false);
       }, 3200);
@@ -575,16 +592,18 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
 
   const handleFullscreen = async () => {
     const container = stageRef.current;
-    if (!container) return;
-    try {
-      if (document.fullscreenElement) {
-        await document.exitFullscreen();
-      } else {
-        await container.requestFullscreen();
-      }
-    } catch {
-      // Ignore
+    const currentlyFullscreen =
+      effectiveFullscreen || Boolean(getNativeDomFullscreenElement());
+
+    if (currentlyFullscreen) {
+      setStageFullscreenValue(false);
+      await exitLumaFullscreen();
+      return;
     }
+
+    setStageFullscreenValue(true);
+    revealHud();
+    await enterLumaFullscreen(container);
   };
 
   const cycleAspect = () => {
@@ -749,7 +768,7 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
 
   const showSynthVisual = telemetry.state !== 'playing';
   const showChrome =
-    layoutVariant !== 'cinema' ||
+    !autoHideHudMode ||
     hudVisible ||
     hudHovered ||
     !isPlaying ||
@@ -770,15 +789,19 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
       onDragLeave={handleStageDragLeave}
       onDrop={handleStageDrop}
       className={`@container relative overflow-hidden transition-all duration-300 ${
-        layoutVariant === 'cinema'
-          ? 'h-full min-h-[320px] flex-1'
-          : theaterExpanded
-            ? 'mx-3 mt-1 mb-2 h-[60vh] min-h-[350px] shrink-0'
-            : 'mx-2.5 mt-2 h-[37vh] min-h-[250px] max-h-[385px] shrink-0'
+        effectiveFullscreen
+          ? '!m-0 h-full w-full max-h-none flex-1 rounded-none bg-black'
+          : layoutVariant === 'cinema'
+            ? 'h-full min-h-[320px] flex-1'
+            : theaterExpanded
+              ? 'mx-3 mt-1 mb-2 h-[60vh] min-h-[350px] shrink-0'
+              : 'mx-2.5 mt-2 h-[37vh] min-h-[250px] max-h-[385px] shrink-0'
       } ${
-        isM3
-          ? 'rounded-[26px] bg-[#0B0E14] ring-1 ring-white/[0.06]'
-          : 'rounded-[22px] bg-[#06080E] shadow-[0_20px_50px_-15px_rgba(0,0,0,0.85)] ring-1 ring-white/15'
+        effectiveFullscreen
+          ? ''
+          : isM3
+            ? 'rounded-[26px] bg-[#0B0E14] ring-1 ring-white/[0.06]'
+            : 'rounded-[22px] bg-[#06080E] shadow-[0_20px_50px_-15px_rgba(0,0,0,0.85)] ring-1 ring-white/15'
       }`}
     >
       {ambilightEnabled && (
@@ -790,7 +813,19 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
         />
       )}
 
-      <div className="relative flex h-full w-full items-center justify-center">
+      <div
+        onDoubleClick={(e) => {
+          if (
+            (e.target as HTMLElement | null)?.closest(
+              'button, input, label, a, select'
+            )
+          ) {
+            return;
+          }
+          void handleFullscreen();
+        }}
+        className="relative flex h-full w-full items-center justify-center"
+      >
         {showSynthVisual && (
           <BroadcastSynthCanvas
             channel={channel}
@@ -1635,8 +1670,8 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
                 <PictureInPicture2 className="h-3.5 w-3.5" />
               </button>
 
-              {/* Theater Toggle (only in EPG split view) */}
-              {layoutVariant === 'split' && (
+              {/* Theater Toggle (only in EPG split view when not in Fullscreen) */}
+              {layoutVariant === 'split' && !effectiveFullscreen && (
                 <button
                   id="btn-theater-height"
                   type="button"
@@ -1660,15 +1695,24 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
               <button
                 id="btn-fullscreen"
                 type="button"
-                onClick={handleFullscreen}
+                onClick={() => void handleFullscreen()}
+                aria-pressed={effectiveFullscreen}
                 className={
                   isM3
-                    ? 'm3-secondary-tonal inline-flex h-10 shrink-0 items-center justify-center gap-1.5 rounded-full px-3 text-[11px] font-semibold'
-                    : 'lg-capsule inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-full px-2.5 text-[11px] font-medium text-white/90'
+                    ? `${
+                        effectiveFullscreen ? 'm3-tonal-active' : 'm3-secondary-tonal'
+                      } inline-flex h-10 shrink-0 items-center justify-center gap-1.5 rounded-full px-3 text-[11px] font-semibold`
+                    : `${
+                        effectiveFullscreen ? 'lg-pill-active' : 'lg-capsule text-white/90'
+                      } inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-full px-2.5 text-[11px] font-medium`
                 }
                 title={t.fullscreen}
               >
-                <Maximize2 className="h-3.5 w-3.5 shrink-0" />
+                {effectiveFullscreen ? (
+                  <Minimize2 className="h-3.5 w-3.5 shrink-0" />
+                ) : (
+                  <Maximize2 className="h-3.5 w-3.5 shrink-0" />
+                )}
                 <span className="hidden whitespace-nowrap @4xl:inline">{t.fullscreen}</span>
               </button>
             </div>

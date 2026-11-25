@@ -38,6 +38,11 @@ import {
   useUniversalGamepadControls,
 } from './services/universalInput';
 import {
+  enterLumaFullscreen,
+  exitLumaFullscreen,
+  getNativeDomFullscreenElement,
+} from './services/fullscreenService';
+import {
   detectPlatformEnvironment,
   resolveAllowedDesignMode,
 } from './services/platformDetection';
@@ -1791,6 +1796,66 @@ export function App() {
   );
   useCrossPlatformFileDropAndLaunch(fileDropHandlers);
 
+  const [stageFullscreen, setStageFullscreen] = useState(false);
+
+  const handleChangeStageFullscreen = useCallback((next: boolean) => {
+    setStageFullscreen(next);
+  }, []);
+
+  const toggleAppFullscreen = useCallback(async () => {
+    const currentlyFullscreen =
+      stageFullscreen || Boolean(getNativeDomFullscreenElement());
+    if (currentlyFullscreen) {
+      setStageFullscreen(false);
+      await exitLumaFullscreen();
+      return;
+    }
+    setStageFullscreen(true);
+    const stageEl = document.getElementById('luma-player-stage');
+    await enterLumaFullscreen(stageEl ?? document.documentElement);
+  }, [stageFullscreen]);
+
+  // Keep stageFullscreen synchronized with DOM fullscreenchange & Android/Googlebook Back exits
+  useEffect(() => {
+    const onDomFsChange = () => {
+      const domEl = getNativeDomFullscreenElement();
+      if (domEl) {
+        setStageFullscreen(true);
+      } else {
+        // When exiting native browser fullscreen via Esc, also exit stageFullscreen
+        setStageFullscreen(false);
+      }
+    };
+
+    const onAndroidFsChange = (e: Event) => {
+      const custom = e as CustomEvent<{ fullscreen?: boolean }>;
+      if (typeof custom.detail?.fullscreen === 'boolean') {
+        setStageFullscreen(custom.detail.fullscreen);
+      }
+    };
+
+    document.addEventListener('fullscreenchange', onDomFsChange);
+    document.addEventListener('webkitfullscreenchange', onDomFsChange);
+    window.addEventListener('luma-native-fullscreen-change', onAndroidFsChange);
+    return () => {
+      document.removeEventListener('fullscreenchange', onDomFsChange);
+      document.removeEventListener('webkitfullscreenchange', onDomFsChange);
+      window.removeEventListener('luma-native-fullscreen-change', onAndroidFsChange);
+    };
+  }, []);
+
+  // Automatically restore window chrome if the user navigates away from video sections while in Fullscreen
+  useEffect(() => {
+    const isVideoView =
+      activeSection === 'live' ||
+      activeSection === 'live-epg' ||
+      activeSection === 'multiview';
+    if (!isVideoView && stageFullscreen) {
+      setStageFullscreen(false);
+      void exitLumaFullscreen();
+    }
+  }, [activeSection, stageFullscreen]);
+
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
@@ -1800,7 +1865,14 @@ export function App() {
       }
 
       const targetTag = (e.target as HTMLElement | null)?.tagName;
-      if (targetTag === 'INPUT' || targetTag === 'TEXTAREA') return;
+      if (targetTag === 'INPUT' || targetTag === 'TEXTAREA' || targetTag === 'SELECT') return;
+
+      if (e.key === 'Escape' && (stageFullscreen || getNativeDomFullscreenElement())) {
+        e.preventDefault();
+        setStageFullscreen(false);
+        void exitLumaFullscreen();
+        return;
+      }
 
       if (e.key === '?') {
         e.preventDefault();
@@ -1809,6 +1881,22 @@ export function App() {
       }
 
       if (commandBarOpen || pendingPinGroup || shortcutsOpen || inspectMedia) return;
+
+      const isVideoSection =
+        activeSection === 'live' ||
+        activeSection === 'live-epg' ||
+        activeSection === 'multiview';
+      if (
+        isVideoSection &&
+        e.key.toLowerCase() === 'f' &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey
+      ) {
+        e.preventDefault();
+        void toggleAppFullscreen();
+        return;
+      }
 
       if (activeSection === 'multiview' && ['1', '2', '3', '4'].includes(e.key)) {
         e.preventDefault();
@@ -1860,6 +1948,8 @@ export function App() {
     shortcutsOpen,
     inspectMedia,
     activeSection,
+    stageFullscreen,
+    toggleAppFullscreen,
     zapRelative,
     channels,
     selectLiveChannel,
@@ -2006,6 +2096,8 @@ export function App() {
       ambilightEnabled={ambilightEnabled}
       theaterExpanded={theaterExpanded}
       onToggleTheaterExpanded={() => setTheaterExpanded((v) => !v)}
+      isStageFullscreen={stageFullscreen}
+      onChangeStageFullscreen={handleChangeStageFullscreen}
       layoutVariant={layoutVariant}
       isMuted={playerAudio.muted}
       onChangeMuted={handleChangeMuted}
@@ -2026,11 +2118,15 @@ export function App() {
   return (
     <div
       data-design={designMode}
-      className={`relative flex h-screen w-screen flex-col overflow-hidden text-slate-100 transition-colors duration-300 ${
-        isM3 ? 'bg-[#131722]' : 'bg-[#05070C]'
+      className={`relative flex h-dvh w-screen flex-col overflow-hidden text-slate-100 transition-colors duration-300 ${
+        stageFullscreen
+          ? 'bg-black'
+          : isM3
+            ? 'bg-[#131722]'
+            : 'bg-[#05070C]'
       }`}
     >
-      {!isM3 && ambilightEnabled && (
+      {!stageFullscreen && !isM3 && ambilightEnabled && (
         <div
           className="pointer-events-none absolute inset-0 transition-all duration-1000"
           style={{
@@ -2042,31 +2138,34 @@ export function App() {
         />
       )}
 
-      <CustomTitlebar
-        designMode={designMode}
-        locale={preferences.locale}
-        onSelectLocale={(nextLocale) =>
-          handleUpdatePreferences({
-            ...preferences,
-            locale: nextLocale,
-          })
-        }
-        sleepRemainingSec={sleepRemainingSec}
-        sidebarCollapsed={sidebarCollapsed}
-        onToggleSidebar={() => setSidebarCollapsed((v) => !v)}
-        onOpenCommandBar={() => setCommandBarOpen(true)}
-        activeSection={activeSection}
-        onSelectSection={(sec) => {
-          setActiveSection(sec);
-          setPipDismissedWhileBrowsing(false);
-        }}
-        playlists={quickPlaylistOptions}
-        activeSourceId={activeSourceId}
-        onSelectSourceId={handleSelectSourceId}
-        nowMs={nowMs}
-      />
+      {!stageFullscreen && (
+        <CustomTitlebar
+          designMode={designMode}
+          locale={preferences.locale}
+          onSelectLocale={(nextLocale) =>
+            handleUpdatePreferences({
+              ...preferences,
+              locale: nextLocale,
+            })
+          }
+          sleepRemainingSec={sleepRemainingSec}
+          sidebarCollapsed={sidebarCollapsed}
+          onToggleSidebar={() => setSidebarCollapsed((v) => !v)}
+          onOpenCommandBar={() => setCommandBarOpen(true)}
+          activeSection={activeSection}
+          onSelectSection={(sec) => {
+            setActiveSection(sec);
+            setPipDismissedWhileBrowsing(false);
+          }}
+          playlists={quickPlaylistOptions}
+          activeSourceId={activeSourceId}
+          onSelectSourceId={handleSelectSourceId}
+          nowMs={nowMs}
+        />
+      )}
 
-      {updateCheck?.updateAvailable &&
+      {!stageFullscreen &&
+        updateCheck?.updateAvailable &&
         dismissedUpdateVersion !== updateCheck.latestVersion && (
           <AppUpdateBanner
             designMode={designMode}
@@ -2079,24 +2178,26 @@ export function App() {
         )}
 
       <div className="relative z-10 flex min-h-0 flex-1 overflow-hidden">
-        <Sidebar
-          designMode={designMode}
-          locale={preferences.locale}
-          collapsed={sidebarCollapsed}
-          activeSection={activeSection}
-          onSelectSection={(sec) => {
-            setActiveSection(sec);
-            setPipDismissedWhileBrowsing(false);
-          }}
-          selectedGroupId={selectedGroupId}
-          onSelectGroup={handleSelectSidebarGroup}
-          groups={groups}
-          totalChannelCount={channels.length}
-          favoritesCount={
-            favoriteIds.size + favoriteVodIds.size + favoriteSeriesIds.size
-          }
-          collectionsCount={customBouquets.length}
-        />
+        {!stageFullscreen && (
+          <Sidebar
+            designMode={designMode}
+            locale={preferences.locale}
+            collapsed={sidebarCollapsed}
+            activeSection={activeSection}
+            onSelectSection={(sec) => {
+              setActiveSection(sec);
+              setPipDismissedWhileBrowsing(false);
+            }}
+            selectedGroupId={selectedGroupId}
+            onSelectGroup={handleSelectSidebarGroup}
+            groups={groups}
+            totalChannelCount={channels.length}
+            favoritesCount={
+              favoriteIds.size + favoriteVodIds.size + favoriteSeriesIds.size
+            }
+            collectionsCount={customBouquets.length}
+          />
+        )}
 
         <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
           {numericBuffer && (
@@ -2155,6 +2256,7 @@ export function App() {
               onToggleFavorite={toggleFavorite}
               onOpenChannelMenu={setChannelMenuTarget}
               onOpenEpgView={() => setActiveSection('live-epg')}
+              isStageFullscreen={stageFullscreen}
             >
               {!detachedPipInEpg && renderMainPlayerStage('cinema')}
             </LiveTvView>
@@ -2164,22 +2266,24 @@ export function App() {
             <>
               {!detachedPipInEpg && renderMainPlayerStage('split')}
 
-              <VirtualizedEpgGrid
-                designMode={designMode}
-                channels={visibleChannels}
-                xmltvMap={activeSourceId === 'builtin-reference' ? undefined : xmltvMap}
-                activeChannelId={activeChannel.id}
-                favoriteIds={favoriteIds}
-                reminderProgramIds={reminderProgramIds}
-                epgOffsetHours={epgOffsetHours}
-                nowMs={nowMs}
-                locale={preferences.locale}
-                onSelectChannel={selectLiveChannel}
-                onStartTimeshift={handleStartTimeshift}
-                onToggleFavorite={toggleFavorite}
-                onOpenChannelMenu={setChannelMenuTarget}
-                onToggleReminder={handleToggleReminder}
-              />
+              {!stageFullscreen && (
+                <VirtualizedEpgGrid
+                  designMode={designMode}
+                  channels={visibleChannels}
+                  xmltvMap={activeSourceId === 'builtin-reference' ? undefined : xmltvMap}
+                  activeChannelId={activeChannel.id}
+                  favoriteIds={favoriteIds}
+                  reminderProgramIds={reminderProgramIds}
+                  epgOffsetHours={epgOffsetHours}
+                  nowMs={nowMs}
+                  locale={preferences.locale}
+                  onSelectChannel={selectLiveChannel}
+                  onStartTimeshift={handleStartTimeshift}
+                  onToggleFavorite={toggleFavorite}
+                  onOpenChannelMenu={setChannelMenuTarget}
+                  onToggleReminder={handleToggleReminder}
+                />
+              )}
             </>
           )}
 
@@ -2390,7 +2494,7 @@ export function App() {
         </main>
       </div>
 
-      {showFloatingInAppPip && (
+      {!stageFullscreen && showFloatingInAppPip && (
         <InAppPipWindow
           designMode={designMode}
           channel={activeChannel}
