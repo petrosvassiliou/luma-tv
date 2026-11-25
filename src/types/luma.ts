@@ -1,6 +1,6 @@
 import type { BufferProfile } from '../i18n/translations';
 
-export const LUMA_APP_VERSION = '0.8.0-beta.6';
+export const LUMA_APP_VERSION = '0.8.0-beta.7';
 export const LUMA_RELEASE_BADGE = '0.8 beta';
 
 export interface EpgReminder {

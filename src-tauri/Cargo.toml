@@ -1,6 +1,6 @@
 [package]
 name = "luma-tv-native"
-version = "0.8.0-beta.6"
+version = "0.8.0-beta.7"
 description = "Luma TV (app.lumatv.client) — Tauri v2 Native Playback & CORS-Free Stream Bridge"
 authors = ["Luma TV Architecture Team"]
 edition = "2021"

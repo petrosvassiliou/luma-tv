@@ -115,10 +115,14 @@ export const VirtualizedEpgGrid: React.FC<VirtualizedEpgGridProps> = ({
       const nowX = minutesFromStart * pxPerMin;
       const availableTimelineViewport = Math.max(240, el.clientWidth - CHANNEL_COL_WIDTH);
       const targetLeft = Math.max(0, nowX - availableTimelineViewport * 0.28);
-      el.scrollTo({
-        left: targetLeft,
-        behavior: smooth ? 'smooth' : 'auto',
-      });
+      if (typeof el.scrollTo === 'function') {
+        el.scrollTo({
+          left: targetLeft,
+          behavior: smooth ? 'smooth' : 'auto',
+        });
+      } else {
+        el.scrollLeft = targetLeft;
+      }
     },
     [nowMs, pxPerMin, timelineStartMs]
   );

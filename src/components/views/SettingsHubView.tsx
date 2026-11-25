@@ -29,6 +29,11 @@ import type {
 } from '../../services/autoUpdater';
 import { LanguageDropdown } from '../common/LanguageDropdown';
 import {
+  LumaCloudSyncCard,
+  type CloudSyncActions,
+  type CloudSyncUiState,
+} from '../common/LumaCloudSyncCard';
+import {
   LUMA_APP_VERSION,
   type ChannelGroup,
   type CustomBouquet,
@@ -63,6 +68,8 @@ interface SettingsHubViewProps {
   updateError?: string | null;
   onCheckForUpdates?: () => void;
   onInstallUpdate?: () => void;
+  cloudState?: CloudSyncUiState;
+  cloudActions?: CloudSyncActions;
 }
 
 export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
@@ -87,6 +94,8 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
   updateError = null,
   onCheckForUpdates,
   onInstallUpdate,
+  cloudState,
+  cloudActions,
 }) => {
   const isM3 = designMode === 'm3-expressive';
   const t = TRANSLATIONS[preferences.locale];
@@ -166,6 +175,15 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
           <span>{t.shortcutsGuideBtn}</span>
         </button>
       </div>
+
+      {/* Firebase Cloud Sync Account & Auto-Sync Center */}
+      {cloudState && cloudActions && (
+        <LumaCloudSyncCard
+          designMode={designMode}
+          cloudState={cloudState}
+          cloudActions={cloudActions}
+        />
+      )}
 
       {/* Software Updates & Auto-Updater Center */}
       <div className={`${panelClass} space-y-3.5`}>

@@ -65,6 +65,10 @@ import type {
   VodItem,
 } from '../../types/luma';
 import type { ChannelContextMenuTarget } from '../common/ChannelContextMenu';
+import type {
+  CloudSyncActions,
+  CloudSyncUiState,
+} from '../common/LumaCloudSyncCard';
 import { Phase4PlatformSyncPanel } from './Phase4PlatformSyncPanel';
 
 const VOD_PAGE_SIZE = 48;
@@ -680,6 +684,8 @@ interface SourcesEngineViewProps {
   favoriteIds: Set<string>;
   watchHistory: WatchHistoryEntry[];
   onRestoreFromSync: (payload: LumaSyncPlainPayload) => void;
+  cloudState?: CloudSyncUiState;
+  cloudActions?: CloudSyncActions;
 }
 
 const USER_AGENT_PRESETS: { label: string; value: string }[] = [
@@ -720,6 +726,8 @@ export const SourcesEngineView: React.FC<SourcesEngineViewProps> = ({
   favoriteIds,
   watchHistory,
   onRestoreFromSync,
+  cloudState,
+  cloudActions,
 }) => {
   const isM3 = designMode === 'm3-expressive';
   const t = TRANSLATIONS[locale];
@@ -2283,7 +2291,7 @@ export const SourcesEngineView: React.FC<SourcesEngineViewProps> = ({
         </div>
       </div>
 
-      {/* Password-Protected Sync & App Status */}
+      {/* Firebase Cloud Sync, Offline Snapshot & App Status */}
       <Phase4PlatformSyncPanel
         designMode={designMode}
         locale={locale}
@@ -2292,6 +2300,8 @@ export const SourcesEngineView: React.FC<SourcesEngineViewProps> = ({
         epgOffsetHours={epgOffsetHours}
         watchHistory={watchHistory}
         onRestoreFromSync={onRestoreFromSync}
+        cloudState={cloudState}
+        cloudActions={cloudActions}
       />
     </div>
   );
