@@ -101,11 +101,11 @@ export const CustomTitlebar: React.FC<CustomTitlebarProps> = ({
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') setPlaylistMenuOpen(false);
     };
-    window.addEventListener('pointerdown', onPointerDown);
-    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('pointerdown', onPointerDown, true);
+    window.addEventListener('keydown', onKeyDown, true);
     return () => {
-      window.removeEventListener('pointerdown', onPointerDown);
-      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('pointerdown', onPointerDown, true);
+      window.removeEventListener('keydown', onKeyDown, true);
     };
   }, [playlistMenuOpen]);
 

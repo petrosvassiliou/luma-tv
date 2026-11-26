@@ -247,42 +247,50 @@ export const LiveTvView: React.FC<LiveTvViewProps> = ({
               </span>
             </div>
 
-            {/* Quick Collection & Favorites Switcher Strip inside Live TV */}
+            {/* Quick Collection & Favorites Switcher Strip inside Live TV (Wraps cleanly so all collections stay visible without horizontal scrolling) */}
             {onSelectGroup && (
-              <div className="luma-scroll flex items-center gap-1.5 overflow-x-auto pb-0.5">
+              <div className="luma-scroll flex max-h-32 flex-wrap items-center gap-1.5 overflow-y-auto">
                 <button
                   type="button"
+                  aria-pressed={selectedGroupId === 'all'}
                   onClick={() => {
                     onSelectGroup('all');
                     if (listRef.current) listRef.current.scrollTop = 0;
                   }}
-                  className={`inline-flex shrink-0 items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold transition ${
+                  className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold transition ${
                     selectedGroupId === 'all'
                       ? isM3
-                        ? 'm3-primary-pill'
-                        : 'lg-pill-active'
-                      : 'bg-white/[0.07] text-slate-300 hover:bg-white/12 hover:text-white'
+                        ? 'm3-primary-pill font-bold shadow-sm'
+                        : 'lg-pill-active font-bold'
+                      : 'bg-white/[0.07] text-slate-300 ring-1 ring-white/10 hover:bg-white/14 hover:text-white'
                   }`}
                 >
-                  <Layers className="h-3 w-3" />
+                  <Layers className="h-3 w-3 shrink-0" />
                   <span>{t.allChannels}</span>
                 </button>
 
                 <button
                   type="button"
+                  aria-pressed={selectedGroupId === 'favorites'}
                   onClick={() => {
                     onSelectGroup('favorites');
                     if (listRef.current) listRef.current.scrollTop = 0;
                   }}
-                  className={`inline-flex shrink-0 items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold transition ${
+                  className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold transition ${
                     selectedGroupId === 'favorites'
                       ? isM3
-                        ? 'm3-primary-pill'
-                        : 'lg-pill-active'
-                      : 'bg-white/[0.07] text-slate-300 hover:bg-white/12 hover:text-white'
+                        ? 'm3-primary-pill font-bold shadow-sm'
+                        : 'lg-pill-active font-bold'
+                      : 'bg-white/[0.07] text-slate-300 ring-1 ring-white/10 hover:bg-white/14 hover:text-white'
                   }`}
                 >
-                  <Star className="h-3 w-3 text-amber-300" />
+                  <Star
+                    className={`h-3 w-3 shrink-0 ${
+                      selectedGroupId === 'favorites'
+                        ? 'fill-amber-300 text-amber-300'
+                        : 'text-amber-300'
+                    }`}
+                  />
                   <span>{t.favorites}</span>
                 </button>
 
@@ -292,24 +300,30 @@ export const LiveTvView: React.FC<LiveTvViewProps> = ({
                     <button
                       key={col.id}
                       type="button"
+                      aria-pressed={active}
                       onClick={() => {
                         onSelectGroup(col.id);
                         if (listRef.current) listRef.current.scrollTop = 0;
                       }}
-                      className={`inline-flex shrink-0 items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold transition ${
+                      title={col.name}
+                      className={`inline-flex max-w-full items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold transition ${
                         active
                           ? isM3
-                            ? 'm3-primary-pill'
-                            : 'lg-pill-active'
-                          : 'bg-white/[0.07] text-slate-200 hover:bg-white/12 hover:text-white'
+                            ? 'm3-primary-pill font-bold shadow-sm'
+                            : 'lg-pill-active font-bold'
+                          : 'bg-white/[0.07] text-slate-200 ring-1 ring-white/10 hover:bg-white/14 hover:text-white'
                       }`}
                     >
                       {col.isPinLocked ? (
-                        <Lock className="h-3 w-3 text-amber-300" />
+                        <Lock className="h-3 w-3 shrink-0 text-amber-300" />
                       ) : (
-                        <FolderHeart className="h-3 w-3 text-sky-300" />
+                        <FolderHeart
+                          className={`h-3 w-3 shrink-0 ${
+                            active && isM3 ? 'text-[#00354A]' : 'text-sky-300'
+                          }`}
+                        />
                       )}
-                      <span className="max-w-[110px] truncate">{col.name}</span>
+                      <span className="max-w-[160px] truncate">{col.name}</span>
                     </button>
                   );
                 })}
@@ -386,8 +400,18 @@ export const LiveTvView: React.FC<LiveTvViewProps> = ({
                           : 'text-slate-200 hover:bg-white/[0.06]'
                       }`}
                     >
-                      <div className="flex min-w-0 items-center gap-2.5">
-                        <span className="w-8 shrink-0 font-mono text-[11px] opacity-60 luma-tabular">
+                      <div className="flex min-w-0 items-center gap-2">
+                        {isActive ? (
+                          <span
+                            className="h-2 w-2 shrink-0 rounded-full bg-sky-300 animate-luma-live"
+                            aria-hidden="true"
+                          />
+                        ) : null}
+                        <span
+                          className={`w-8 shrink-0 font-mono text-[11px] luma-tabular ${
+                            isActive ? 'font-bold text-sky-200' : 'opacity-60'
+                          }`}
+                        >
                           {ch.number}
                         </span>
                         <span className="truncate">{ch.name}</span>

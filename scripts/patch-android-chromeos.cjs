@@ -119,8 +119,11 @@ const androidPkg = pkgMatch ? pkgMatch[1] : 'app.lumatv.client';
 
 const patchedMain = `package ${androidPkg}
 
+import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.view.View
 import android.view.WindowInsets
 import android.view.WindowInsetsController
@@ -226,6 +229,46 @@ class MainActivity : TauriActivity() {
 
     @JavascriptInterface
     fun isFullscreen(): Boolean = lumaImmersiveFullscreen
+
+    @JavascriptInterface
+    fun openCastSettings(): Boolean {
+      return try {
+        val castIntent = Intent(Settings.ACTION_CAST_SETTINGS).apply {
+          addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        startActivity(castIntent)
+        true
+      } catch (_: Exception) {
+        false
+      }
+    }
+
+    @JavascriptInterface
+    fun launchExternalCastChooser(
+      streamUrl: String,
+      title: String,
+      mimeType: String
+    ): Boolean {
+      val trimmed = streamUrl.trim()
+      if (!trimmed.startsWith("http://") && !trimmed.startsWith("https://")) {
+        return false
+      }
+      return try {
+        val viewIntent = Intent(Intent.ACTION_VIEW).apply {
+          setDataAndType(Uri.parse(trimmed), mimeType.ifBlank { "application/x-mpegurl" })
+          putExtra(Intent.EXTRA_TITLE, title)
+          putExtra("title", title)
+          addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        val chooser = Intent.createChooser(viewIntent, "Cast or Play: $title").apply {
+          addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        startActivity(chooser)
+        true
+      } catch (_: Exception) {
+        false
+      }
+    }
   }
 }
 `;

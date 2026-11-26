@@ -32,6 +32,8 @@ export interface LumaPreferences {
   autoRefreshHours?: number; // 0 = Off, default 12h
   autoCheckUpdates?: boolean; // true by default
   includeBetaUpdates?: boolean; // true by default
+  startupChannelId?: string | null; // null/undefined = First Favorite (default); set = explicit override channel ID
+  startupChannelName?: string | null; // Cached display name for UI clarity
 }
 
 export function normalizeLocale(input: unknown): LumaLocale {

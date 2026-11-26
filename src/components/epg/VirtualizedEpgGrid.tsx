@@ -550,14 +550,7 @@ export const VirtualizedEpgGrid: React.FC<VirtualizedEpgGridProps> = ({
                             setInspected({ channel: ch, program: prog });
                           }
                         }}
-                        onDoubleClick={() => {
-                          if (isPast && prog.hasCatchup) {
-                            onStartTimeshift(ch, prog);
-                          } else {
-                            onSelectChannel(ch);
-                          }
-                        }}
-                        className={`group absolute top-1 bottom-1 cursor-pointer overflow-hidden px-3 py-1.5 transition ${
+                        className={`group absolute top-1 bottom-1 cursor-pointer overflow-hidden px-3 py-1.5 transition active:scale-[0.99] ${
                           isM3 ? 'rounded-[16px]' : 'rounded-[13px]'
                         } ${
                           isM3
@@ -581,9 +574,22 @@ export const VirtualizedEpgGrid: React.FC<VirtualizedEpgGridProps> = ({
                           <span className="truncate text-xs font-semibold leading-tight">
                             {prog.title}
                           </span>
-                          {prog.hasCatchup && isPast && widthPx > 95 && (
+                          {prog.hasCatchup && isPast && widthPx > 115 ? (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onStartTimeshift(ch, prog);
+                              }}
+                              className="inline-flex shrink-0 items-center gap-1 rounded-full bg-sky-400/20 px-2 py-0.5 text-[10px] font-bold text-sky-200 ring-1 ring-sky-300/35 hover:bg-sky-400/35"
+                              title={t.reLiveBtn}
+                            >
+                              <History className="h-2.5 w-2.5" />
+                              <span>{t.reLiveBtn}</span>
+                            </button>
+                          ) : prog.hasCatchup && isPast && widthPx > 85 ? (
                             <History className="h-3 w-3 shrink-0 text-sky-300" />
-                          )}
+                          ) : null}
                           {isAiringNow && widthPx > 110 && (
                             <Radio className="h-3 w-3 shrink-0 text-sky-300" />
                           )}
@@ -621,15 +627,20 @@ export const VirtualizedEpgGrid: React.FC<VirtualizedEpgGridProps> = ({
         </div>
       </div>
 
-      {/* Program Inspector Card */}
+      {/* Program Inspector Card (closes on outside click or Escape) */}
       {inspected && (
         <div
-          className={`absolute right-4 bottom-4 z-40 w-full max-w-md p-4 ${
-            isM3
-              ? 'rounded-[28px] bg-[#232B3D] shadow-2xl ring-1 ring-white/10'
-              : 'lg-modal rounded-[24px]'
-          }`}
+          className="fixed inset-0 z-40"
+          onClick={() => setInspected(null)}
         >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className={`fixed right-5 bottom-5 z-50 w-full max-w-md p-4 ${
+              isM3
+                ? 'rounded-[28px] bg-[#1E2536] shadow-2xl ring-1 ring-[#7FD4FF]/35'
+                : 'lg-modal rounded-[24px] ring-1 ring-sky-300/30'
+            }`}
+          >
           <div className="flex items-start justify-between gap-3">
             <div>
               <div className="flex items-center gap-2 text-[11px] text-sky-300 luma-tabular">
@@ -717,6 +728,7 @@ export const VirtualizedEpgGrid: React.FC<VirtualizedEpgGridProps> = ({
                 <span>Catch-Up starten</span>
               </button>
             )}
+          </div>
           </div>
         </div>
       )}

@@ -379,6 +379,8 @@ export class LumaPlayerEngine {
     const desiredMuted = video.muted;
     this.destroyDriversOnly();
     this.video = video;
+    video.setAttribute('x-webkit-airplay', 'allow');
+    video.disableRemotePlayback = false;
     video.muted = desiredMuted;
     this.embeddedSubtitleTracks = [];
 
@@ -970,6 +972,29 @@ export class LumaPlayerEngine {
     this.emit({
       engine: 'Tauri v2 Native MPV',
       state: 'synth-fallback',
+    });
+  }
+
+  /**
+   * Switches `<video>` from an MSE `blob:` source to a direct HTTP/HTTPS HLS or MP4 URL
+   * so Apple AirPlay (`webkitShowPlaybackTargetPicker`) and W3C `RemotePlayback` can
+   * transmit full hardware video + audio directly to Apple TV or wireless TV receivers.
+   */
+  public prepareDirectRemotePlayback(video: HTMLVideoElement, directStreamUrl: string) {
+    const desiredMuted = video.muted;
+    this.destroyDriversOnly();
+    this.video = video;
+    video.setAttribute('x-webkit-airplay', 'allow');
+    video.disableRemotePlayback = false;
+
+    if (video.src !== directStreamUrl) {
+      video.src = directStreamUrl;
+      video.load();
+    }
+    this.attemptPlayRespectingMute(video, desiredMuted);
+    this.emit({
+      engine: 'Native Safari HLS',
+      state: 'playing',
     });
   }
 

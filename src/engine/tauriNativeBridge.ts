@@ -97,3 +97,23 @@ export async function launchNativeMpvStream(
     userAgent,
   });
 }
+
+export async function launchNativeChromecastSender(params: {
+  streamUrl: string;
+  title: string;
+  subtitle?: string;
+  contentType: string;
+  isLive: boolean;
+}): Promise<string> {
+  const invoke = getTauriInvoke();
+  if (!invoke) {
+    throw new Error('Native Chromecast bridge requires Tauri runtime.');
+  }
+  return await invoke<string>('luma_native_launch_chromecast_sender', {
+    streamUrl: params.streamUrl,
+    title: params.title,
+    subtitle: params.subtitle ?? '',
+    contentType: params.contentType,
+    isLive: params.isLive,
+  });
+}

@@ -7,6 +7,7 @@ import {
   FolderPlus,
   Play,
   Plus,
+  Power,
   Star,
 } from 'lucide-react';
 import { TRANSLATIONS, type LumaLocale } from '../../i18n/translations';
@@ -31,10 +32,12 @@ interface ChannelContextMenuProps {
   locale: LumaLocale;
   target: ChannelContextMenuTarget;
   isFavorite: boolean;
+  isStartupChannel?: boolean;
   collections: CustomBouquet[];
   onClose: () => void;
   onPlayChannel?: (channel: Channel) => void;
   onOpenDualChannel?: (channel: Channel) => void;
+  onToggleStartupChannel?: (channel: Channel) => void;
   onPlayVod?: (vod: VodItem) => void;
   onOpenSeries?: (series: SeriesItem) => void;
   onToggleFavorite: () => void;
@@ -47,10 +50,12 @@ export const ChannelContextMenu: React.FC<ChannelContextMenuProps> = ({
   locale,
   target,
   isFavorite,
+  isStartupChannel = false,
   collections,
   onClose,
   onPlayChannel,
   onOpenDualChannel,
+  onToggleStartupChannel,
   onPlayVod,
   onOpenSeries,
   onToggleFavorite,
@@ -204,6 +209,33 @@ export const ChannelContextMenu: React.FC<ChannelContextMenuProps> = ({
             </span>
             {isFavorite && <Check className="h-3.5 w-3.5 text-amber-300" />}
           </button>
+
+          {target.channel && onToggleStartupChannel && (
+            <button
+              type="button"
+              onClick={() => {
+                onToggleStartupChannel(target.channel!);
+                onClose();
+              }}
+              className="flex w-full items-center justify-between gap-2 rounded-xl px-3 py-2 text-left text-xs font-medium text-slate-100 hover:bg-white/10"
+            >
+              <span className="flex items-center gap-2.5">
+                <Power
+                  className={`h-3.5 w-3.5 ${
+                    isStartupChannel ? 'text-emerald-400' : 'text-sky-300'
+                  }`}
+                />
+                <span>
+                  {isStartupChannel
+                    ? 'Startup Channel (Reset to 1st Favorite)'
+                    : 'Set as Default Startup Channel'}
+                </span>
+              </span>
+              {isStartupChannel && (
+                <Check className="h-3.5 w-3.5 text-emerald-400" />
+              )}
+            </button>
+          )}
         </div>
 
         {/* Collections Sublist */}

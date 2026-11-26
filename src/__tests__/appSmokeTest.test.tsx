@@ -277,14 +277,27 @@ describe('Luma TV End-to-End UI & Button Smoke Test', () => {
     expect(host.querySelector('#btn-aspect-ratio')?.textContent).toContain('21:9');
     clickEl(host.querySelector('#btn-aspect-ratio'), '#btn-aspect-ratio -> 16:9');
 
-    // Stream Settings (DSP, ABR Quality, Subtitle sync offset)
+    // Stream Settings (DSP, ABR Quality, Subtitle sync offset) + Outside-Click & Cast/AirPlay Menu Switch
     clickEl(host.querySelector('#btn-stream-settings'), '#btn-stream-settings open');
     const plusOffsetBtn = host.querySelector('button[title="+0.5s"]');
     clickEl(plusOffsetBtn, 'Subtitle +0.5s');
     expect(host.textContent).toContain('+0.5s');
     clickEl(host.querySelector('button[title="Reset offset"]'), 'Reset subtitle offset');
     expect(host.textContent).toContain('0.0s');
-    clickEl(host.querySelector('#btn-stream-settings'), '#btn-stream-settings close');
+
+    // Clicking Cast / AirPlay menu must automatically close DSP & Spuren and open Cast / AirPlay
+    clickEl(host.querySelector('#btn-cast-airplay'), '#btn-cast-airplay open');
+    expect(host.querySelector('button[title="+0.5s"]')).toBeNull();
+    expect(host.querySelector('#btn-cast-chromecast')).not.toBeNull();
+    expect(host.querySelector('#btn-cast-appletv')).not.toBeNull();
+
+    // Clicking anywhere outside (e.g. titlebar) must close Cast / AirPlay menu immediately
+    act(() => {
+      host
+        .querySelector('#luma-custom-titlebar')!
+        .dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    });
+    expect(host.querySelector('#btn-cast-chromecast')).toBeNull();
 
     // Fullscreen toggle & exit via #btn-fullscreen and Escape
     await act(async () => {
@@ -520,5 +533,68 @@ describe('Luma TV End-to-End UI & Button Smoke Test', () => {
     );
     clickEl(shortcutsBtn ?? null, 'Open Shortcuts Guide modal');
     expect(host.textContent).toContain('Controls');
+  });
+
+  it('starts on First Favorite by default and allows overriding with a Custom Default Startup Channel', async () => {
+    // Unmount default instance and configure custom Favorites where NASA Mission TV HD is the 1st Favorite
+    await act(async () => {
+      root!.unmount();
+    });
+    localStorage.setItem('luma.favorites.v1', JSON.stringify(['ch-nasa-public']));
+
+    root = createRoot(host);
+    await act(async () => {
+      root!.render(<AppComponent />);
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 40));
+    });
+
+    // Should automatically boot into NASA Mission TV HD (1st Favorite) instead of #1 Red Bull TV HD
+    expect(host.querySelector('#luma-player-stage h1')?.textContent).toContain(
+      'NASA Mission TV HD'
+    );
+
+    // Open Settings -> Startup Channel card -> choose DW International HD as Custom Default Startup Channel
+    clickEl(host.querySelector('#nav-settings'), '#nav-settings');
+    expect(host.querySelector('#settings-startup-channel-card')).not.toBeNull();
+    clickEl(
+      host.querySelector('#btn-startup-custom-channel'),
+      '#btn-startup-custom-channel'
+    );
+    const startupInput = host.querySelector(
+      '#input-startup-channel-search'
+    ) as HTMLInputElement | null;
+    expect(startupInput).not.toBeNull();
+    if (startupInput) {
+      setInputValue(startupInput, 'DW International');
+      const dwBtn = Array.from(
+        host.querySelectorAll('#settings-startup-channel-card button')
+      ).find((b) => b.textContent?.includes('DW International HD'));
+      clickEl(dwBtn ?? null, 'Select DW International HD as Startup Channel');
+    }
+
+    // Verify Settings LanguageDropdown renders all 6 locales via unclipped fixed portal
+    clickEl(
+      host.querySelector('#settings-language-dropdown'),
+      '#settings-language-dropdown'
+    );
+    expect(host.querySelectorAll('[role="option"]').length).toBe(6);
+
+    // Remount App from scratch -> Custom Startup Channel (DW International HD) MUST override 1st Favorite (NASA)
+    await act(async () => {
+      root!.unmount();
+    });
+    root = createRoot(host);
+    await act(async () => {
+      root!.render(<AppComponent />);
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 40));
+    });
+
+    expect(host.querySelector('#luma-player-stage h1')?.textContent).toContain(
+      'DW International HD'
+    );
   });
 });

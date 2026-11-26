@@ -1,12 +1,16 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
+  Airplay,
   AppWindow,
   ArrowLeft,
   Captions,
+  Cast,
+  Check,
   ChevronDown,
   ChevronUp,
   Circle,
   Columns2,
+  Copy,
   Cpu,
   Expand,
   ExternalLink,
@@ -28,6 +32,7 @@ import {
   Sliders,
   Square,
   Star,
+  Tv,
   Volume2,
   VolumeX,
 } from 'lucide-react';
@@ -46,6 +51,14 @@ import {
   TRANSLATIONS,
   type LumaLocale,
 } from '../../i18n/translations';
+import {
+  isAndroidCastBridgeAvailable,
+  isAppleAirPlaySupported,
+  toCastableHlsOrMediaUrl,
+  triggerAndroidSystemCastSettings,
+  triggerAppleTvAirPlay,
+  triggerChromecastStream,
+} from '../../services/castAndAirPlayService';
 import {
   detectSubtitleLanguageFromFilename,
   fetchRemoteSubtitleText,
@@ -212,8 +225,13 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
   const [preAmpBoost, setPreAmpBoost] = useState<number>(1.0);
   const [aspectMode, setAspectMode] = useState<AspectRatioMode>('16:9');
   const [showQualityMenu, setShowQualityMenu] = useState(false);
+  const [showCastMenu, setShowCastMenu] = useState(false);
+  const [wirelessTargetLabel, setWirelessTargetLabel] = useState<string | null>(null);
+  const [copiedCastUrl, setCopiedCastUrl] = useState(false);
   const [subtitleUrlInput, setSubtitleUrlInput] = useState('');
   const [isSubtitleDropActive, setIsSubtitleDropActive] = useState(false);
+  const qualityMenuRef = useRef<HTMLDivElement | null>(null);
+  const castMenuRef = useRef<HTMLDivElement | null>(null);
 
   // Live DVR Recording State
   const [isRecording, setIsRecording] = useState(false);
@@ -436,6 +454,66 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
       if (hudHideTimerRef.current !== null) {
         window.clearTimeout(hudHideTimerRef.current);
       }
+    };
+  }, []);
+
+  // Dismiss DSP/Tracks or Cast/AirPlay popovers immediately when clicking anywhere outside or pressing Escape
+  useEffect(() => {
+    if (!showQualityMenu && !showCastMenu) return;
+
+    const onPointerDown = (e: PointerEvent) => {
+      const target = e.target as Node | null;
+      if (!target) return;
+      if (showQualityMenu && !qualityMenuRef.current?.contains(target)) {
+        setShowQualityMenu(false);
+      }
+      if (showCastMenu && !castMenuRef.current?.contains(target)) {
+        setShowCastMenu(false);
+      }
+    };
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        setShowQualityMenu(false);
+        setShowCastMenu(false);
+      }
+    };
+
+    window.addEventListener('pointerdown', onPointerDown, true);
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => {
+      window.removeEventListener('pointerdown', onPointerDown, true);
+      window.removeEventListener('keydown', onKeyDown, true);
+    };
+  }, [showQualityMenu, showCastMenu]);
+
+  // Observe WebKit AirPlay wireless connection state changes for live HUD badge
+  useEffect(() => {
+    const video = videoRef.current as
+      | (HTMLVideoElement & { webkitCurrentPlaybackTargetIsWireless?: boolean })
+      | null;
+    if (!video) return;
+
+    const onWirelessChanged = () => {
+      if (video.webkitCurrentPlaybackTargetIsWireless) {
+        setWirelessTargetLabel('Apple TV · AirPlay');
+      } else {
+        setWirelessTargetLabel((prev) =>
+          prev === 'Apple TV · AirPlay' ? null : prev
+        );
+      }
+    };
+
+    video.addEventListener(
+      'webkitcurrentplaybacktargetiswirelesschanged',
+      onWirelessChanged
+    );
+    return () => {
+      video.removeEventListener(
+        'webkitcurrentplaybacktargetiswirelesschanged',
+        onWirelessChanged
+      );
     };
   }, []);
 
@@ -776,7 +854,55 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
     hudHovered ||
     !isPlaying ||
     showQualityMenu ||
+    showCastMenu ||
     isRecording;
+
+  const handleTriggerAirPlay = async () => {
+    setShowCastMenu(false);
+    const res = await triggerAppleTvAirPlay({
+      video: videoRef.current,
+      engine: engineRef.current,
+      rawStreamUrl: activeUrl,
+      streamType: overrideStreamUrl ? undefined : channel.streamType,
+    });
+    onToast?.(res.message);
+  };
+
+  const handleTriggerChromecast = async () => {
+    setShowCastMenu(false);
+    const streamTitle = isOnDemandVod
+      ? displayTitle
+      : `${channel.name} · ${displayTitle}`;
+    const res = await triggerChromecastStream({
+      video: videoRef.current,
+      engine: engineRef.current,
+      rawStreamUrl: activeUrl,
+      streamType: overrideStreamUrl ? undefined : channel.streamType,
+      title: streamTitle,
+      subtitle: displaySubtitle,
+      isLive: !isSeekable,
+      startTimeSec: mediaPositionSec,
+    });
+    if (res.ok && res.deviceName) {
+      setWirelessTargetLabel(res.deviceName);
+    }
+    onToast?.(res.message);
+  };
+
+  const handleCopyCastUrl = async () => {
+    const castable = toCastableHlsOrMediaUrl(
+      activeUrl,
+      overrideStreamUrl ? undefined : channel.streamType
+    );
+    try {
+      await navigator.clipboard.writeText(castable);
+      setCopiedCastUrl(true);
+      window.setTimeout(() => setCopiedCastUrl(false), 2000);
+      onToast?.('Stream URL copied for Apple TV / VLC / Chromecast');
+    } catch {
+      onToast?.(castable);
+    }
+  };
 
   return (
     <section
@@ -845,8 +971,19 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
           ref={videoRef}
           playsInline
           autoPlay
+          x-webkit-airplay="allow"
           muted={effectiveMuted}
-          onClick={togglePlay}
+          onClick={() => {
+            if (autoHideHudMode) {
+              if (hudVisible && !showQualityMenu && !showCastMenu) {
+                setHudVisible(false);
+              } else {
+                revealHud();
+              }
+            } else {
+              revealHud();
+            }
+          }}
           className={`relative z-10 h-full w-full cursor-pointer transition-opacity duration-300 ${
             showSynthVisual ? 'opacity-0' : 'opacity-100'
           } ${
@@ -965,6 +1102,18 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
               <Sliders className="h-3 w-3" />
               {AUDIO_DSP_PRESETS[audioPreset].label}
             </span>
+          )}
+
+          {wirelessTargetLabel && (
+            <button
+              type="button"
+              onClick={() => setWirelessTargetLabel(null)}
+              className="inline-flex items-center gap-1.5 rounded-full bg-sky-400/25 px-3 py-1 text-[10px] font-bold text-sky-100 ring-1 ring-sky-300/50"
+              title="Wireless stream active (click to dismiss badge)"
+            >
+              <Cast className="h-3 w-3 text-sky-200" />
+              <span>{wirelessTargetLabel}</span>
+            </button>
           )}
 
           {isOnDemandVod && onBackToCatalog && (
@@ -1307,15 +1456,26 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
               </button>
 
               {/* Quality, Audio DSP, Audio Tracks & Subtitles Menu */}
-              <div className="relative shrink-0">
+              <div ref={qualityMenuRef} className="relative shrink-0">
                 <button
                   id="btn-stream-settings"
                   type="button"
-                  onClick={() => setShowQualityMenu((v) => !v)}
+                  aria-expanded={showQualityMenu}
+                  aria-pressed={showQualityMenu}
+                  onClick={() => {
+                    setShowCastMenu(false);
+                    setShowQualityMenu((v) => !v);
+                  }}
                   className={
                     isM3
-                      ? 'm3-secondary-tonal flex h-10 items-center justify-center gap-1.5 rounded-full px-3 text-[11px] font-semibold'
-                      : 'lg-capsule flex h-9 items-center justify-center gap-1.5 rounded-full px-2.5 text-[11px] font-medium text-white/90'
+                      ? `${
+                          showQualityMenu ? 'm3-tonal-active' : 'm3-secondary-tonal'
+                        } flex h-10 items-center justify-center gap-1.5 rounded-full px-3 text-[11px] font-semibold`
+                      : `${
+                          showQualityMenu
+                            ? 'lg-pill-active'
+                            : 'lg-capsule text-white/90'
+                        } flex h-9 items-center justify-center gap-1.5 rounded-full px-2.5 text-[11px] font-medium`
                   }
                   title="Quality, Audio DSP & Subtitles"
                 >
@@ -1619,6 +1779,145 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
                             <Plus className="h-3 w-3" />
                           </button>
                         </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Stream to Chromecast & Apple TV (AirPlay) */}
+              <div ref={castMenuRef} className="relative shrink-0">
+                <button
+                  id="btn-cast-airplay"
+                  type="button"
+                  aria-expanded={showCastMenu}
+                  aria-pressed={showCastMenu || Boolean(wirelessTargetLabel)}
+                  onClick={() => {
+                    setShowQualityMenu(false);
+                    setShowCastMenu((v) => !v);
+                  }}
+                  className={
+                    isM3
+                      ? `${
+                          showCastMenu || wirelessTargetLabel
+                            ? 'm3-tonal-active'
+                            : 'm3-secondary-tonal'
+                        } flex h-10 items-center justify-center gap-1.5 rounded-full px-3 text-[11px] font-semibold`
+                      : `${
+                          showCastMenu || wirelessTargetLabel
+                            ? 'lg-pill-active'
+                            : 'lg-capsule text-white/90'
+                        } flex h-9 items-center justify-center gap-1.5 rounded-full px-2.5 text-[11px] font-medium`
+                  }
+                  title="Stream to Chromecast or Apple TV (AirPlay)"
+                >
+                  <Cast className="h-3.5 w-3.5 shrink-0" />
+                  <span className="hidden whitespace-nowrap @4xl:inline">Cast / TV</span>
+                </button>
+
+                {showCastMenu && (
+                  <div
+                    className={`absolute right-0 bottom-12 z-40 w-72 p-3 text-xs shadow-2xl ${
+                      isM3
+                        ? 'rounded-[24px] bg-[#1C2334] ring-1 ring-[#7FD4FF]/35'
+                        : 'lg-modal rounded-[22px] ring-1 ring-sky-300/30'
+                    }`}
+                  >
+                    <div className="mb-2 flex items-center justify-between px-1">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-sky-300">
+                        Stream to TV · Cast &amp; AirPlay
+                      </span>
+                      <Tv className="h-3.5 w-3.5 text-sky-300" />
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <button
+                        id="btn-cast-chromecast"
+                        type="button"
+                        onClick={() => void handleTriggerChromecast()}
+                        className={`flex w-full items-center justify-between gap-2.5 rounded-2xl px-3 py-2.5 text-left transition ${
+                          isM3
+                            ? 'bg-[#263148] text-white hover:bg-[#324160]'
+                            : 'bg-white/[0.07] text-white hover:bg-white/14'
+                        }`}
+                      >
+                        <div className="flex min-w-0 items-center gap-2.5">
+                          <Cast className="h-4 w-4 shrink-0 text-sky-300" />
+                          <div className="min-w-0">
+                            <div className="font-semibold">Chromecast / Google TV</div>
+                            <div className="truncate text-[10px] text-slate-300">
+                              Cast HLS / MP4 stream over Wi-Fi
+                            </div>
+                          </div>
+                        </div>
+                      </button>
+
+                      <button
+                        id="btn-cast-appletv"
+                        type="button"
+                        onClick={() => void handleTriggerAirPlay()}
+                        className={`flex w-full items-center justify-between gap-2.5 rounded-2xl px-3 py-2.5 text-left transition ${
+                          isM3
+                            ? 'bg-[#263148] text-white hover:bg-[#324160]'
+                            : 'bg-white/[0.07] text-white hover:bg-white/14'
+                        }`}
+                      >
+                        <div className="flex min-w-0 items-center gap-2.5">
+                          <Airplay className="h-4 w-4 shrink-0 text-sky-300" />
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-1.5 font-semibold">
+                              <span>Apple TV (AirPlay)</span>
+                              {isAppleAirPlaySupported(videoRef.current) && (
+                                <span className="rounded bg-emerald-400/20 px-1.5 py-0.5 text-[9px] font-bold text-emerald-300">
+                                  NATIVE
+                                </span>
+                              )}
+                            </div>
+                            <div className="truncate text-[10px] text-slate-300">
+                              Native AirPlay 2 video &amp; audio picker
+                            </div>
+                          </div>
+                        </div>
+                      </button>
+
+                      {isAndroidCastBridgeAvailable() && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowCastMenu(false);
+                            triggerAndroidSystemCastSettings();
+                          }}
+                          className={`flex w-full items-center gap-2.5 rounded-2xl px-3 py-2 text-left transition ${
+                            isM3
+                              ? 'bg-[#263148] text-slate-200 hover:bg-[#324160]'
+                              : 'bg-white/[0.05] text-slate-200 hover:bg-white/12'
+                          }`}
+                        >
+                          <Tv className="h-3.5 w-3.5 shrink-0 text-sky-300" />
+                          <span>System Wireless Display / Cast Screen</span>
+                        </button>
+                      )}
+
+                      <div className="border-t border-white/10 pt-1.5">
+                        <button
+                          id="btn-cast-copy-url"
+                          type="button"
+                          onClick={() => void handleCopyCastUrl()}
+                          className="flex w-full items-center justify-between rounded-xl px-3 py-1.5 text-left text-[11px] text-slate-300 transition hover:bg-white/10 hover:text-white"
+                        >
+                          <span className="flex items-center gap-2">
+                            {copiedCastUrl ? (
+                              <Check className="h-3.5 w-3.5 text-emerald-400" />
+                            ) : (
+                              <Copy className="h-3.5 w-3.5 text-sky-300" />
+                            )}
+                            <span>
+                              {copiedCastUrl
+                                ? 'Copied HLS/Media URL'
+                                : 'Copy Castable Stream URL'}
+                            </span>
+                          </span>
+                        </button>
                       </div>
                     </div>
                   </div>

@@ -637,35 +637,37 @@ export const DualViewStage: React.FC<DualViewStageProps> = ({
               </button>
             </div>
 
-            {/* Quick Scope Strip: All / Favorites / Collections */}
-            <div className="luma-scroll mb-2.5 flex items-center gap-1.5 overflow-x-auto pb-0.5">
+            {/* Quick Scope Strip: All / Favorites / Collections (Wraps cleanly so all collections remain visible) */}
+            <div className="luma-scroll mb-2.5 flex max-h-28 flex-wrap items-center gap-1.5 overflow-y-auto">
               <button
                 type="button"
+                aria-pressed={pickerScope === 'all'}
                 onClick={() => setPickerScope('all')}
-                className={`inline-flex shrink-0 items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold ${
+                className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold ${
                   pickerScope === 'all'
                     ? isM3
-                      ? 'm3-primary-pill'
-                      : 'lg-pill-active'
+                      ? 'm3-primary-pill font-bold'
+                      : 'lg-pill-active font-bold'
                     : 'bg-white/10 text-slate-300 hover:text-white'
                 }`}
               >
-                <Layers className="h-3 w-3" />
+                <Layers className="h-3 w-3 shrink-0" />
                 <span>{t.allChannels}</span>
               </button>
 
               <button
                 type="button"
+                aria-pressed={pickerScope === 'favorites'}
                 onClick={() => setPickerScope('favorites')}
-                className={`inline-flex shrink-0 items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold ${
+                className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold ${
                   pickerScope === 'favorites'
                     ? isM3
-                      ? 'm3-primary-pill'
-                      : 'lg-pill-active'
+                      ? 'm3-primary-pill font-bold'
+                      : 'lg-pill-active font-bold'
                     : 'bg-white/10 text-slate-300 hover:text-white'
                 }`}
               >
-                <Star className="h-3 w-3 text-amber-300" />
+                <Star className="h-3 w-3 shrink-0 text-amber-300" />
                 <span>{t.favorites}</span>
               </button>
 
@@ -673,17 +675,19 @@ export const DualViewStage: React.FC<DualViewStageProps> = ({
                 <button
                   key={col.id}
                   type="button"
+                  aria-pressed={pickerScope === col.id}
                   onClick={() => setPickerScope(col.id)}
-                  className={`inline-flex shrink-0 items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold ${
+                  title={col.name}
+                  className={`inline-flex max-w-full items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold ${
                     pickerScope === col.id
                       ? isM3
-                        ? 'm3-primary-pill'
-                        : 'lg-pill-active'
+                        ? 'm3-primary-pill font-bold'
+                        : 'lg-pill-active font-bold'
                       : 'bg-white/10 text-slate-300 hover:text-white'
                   }`}
                 >
-                  <FolderHeart className="h-3 w-3 text-sky-300" />
-                  <span className="max-w-[110px] truncate">{col.name}</span>
+                  <FolderHeart className="h-3 w-3 shrink-0 text-sky-300" />
+                  <span className="max-w-[160px] truncate">{col.name}</span>
                 </button>
               ))}
             </div>

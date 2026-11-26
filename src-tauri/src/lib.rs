@@ -44,6 +44,7 @@ pub struct NativeEngineCapabilities {
 
 struct LocalProxyServer {
     endpoint_url: String,
+    cast_sender_url: String,
 }
 
 #[derive(Clone)]
@@ -51,6 +52,7 @@ struct ProxyRuntimeContext {
     client: reqwest::Client,
     port: u16,
     expected_path: String,
+    expected_cast_path: String,
     endpoint_url: String,
 }
 
@@ -455,6 +457,92 @@ fn json_response(status: StatusCode, payload: serde_json::Value) -> Response<Pro
         .unwrap_or_else(|_| Response::new(empty_body()))
 }
 
+const LUMA_CHROMECAST_SENDER_HTML: &str = r#"<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Luma TV · Chromecast Controller</title>
+  <style>
+    * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, 'Inter', sans-serif; }
+    body { margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center; background: radial-gradient(circle at 30% 20%, #142642 0%, #090C14 75%); color: #F8FAFC; padding: 20px; }
+    .card { width: 100%; max-width: 400px; border-radius: 22px; background: rgba(20, 27, 45, 0.94); border: 1px solid rgba(125, 211, 252, 0.35); box-shadow: 0 24px 60px rgba(0,0,0,0.75); padding: 22px; }
+    .badge { display: inline-block; border-radius: 999px; background: rgba(56, 189, 248, 0.18); color: #7DD3FC; font-size: 10px; font-weight: 700; letter-spacing: 0.06em; padding: 4px 10px; text-transform: uppercase; }
+    h1 { margin: 12px 0 4px; font-size: 16px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    p { margin: 0 0 16px; font-size: 12px; color: #94A3B8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .btn { width: 100%; border: 0; border-radius: 999px; padding: 12px 18px; font-size: 13px; font-weight: 700; cursor: pointer; background: linear-gradient(135deg, #38BDF8 0%, #60A5FA 100%); color: #061320; transition: transform 100ms ease, filter 150ms ease; }
+    .btn:hover { filter: brightness(1.08); }
+    .btn:active { transform: scale(0.97); }
+    .status { margin-top: 12px; font-size: 12px; color: #CBD5E1; min-height: 18px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <span class="badge">Luma TV · Google Cast</span>
+    <h1 id="stream-title">Preparing stream…</h1>
+    <p id="stream-sub">Select a Chromecast or Google TV device on your Wi-Fi</p>
+    <button id="cast-btn" class="btn" type="button">Choose Chromecast Device</button>
+    <div id="status" class="status">Initializing Google Cast SDK…</div>
+  </div>
+  <script>
+    const qs = new URLSearchParams(window.location.search);
+    const streamUrl = qs.get('url') || '';
+    const title = qs.get('title') || 'Luma TV Stream';
+    const subtitle = qs.get('subtitle') || 'Luma TV';
+    const mime = qs.get('mime') || 'application/x-mpegurl';
+    const isLive = qs.get('live') !== '0';
+    document.getElementById('stream-title').textContent = title;
+    if (subtitle) document.getElementById('stream-sub').textContent = subtitle;
+    const statusEl = document.getElementById('status');
+    let castReady = false;
+
+    async function sendToCast() {
+      if (!castReady || !window.cast || !window.chrome || !window.chrome.cast) {
+        statusEl.textContent = 'Google Cast requires Google Chrome, Brave, or Edge.';
+        return;
+      }
+      try {
+        const ctx = cast.framework.CastContext.getInstance();
+        let session = ctx.getCurrentSession();
+        if (!session) {
+          await ctx.requestSession();
+          session = ctx.getCurrentSession();
+        }
+        if (!session) return;
+        const mediaInfo = new chrome.cast.media.MediaInfo(streamUrl, mime);
+        mediaInfo.streamType = isLive ? chrome.cast.media.StreamType.LIVE : chrome.cast.media.StreamType.BUFFERED;
+        const meta = new chrome.cast.media.GenericMediaMetadata();
+        meta.title = title;
+        meta.subtitle = subtitle;
+        mediaInfo.metadata = meta;
+        const req = new chrome.cast.media.LoadRequest(mediaInfo);
+        req.autoplay = true;
+        statusEl.textContent = 'Connecting stream to ' + (session.getCastDevice().friendlyName || 'Chromecast') + '…';
+        await session.loadMedia(req);
+        statusEl.textContent = 'Streaming to ' + (session.getCastDevice().friendlyName || 'Chromecast');
+      } catch (e) {
+        statusEl.textContent = (e && e.message) ? e.message : 'Cast session closed.';
+      }
+    }
+
+    document.getElementById('cast-btn').addEventListener('click', sendToCast);
+    window.__onGCastApiAvailable = function(available) {
+      if (!available) {
+        statusEl.textContent = 'Google Cast extension not available in this browser.';
+        return;
+      }
+      castReady = true;
+      cast.framework.CastContext.getInstance().setOptions({
+        receiverApplicationId: chrome.cast.media.DEFAULT_MEDIA_RECEIVER_APP_ID,
+        autoJoinPolicy: chrome.cast.AutoJoinPolicy.ORIGIN_SCOPED
+      });
+      statusEl.textContent = 'Ready — click "Choose Chromecast Device" above.';
+    };
+  </script>
+  <script src="https://www.gstatic.com/cv/js/sender/v1/cast_sender.js?loadCastFramework=1" async></script>
+</body>
+</html>"#;
+
 async fn handle_proxy_request(
     req: Request<Incoming>,
     ctx: Arc<ProxyRuntimeContext>,
@@ -464,6 +552,15 @@ async fn handle_proxy_request(
             .body(empty_body())
             .unwrap_or_else(|_| Response::new(empty_body()));
         return Ok(resp);
+    }
+
+    if req.uri().path() == ctx.expected_cast_path && req.method() == Method::GET {
+        return Ok(Response::builder()
+            .status(StatusCode::OK)
+            .header(CONTENT_TYPE, "text/html; charset=utf-8")
+            .header(CACHE_CONTROL, "no-store")
+            .body(full_body(LUMA_CHROMECAST_SENDER_HTML))
+            .unwrap_or_else(|_| Response::new(empty_body())));
     }
 
     if req.uri().path() != ctx.expected_path {
@@ -826,7 +923,9 @@ async fn start_local_proxy_server() -> Result<LocalProxyServer, String> {
 
     let token = generate_session_token();
     let expected_path = format!("/luma-proxy/{token}/stream");
+    let expected_cast_path = format!("/luma-proxy/{token}/cast");
     let endpoint_url = format!("http://127.0.0.1:{port}{expected_path}");
+    let cast_sender_url = format!("http://localhost:{port}{expected_cast_path}");
 
     let client = reqwest::Client::builder()
         .gzip(true)
@@ -839,6 +938,7 @@ async fn start_local_proxy_server() -> Result<LocalProxyServer, String> {
         client,
         port,
         expected_path,
+        expected_cast_path,
         endpoint_url: endpoint_url.clone(),
     });
 
@@ -860,7 +960,10 @@ async fn start_local_proxy_server() -> Result<LocalProxyServer, String> {
         }
     });
 
-    Ok(LocalProxyServer { endpoint_url })
+    Ok(LocalProxyServer {
+        endpoint_url,
+        cast_sender_url,
+    })
 }
 
 async fn ensure_local_proxy_url() -> Option<String> {
@@ -983,6 +1086,87 @@ async fn luma_native_launch_mpv(
         .map_err(|e| format!("MPV konnte nicht gestartet werden ({}): {e}", mpv_bin.display()))?;
 
     Ok(format!("MPV Hardware-Session gestartet ({})", mpv_bin.display()))
+}
+
+#[tauri::command]
+async fn luma_native_launch_chromecast_sender(
+    stream_url: String,
+    title: String,
+    subtitle: String,
+    content_type: String,
+    is_live: bool,
+) -> Result<String, String> {
+    let validated_stream = validate_proxy_upstream_url(&stream_url, 0)?;
+    let srv = LOCAL_PROXY_INSTANCE
+        .get_or_try_init(start_local_proxy_server)
+        .await?;
+
+    let target_url = format!(
+        "{}?url={}&title={}&subtitle={}&mime={}&live={}",
+        srv.cast_sender_url,
+        percent_encode_component(validated_stream.as_str()),
+        percent_encode_component(&sanitize_cli_value(&title)),
+        percent_encode_component(&sanitize_cli_value(&subtitle)),
+        percent_encode_component(&sanitize_cli_value(&content_type)),
+        if is_live { "1" } else { "0" }
+    );
+
+    #[cfg(target_os = "macos")]
+    {
+        let chromium_apps = [
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+            "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+        ];
+        for bin in chromium_apps {
+            let p = Path::new(bin);
+            if p.is_file() {
+                Command::new(p)
+                    .arg(format!("--app={target_url}"))
+                    .arg("--window-size=440,340")
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()
+                    .map_err(|e| format!("Failed to launch Chromecast controller: {e}"))?;
+                return Ok("Opened Chromecast Controller window.".to_string());
+            }
+        }
+        return Err(
+            "Install Google Chrome, Brave, or Edge on macOS to cast to Chromecast (Apple TV works directly via AirPlay)."
+                .to_string(),
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("cmd")
+            .args(["/C", "start", "", &target_url])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("Failed to launch browser for Chromecast: {e}"))?;
+        return Ok("Opened Chromecast Controller.".to_string());
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        Command::new("xdg-open")
+            .arg(&target_url)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("Failed to launch browser for Chromecast: {e}"))?;
+        return Ok("Opened Chromecast Controller.".to_string());
+    }
+
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        let _ = target_url;
+        Err("Desktop Chromecast bridge is not used on mobile.".to_string())
+    }
 }
 
 #[tauri::command]
@@ -1186,6 +1370,7 @@ pub fn run() {
             luma_native_probe_engine,
             luma_native_fetch_text,
             luma_native_launch_mpv,
+            luma_native_launch_chromecast_sender,
             luma_native_get_update_progress,
             luma_native_open_external_url,
             luma_native_install_macos_update

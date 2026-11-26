@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
+  Check,
   CheckCircle2,
   Download,
   FileUp,
@@ -11,11 +12,15 @@ import {
   LockOpen,
   Moon,
   PictureInPicture2,
+  Power,
   RefreshCw,
+  Search,
   ShieldAlert,
   ShieldCheck,
   Sliders,
   Sparkles,
+  Star,
+  X,
 } from 'lucide-react';
 import {
   TRANSLATIONS,
@@ -23,6 +28,7 @@ import {
   type LumaLocale,
   type LumaPreferences,
 } from '../../i18n/translations';
+import { searchChannelsRanked } from '../../services/channelSearch';
 import type {
   LumaUpdateCheckResult,
   LumaUpdateProgressPayload,
@@ -35,6 +41,7 @@ import {
 } from '../common/LumaCloudSyncCard';
 import {
   LUMA_APP_VERSION,
+  type Channel,
   type ChannelGroup,
   type CustomBouquet,
   type ParentalControlConfig,
@@ -49,6 +56,7 @@ interface SettingsHubViewProps {
   preferences: LumaPreferences;
   onChangePreferences: (next: LumaPreferences) => void;
   sleepRemainingSec: number | null;
+  channels?: Channel[];
   favoriteIds: Set<string>;
   customBouquets: CustomBouquet[];
   groups: ChannelGroup[];
@@ -80,6 +88,7 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
   preferences,
   onChangePreferences,
   sleepRemainingSec,
+  channels = [],
   favoriteIds,
   customBouquets,
   groups,
@@ -101,6 +110,30 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
   const t = TRANSLATIONS[preferences.locale];
   const panelClass = isM3 ? 'rounded-[28px] bg-[#1A202E] p-5' : 'lg-pane rounded-[24px] p-5';
   const [newPin, setNewPin] = useState(parentalConfig.pin);
+  const [startupSearchQuery, setStartupSearchQuery] = useState('');
+  const [startupPickerOpen, setStartupPickerOpen] = useState(false);
+
+  const firstFavoriteChannel = useMemo(
+    () => channels.find((c) => favoriteIds.has(c.id)) ?? null,
+    [channels, favoriteIds]
+  );
+
+  const configuredStartupChannel = useMemo(
+    () =>
+      preferences.startupChannelId
+        ? (channels.find((c) => c.id === preferences.startupChannelId) ?? null)
+        : null,
+    [channels, preferences.startupChannelId]
+  );
+
+  const startupCandidates = useMemo(() => {
+    if (!startupSearchQuery.trim()) {
+      const favs = channels.filter((c) => favoriteIds.has(c.id));
+      const rest = channels.filter((c) => !favoriteIds.has(c.id)).slice(0, 40);
+      return [...favs, ...rest].slice(0, 60);
+    }
+    return searchChannelsRanked(channels, startupSearchQuery, 60).items;
+  }, [channels, favoriteIds, startupSearchQuery]);
 
   const setLocale = (locale: LumaLocale) =>
     onChangePreferences({ ...preferences, locale });
@@ -369,23 +402,27 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
               <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
+                  aria-pressed={!isM3}
                   onClick={() => onChangeDesignMode('liquid-glass')}
-                  className={`rounded-full px-4 py-2 text-xs font-semibold ${
-                    !isM3 ? 'lg-pill-active' : 'm3-secondary-tonal'
+                  className={`inline-flex items-center gap-1.5 rounded-full px-4 py-2 text-xs font-semibold ${
+                    !isM3 ? 'lg-pill-active font-bold' : 'm3-secondary-tonal'
                   }`}
                 >
-                  Apple Liquid Glass ({detectedPlatformLabel})
+                  {!isM3 && <Check className="h-3.5 w-3.5 text-sky-200" />}
+                  <span>Apple Liquid Glass ({detectedPlatformLabel})</span>
                 </button>
                 <button
                   type="button"
+                  aria-pressed={isM3}
                   onClick={() => onChangeDesignMode('m3-expressive')}
-                  className={`rounded-full px-4 py-2 text-xs font-semibold ${
+                  className={`inline-flex items-center gap-1.5 rounded-full px-4 py-2 text-xs font-semibold ${
                     isM3
-                      ? 'm3-tonal-active ring-1 ring-[#7FD4FF]/60'
+                      ? 'm3-tonal-active font-bold'
                       : 'lg-capsule text-slate-300'
                   }`}
                 >
-                  Material 3 Expressive
+                  {isM3 && <Check className="h-3.5 w-3.5 text-[#7FD4FF]" />}
+                  <span>Material 3 Expressive</span>
                 </button>
               </div>
             ) : (
@@ -397,6 +434,152 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
               </div>
             )}
           </div>
+        </div>
+
+        {/* Startup Channel & Default Launch Behavior */}
+        <div id="settings-startup-channel-card" className={`${panelClass} space-y-3.5`}>
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 text-xs font-semibold text-white">
+              <Power className="h-4 w-4 text-emerald-400" />
+              <span>Startup Channel on App Launch</span>
+            </div>
+            <span className="rounded-full bg-emerald-400/15 px-2.5 py-0.5 text-[10px] font-semibold text-emerald-200 ring-1 ring-emerald-400/30">
+              {preferences.startupChannelId ? 'Custom Override' : '1st Favorite'}
+            </span>
+          </div>
+
+          <p className="text-[11px] text-slate-400">
+            By default, Luma TV always opens your first Favorite channel on startup. Choose a
+            specific channel below to override that default.
+          </p>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              id="btn-startup-first-favorite"
+              type="button"
+              aria-pressed={!preferences.startupChannelId}
+              onClick={() => {
+                onChangePreferences({
+                  ...preferences,
+                  startupChannelId: null,
+                  startupChannelName: null,
+                });
+                setStartupPickerOpen(false);
+              }}
+              className={`inline-flex items-center gap-1.5 rounded-full px-3.5 py-2 text-xs font-semibold ${
+                !preferences.startupChannelId
+                  ? isM3
+                    ? 'm3-primary-pill font-bold'
+                    : 'lg-pill-active font-bold'
+                  : isM3
+                    ? 'm3-secondary-tonal'
+                    : 'lg-capsule text-slate-200'
+              }`}
+            >
+              <Star className="h-3.5 w-3.5 fill-amber-300 text-amber-300" />
+              <span>
+                First Favorite
+                {firstFavoriteChannel ? ` (${firstFavoriteChannel.name})` : ''}
+              </span>
+            </button>
+
+            <button
+              id="btn-startup-custom-channel"
+              type="button"
+              aria-pressed={Boolean(preferences.startupChannelId) || startupPickerOpen}
+              onClick={() => setStartupPickerOpen((v) => !v)}
+              className={`inline-flex items-center gap-1.5 rounded-full px-3.5 py-2 text-xs font-semibold ${
+                preferences.startupChannelId
+                  ? isM3
+                    ? 'm3-tonal-active font-bold'
+                    : 'lg-pill-active font-bold'
+                  : isM3
+                    ? 'm3-secondary-tonal'
+                    : 'lg-capsule text-slate-200'
+              }`}
+            >
+              {preferences.startupChannelId && (
+                <Check className="h-3.5 w-3.5 text-emerald-300" />
+              )}
+              <span className="max-w-[200px] truncate">
+                {configuredStartupChannel?.name ??
+                  preferences.startupChannelName ??
+                  'Choose Custom Channel…'}
+              </span>
+            </button>
+          </div>
+
+          {startupPickerOpen && (
+            <div
+              className={`space-y-2 rounded-2xl p-3 ${
+                isM3
+                  ? 'bg-[#232B3D] ring-1 ring-white/10'
+                  : 'bg-black/35 ring-1 ring-white/12'
+              }`}
+            >
+              <div className="relative flex items-center">
+                <Search className="pointer-events-none absolute left-3 h-3.5 w-3.5 text-slate-400" />
+                <input
+                  id="input-startup-channel-search"
+                  type="text"
+                  value={startupSearchQuery}
+                  onChange={(e) => setStartupSearchQuery(e.target.value)}
+                  placeholder="Search channel to open on startup…"
+                  className="h-8.5 w-full rounded-full bg-white/[0.08] pl-8.5 pr-8 text-xs text-white placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-sky-400"
+                />
+                {startupSearchQuery && (
+                  <button
+                    type="button"
+                    onClick={() => setStartupSearchQuery('')}
+                    className="absolute right-2.5 text-slate-400 hover:text-white"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                )}
+              </div>
+
+              <div className="luma-scroll max-h-44 overflow-y-auto space-y-1 pr-0.5">
+                {startupCandidates.map((ch) => {
+                  const selected = preferences.startupChannelId === ch.id;
+                  const isFav = favoriteIds.has(ch.id);
+                  return (
+                    <button
+                      key={ch.id}
+                      type="button"
+                      onClick={() => {
+                        onChangePreferences({
+                          ...preferences,
+                          startupChannelId: ch.id,
+                          startupChannelName: ch.name,
+                        });
+                        setStartupPickerOpen(false);
+                      }}
+                      className={`flex w-full items-center justify-between gap-2 rounded-xl px-3 py-1.5 text-left text-xs transition ${
+                        selected
+                          ? isM3
+                            ? 'm3-tonal-active font-bold'
+                            : 'lg-pill-active font-bold'
+                          : 'text-slate-200 hover:bg-white/10'
+                      }`}
+                    >
+                      <span className="flex min-w-0 items-center gap-2">
+                        <span className="font-mono text-[10px] text-sky-300 luma-tabular">
+                          #{ch.number}
+                        </span>
+                        <span className="truncate">{ch.name}</span>
+                        {isFav && (
+                          <Star className="h-3 w-3 shrink-0 fill-amber-400 text-amber-400" />
+                        )}
+                      </span>
+                      {selected && (
+                        <Check className="h-3.5 w-3.5 shrink-0 text-emerald-300" />
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Sleep Timer & Spatial 10-Foot Focus */}

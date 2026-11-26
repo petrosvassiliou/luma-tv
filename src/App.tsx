@@ -187,11 +187,14 @@ export function App() {
       if (raw) {
         const parsed = JSON.parse(raw) as Partial<LumaPreferences>;
         return {
+          ...parsed,
           locale: normalizeLocale(parsed.locale ?? detectSystemLocale()),
           bufferProfile: parsed.bufferProfile ?? 'balanced',
           sleepTimerMinutes: parsed.sleepTimerMinutes ?? 0,
           spatialDpadEnabled: parsed.spatialDpadEnabled ?? true,
           autoMiniPlayerOnSwitch: Boolean(parsed.autoMiniPlayerOnSwitch ?? false),
+          startupChannelId: parsed.startupChannelId ?? null,
+          startupChannelName: parsed.startupChannelName ?? null,
         };
       }
     } catch {
@@ -203,6 +206,8 @@ export function App() {
       sleepTimerMinutes: 0,
       spatialDpadEnabled: true,
       autoMiniPlayerOnSwitch: false,
+      startupChannelId: null,
+      startupChannelName: null,
     };
   });
 
@@ -571,10 +576,13 @@ export function App() {
   }, []);
 
   const [persistedSources, setPersistedSources] = useState<StoredPlaylistSource[]>([]);
+  const [sourcesDbLoaded, setSourcesDbLoaded] = useState<boolean>(false);
   const [persistedChannels, setPersistedChannels] = useState<StoredChannel[]>([]);
+  const [loadedBundleSourceId, setLoadedBundleSourceId] = useState<string | null>(null);
   const [crossSourceLookupChannels, setCrossSourceLookupChannels] = useState<
     StoredChannel[]
   >([]);
+  const [favoritesLookupLoaded, setFavoritesLookupLoaded] = useState<boolean>(false);
   const [persistedVod, setPersistedVod] = useState<StoredVodItem[]>([]);
   const [crossSourceLookupVod, setCrossSourceLookupVod] = useState<
     StoredVodItem[]
@@ -670,7 +678,10 @@ export function App() {
           return list[0]?.id ?? 'none';
         });
       })
-      .catch(() => undefined);
+      .catch(() => undefined)
+      .finally(() => {
+        setSourcesDbLoaded(true);
+      });
   }, [demoSourceDeleted]);
 
   const refreshActiveSourceBundle = useCallback(async (sourceId: string) => {
@@ -681,6 +692,7 @@ export function App() {
         setPersistedSeries([]);
         setXmltvMap(new Map());
       }
+      setLoadedBundleSourceId(sourceId);
       return;
     }
     const bundle = await loadPersistedSourceBundle(sourceId);
@@ -688,10 +700,14 @@ export function App() {
     setPersistedVod(bundle.vodItems);
     setPersistedSeries(bundle.seriesItems);
     setXmltvMap(bundle.epgByTvgId);
+    setLoadedBundleSourceId(sourceId);
   }, []);
 
   useEffect(() => {
-    if (activeSourceId === 'builtin-reference' || activeSourceId === 'none') return;
+    if (activeSourceId === 'builtin-reference' || activeSourceId === 'none') {
+      setLoadedBundleSourceId(activeSourceId);
+      return;
+    }
     let cancelled = false;
     loadPersistedSourceBundle(activeSourceId)
       .then((bundle) => {
@@ -700,21 +716,28 @@ export function App() {
         setPersistedVod(bundle.vodItems);
         setPersistedSeries(bundle.seriesItems);
         setXmltvMap(bundle.epgByTvgId);
+        setLoadedBundleSourceId(activeSourceId);
       })
-      .catch(() => undefined);
+      .catch(() => {
+        if (!cancelled) setLoadedBundleSourceId(activeSourceId);
+      });
     return () => {
       cancelled = true;
     };
   }, [activeSourceId]);
 
-  // Resolve any Favorite or Collection channel IDs stored in IndexedDB across ALL playlists
+  // Resolve any Startup, Favorite, or Collection channel IDs stored in IndexedDB across ALL playlists
   useEffect(() => {
     const neededIds = new Set<string>(favoriteIds);
+    if (preferences.startupChannelId) {
+      neededIds.add(preferences.startupChannelId);
+    }
     for (const bq of customBouquets) {
       for (const cid of bq.channelIds) neededIds.add(cid);
     }
     if (neededIds.size === 0) {
       setCrossSourceLookupChannels([]);
+      setFavoritesLookupLoaded(true);
       return;
     }
     let cancelled = false;
@@ -726,11 +749,14 @@ export function App() {
           rows.filter((r): r is StoredChannel => Boolean(r))
         );
       })
-      .catch(() => undefined);
+      .catch(() => undefined)
+      .finally(() => {
+        if (!cancelled) setFavoritesLookupLoaded(true);
+      });
     return () => {
       cancelled = true;
     };
-  }, [favoriteIds, customBouquets, persistedSources]);
+  }, [favoriteIds, preferences.startupChannelId, customBouquets, persistedSources]);
 
   // Resolve any Favorite or Collection VOD IDs stored in IndexedDB across ALL playlists
   useEffect(() => {
@@ -928,7 +954,14 @@ export function App() {
     [activeSourceId, demoSourceDeleted, persistedSeries]
   );
 
-  const [activeChannelId, setActiveChannelId] = useState<string>('ch-redbull-tv');
+  const [activeChannelId, setActiveChannelId] = useState<string>(
+    () =>
+      preferences.startupChannelId ||
+      Array.from(favoriteIds)[0] ||
+      'ch-redbull-tv'
+  );
+  const userManuallySelectedChannelRef = useRef<boolean>(false);
+  const startupChannelResolvedRef = useRef<boolean>(false);
   const [activeOnDemand, setActiveOnDemand] = useState<{
     itemId: string;
     kind: 'vod' | 'catchup';
@@ -1041,6 +1074,51 @@ export function App() {
     return channels.filter((c) => c.groupId === selectedGroupId);
   }, [channels, collectionAndFavoritePool, selectedGroupId, favoriteIds, customBouquets]);
 
+  // Automatically start on the user's configured Default Startup Channel, or otherwise the First Favorite channel
+  useEffect(() => {
+    if (userManuallySelectedChannelRef.current || startupChannelResolvedRef.current) {
+      return;
+    }
+    if (!sourcesDbLoaded || !favoritesLookupLoaded) return;
+    if (
+      activeSourceId !== 'builtin-reference' &&
+      activeSourceId !== 'none' &&
+      loadedBundleSourceId !== activeSourceId
+    ) {
+      return;
+    }
+
+    const explicitId = preferences.startupChannelId?.trim() || '';
+    const explicitMatch = explicitId
+      ? (channels.find((c) => c.id === explicitId) ??
+        collectionAndFavoritePool.find((c) => c.id === explicitId) ??
+        null)
+      : null;
+
+    const firstFavoriteMatch =
+      collectionAndFavoritePool.find((c) => favoriteIds.has(c.id)) ??
+      channels.find((c) => favoriteIds.has(c.id)) ??
+      null;
+
+    const fallbackMatch =
+      channels.find((c) => !isProviderDividerChannel(c.name)) ?? channels[0] ?? null;
+
+    const chosen = explicitMatch ?? firstFavoriteMatch ?? fallbackMatch;
+    startupChannelResolvedRef.current = true;
+    if (chosen) {
+      setActiveChannelId(chosen.id);
+    }
+  }, [
+    sourcesDbLoaded,
+    favoritesLookupLoaded,
+    activeSourceId,
+    loadedBundleSourceId,
+    preferences.startupChannelId,
+    channels,
+    collectionAndFavoritePool,
+    favoriteIds,
+  ]);
+
   const activeChannel: Channel = useMemo(
     () =>
       channels.find((c) => c.id === activeChannelId) ??
@@ -1142,6 +1220,7 @@ export function App() {
 
   const selectLiveChannel = useCallback(
     (ch: Channel) => {
+      userManuallySelectedChannelRef.current = true;
       ensureAudioUnmutedForSwitch();
       setActiveChannelId(ch.id);
       setActiveOnDemand(null);
@@ -1186,6 +1265,7 @@ export function App() {
 
   const handleStartTimeshift = useCallback(
     (ch: Channel, program: EpgProgram) => {
+      userManuallySelectedChannelRef.current = true;
       ensureAudioUnmutedForSwitch();
       const catchupUrl = buildCatchupStreamUrl(ch, program, Date.now());
       const durationSec = Math.max(60, Math.round((program.endMs - program.startMs) / 1000));
@@ -1213,6 +1293,7 @@ export function App() {
 
   const handlePlayVod = useCallback(
     (vod: VodItem, explicitResumeSec?: number) => {
+      userManuallySelectedChannelRef.current = true;
       ensureAudioUnmutedForSwitch();
       const existingResume =
         explicitResumeSec ??
@@ -3248,6 +3329,7 @@ export function App() {
               preferences={preferences}
               onChangePreferences={handleUpdatePreferences}
               sleepRemainingSec={sleepRemainingSec}
+              channels={collectionAndFavoritePool}
               favoriteIds={favoriteIds}
               customBouquets={customBouquets}
               groups={baseGroups}
@@ -3317,9 +3399,29 @@ export function App() {
                   ? favoriteSeriesIds.has(channelMenuTarget.series.id)
                   : false
           }
+          isStartupChannel={
+            Boolean(
+              channelMenuTarget.channel &&
+                preferences.startupChannelId === channelMenuTarget.channel.id
+            )
+          }
           collections={customBouquets}
           onClose={() => setChannelMenuTarget(null)}
           onPlayChannel={(ch) => selectLiveChannel(ch)}
+          onToggleStartupChannel={(ch) => {
+            const clearing = preferences.startupChannelId === ch.id;
+            handleUpdatePreferences({
+              ...preferences,
+              startupChannelId: clearing ? null : ch.id,
+              startupChannelName: clearing ? null : ch.name,
+            });
+            setToastMessage(
+              clearing
+                ? 'Startup channel reset to First Favorite'
+                : `Startup channel set to "${ch.name}"`
+            );
+            window.setTimeout(() => setToastMessage(null), 2800);
+          }}
           onOpenDualChannel={(ch) => {
             const primaryId =
               activeChannel.id === ch.id
