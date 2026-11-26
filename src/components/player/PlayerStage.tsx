@@ -16,6 +16,7 @@ import {
   ExternalLink,
   FileUp,
   Link2,
+  Loader2,
   Maximize2,
   Minimize2,
   Minus,
@@ -24,6 +25,7 @@ import {
   Play,
   Plus,
   Radio,
+  RefreshCw,
   RotateCcw,
   RotateCw,
   Settings2,
@@ -35,6 +37,7 @@ import {
   Tv,
   Volume2,
   VolumeX,
+  Wifi,
 } from 'lucide-react';
 import { getCurrentAndNextProgram } from '../../data/mockCatalog';
 import {
@@ -44,7 +47,7 @@ import {
 } from '../../engine/audioProcessor';
 import { formatPlaybackClock } from '../../engine/catchupUrlBuilder';
 import { LumaDvrRecorder } from '../../engine/dvrRecorder';
-import { LumaPlayerEngine } from '../../engine/LumaPlayerEngine';
+import { isTauriNativeRuntime, LumaPlayerEngine } from '../../engine/LumaPlayerEngine';
 import { launchNativeMpvStream } from '../../engine/tauriNativeBridge';
 import {
   LOCALE_META,
@@ -52,12 +55,18 @@ import {
   type LumaLocale,
 } from '../../i18n/translations';
 import {
-  isAndroidCastBridgeAvailable,
+  connectAndStreamToDiscoveredDevice,
+  disconnectActiveCastSession,
   isAppleAirPlaySupported,
+  mergeDiscoveredCastDevices,
+  prewarmNativeAirPlayVideo,
+  scanNetworkCastDevices,
+  stopNetworkCastScan,
   toCastableHlsOrMediaUrl,
-  triggerAndroidSystemCastSettings,
-  triggerAppleTvAirPlay,
-  triggerChromecastStream,
+  triggerAppleTvAirPlaySync,
+  triggerBrowserChromecastDialog,
+  type AndroidCastStateSnapshot,
+  type DiscoveredCastDevice,
 } from '../../services/castAndAirPlayService';
 import {
   detectSubtitleLanguageFromFilename,
@@ -170,6 +179,7 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
   const t = TRANSLATIONS[locale];
   const stageRef = useRef<HTMLDivElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const airplayBridgeVideoRef = useRef<HTMLVideoElement | null>(null);
   const synthCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const engineRef = useRef<LumaPlayerEngine | null>(null);
   const audioDspRef = useRef<LumaAudioProcessor | null>(null);
@@ -226,12 +236,20 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
   const [aspectMode, setAspectMode] = useState<AspectRatioMode>('16:9');
   const [showQualityMenu, setShowQualityMenu] = useState(false);
   const [showCastMenu, setShowCastMenu] = useState(false);
+  const [isScanningCast, setIsScanningCast] = useState(false);
+  const [connectingDeviceId, setConnectingDeviceId] = useState<string | null>(null);
+  const [discoveredDevices, setDiscoveredDevices] = useState<DiscoveredCastDevice[]>([]);
+  const [activeCastDevice, setActiveCastDevice] = useState<DiscoveredCastDevice | null>(
+    null
+  );
+  const [isNativeAirPlayActive, setIsNativeAirPlayActive] = useState(false);
   const [wirelessTargetLabel, setWirelessTargetLabel] = useState<string | null>(null);
   const [copiedCastUrl, setCopiedCastUrl] = useState(false);
   const [subtitleUrlInput, setSubtitleUrlInput] = useState('');
   const [isSubtitleDropActive, setIsSubtitleDropActive] = useState(false);
   const qualityMenuRef = useRef<HTMLDivElement | null>(null);
   const castMenuRef = useRef<HTMLDivElement | null>(null);
+  const lastCastForwardedUrlRef = useRef<string>('');
 
   // Live DVR Recording State
   const [isRecording, setIsRecording] = useState(false);
@@ -488,34 +506,130 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
     };
   }, [showQualityMenu, showCastMenu]);
 
-  // Observe WebKit AirPlay wireless connection state changes for live HUD badge
+  // Observe WebKit AirPlay 2 wireless connection state on both the dedicated AirPlay bridge
+  // video and main video so macOS Apple TV sessions pause local audio and update the HUD badge
   useEffect(() => {
-    const video = videoRef.current as
+    const mainVideo = videoRef.current as
       | (HTMLVideoElement & { webkitCurrentPlaybackTargetIsWireless?: boolean })
       | null;
-    if (!video) return;
+    const bridgeVideo = airplayBridgeVideoRef.current as
+      | (HTMLVideoElement & { webkitCurrentPlaybackTargetIsWireless?: boolean })
+      | null;
 
-    const onWirelessChanged = () => {
-      if (video.webkitCurrentPlaybackTargetIsWireless) {
-        setWirelessTargetLabel('Apple TV · AirPlay');
+    const handleWirelessState = () => {
+      const bridgeWireless = Boolean(bridgeVideo?.webkitCurrentPlaybackTargetIsWireless);
+      const mainWireless = Boolean(mainVideo?.webkitCurrentPlaybackTargetIsWireless);
+      const wirelessActive = bridgeWireless || mainWireless;
+
+      setIsNativeAirPlayActive(wirelessActive);
+      if (wirelessActive) {
+        setWirelessTargetLabel((prev) => prev || 'Apple TV · AirPlay');
+        if (bridgeWireless && bridgeVideo) {
+          mainVideo?.pause();
+          bridgeVideo.muted = false;
+          bridgeVideo.volume = 1;
+          bridgeVideo.play().catch(() => undefined);
+        }
       } else {
+        if (bridgeVideo) {
+          bridgeVideo.muted = true;
+          bridgeVideo.pause();
+        }
         setWirelessTargetLabel((prev) =>
-          prev === 'Apple TV · AirPlay' ? null : prev
+          prev?.includes('AirPlay') || prev?.includes('Apple TV') ? null : prev
         );
+        if (mainVideo && isPlaying) {
+          mainVideo.play().catch(() => undefined);
+        }
       }
     };
 
-    video.addEventListener(
+    mainVideo?.addEventListener(
       'webkitcurrentplaybacktargetiswirelesschanged',
-      onWirelessChanged
+      handleWirelessState
+    );
+    bridgeVideo?.addEventListener(
+      'webkitcurrentplaybacktargetiswirelesschanged',
+      handleWirelessState
     );
     return () => {
-      video.removeEventListener(
+      mainVideo?.removeEventListener(
         'webkitcurrentplaybacktargetiswirelesschanged',
-        onWirelessChanged
+        handleWirelessState
+      );
+      bridgeVideo?.removeEventListener(
+        'webkitcurrentplaybacktargetiswirelesschanged',
+        handleWirelessState
       );
     };
-  }, []);
+  }, [isPlaying]);
+
+  // Pre-warm native macOS AVFoundation AirPlay <video> whenever the Cast menu opens or channel changes during active AirPlay
+  useEffect(() => {
+    if (!showCastMenu && !isNativeAirPlayActive) return;
+    const bridge = airplayBridgeVideoRef.current;
+    if (!bridge || !isAppleAirPlaySupported(bridge)) return;
+
+    prewarmNativeAirPlayVideo({
+      airplayVideo: bridge,
+      rawStreamUrl: activeUrl,
+      streamType: overrideStreamUrl ? undefined : channel.streamType,
+      isLive: !isSeekable,
+      startTimeSec: mediaPositionSec,
+    });
+
+    if (isNativeAirPlayActive) {
+      bridge.muted = false;
+      bridge.volume = 1;
+      bridge.play().catch(() => undefined);
+    }
+  }, [
+    showCastMenu,
+    isNativeAirPlayActive,
+    activeUrl,
+    overrideStreamUrl,
+    channel.streamType,
+    isSeekable,
+    mediaPositionSec,
+  ]);
+
+  // Listen to live Android MediaRouter / NSD network discovery updates & stop active scan when menu closes
+  useEffect(() => {
+    const onAndroidCastUpdate = (e: Event) => {
+      const custom = e as CustomEvent<AndroidCastStateSnapshot>;
+      const incoming = custom.detail?.devices ?? [];
+      setDiscoveredDevices((prev) => {
+        const rustOnly = prev.filter((d) => d.source === 'rust-mdns');
+        return mergeDiscoveredCastDevices(incoming, rustOnly);
+      });
+      if (custom.detail && 'connectedDeviceName' in custom.detail) {
+        const name = custom.detail.connectedDeviceName;
+        if (name) {
+          setWirelessTargetLabel(name);
+        }
+      }
+    };
+
+    const onAndroidCastError = (e: Event) => {
+      const custom = e as CustomEvent<{ message?: string }>;
+      if (custom.detail?.message) {
+        onToast?.(custom.detail.message);
+      }
+    };
+
+    window.addEventListener('luma-android-cast-update', onAndroidCastUpdate);
+    window.addEventListener('luma-android-cast-error', onAndroidCastError);
+    return () => {
+      window.removeEventListener('luma-android-cast-update', onAndroidCastUpdate);
+      window.removeEventListener('luma-android-cast-error', onAndroidCastError);
+    };
+  }, [onToast]);
+
+  useEffect(() => {
+    if (!showCastMenu) {
+      stopNetworkCastScan();
+    }
+  }, [showCastMenu]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -857,23 +971,130 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
     showCastMenu ||
     isRecording;
 
-  const handleTriggerAirPlay = async () => {
-    setShowCastMenu(false);
-    const res = await triggerAppleTvAirPlay({
-      video: videoRef.current,
+  const runNetworkCastScan = async () => {
+    setIsScanningCast(true);
+    try {
+      const res = await scanNetworkCastDevices(1800);
+      setDiscoveredDevices(res.devices);
+      if (res.connectedDeviceName) {
+        setWirelessTargetLabel(res.connectedDeviceName);
+      }
+    } finally {
+      setIsScanningCast(false);
+    }
+  };
+
+  const handleTriggerAirPlaySync = (preferredLabel?: string) => {
+    const res = triggerAppleTvAirPlaySync({
+      airplayVideo: airplayBridgeVideoRef.current,
+      fallbackMainVideo: videoRef.current,
       engine: engineRef.current,
       rawStreamUrl: activeUrl,
       streamType: overrideStreamUrl ? undefined : channel.streamType,
+      isLive: !isSeekable,
+      startTimeSec: mediaPositionSec,
     });
+    if (res.ok && preferredLabel) {
+      setWirelessTargetLabel(`${preferredLabel} · AirPlay`);
+    }
+    setShowCastMenu(false);
     onToast?.(res.message);
   };
 
-  const handleTriggerChromecast = async () => {
+  const handleSelectCastDevice = async (device: DiscoveredCastDevice) => {
+    // On macOS / iOS, clicking ANY discovered Apple TV MUST invoke native WebKit AirPlay 2
+    // synchronously inside the click gesture (modern tvOS rejects unauthenticated HTTP :7000).
+    if (
+      device.protocol === 'airplay' &&
+      (isAppleAirPlaySupported(airplayBridgeVideoRef.current) ||
+        isAppleAirPlaySupported(videoRef.current))
+    ) {
+      handleTriggerAirPlaySync(device.name);
+      return;
+    }
+
+    setConnectingDeviceId(device.id);
+    const streamTitle = isOnDemandVod
+      ? displayTitle
+      : `${channel.name} · ${displayTitle}`;
+    try {
+      const res = await connectAndStreamToDiscoveredDevice({
+        device,
+        video: videoRef.current,
+        rawStreamUrl: activeUrl,
+        streamType: overrideStreamUrl ? undefined : channel.streamType,
+        title: streamTitle,
+        subtitle: displaySubtitle,
+        isLive: !isSeekable,
+        startTimeSec: mediaPositionSec,
+      });
+      if (res.ok) {
+        lastCastForwardedUrlRef.current = activeUrl;
+        setActiveCastDevice(device);
+        setWirelessTargetLabel(res.deviceName);
+        setShowCastMenu(false);
+      }
+      onToast?.(res.message);
+    } finally {
+      setConnectingDeviceId(null);
+    }
+  };
+
+  const handleStopCasting = async () => {
+    setActiveCastDevice(null);
+    setIsNativeAirPlayActive(false);
+    setWirelessTargetLabel(null);
+    lastCastForwardedUrlRef.current = '';
+    if (airplayBridgeVideoRef.current) {
+      airplayBridgeVideoRef.current.pause();
+      airplayBridgeVideoRef.current.removeAttribute('src');
+      airplayBridgeVideoRef.current.removeAttribute('data-luma-airplay-src');
+      airplayBridgeVideoRef.current.load();
+    }
+    await disconnectActiveCastSession();
+    if (videoRef.current && isPlaying) {
+      videoRef.current.play().catch(() => undefined);
+    }
+    onToast?.('Disconnected from TV');
+  };
+
+  // Automatically forward channel switches to the active Chromecast / Apple TV session
+  useEffect(() => {
+    if (!activeCastDevice || lastCastForwardedUrlRef.current === activeUrl) {
+      return;
+    }
+    lastCastForwardedUrlRef.current = activeUrl;
+    const streamTitle = isOnDemandVod
+      ? displayTitle
+      : `${channel.name} · ${displayTitle}`;
+    void connectAndStreamToDiscoveredDevice({
+      device: activeCastDevice,
+      video: videoRef.current,
+      rawStreamUrl: activeUrl,
+      streamType: overrideStreamUrl ? undefined : channel.streamType,
+      title: streamTitle,
+      subtitle: displaySubtitle,
+      isLive: !isSeekable,
+      startTimeSec: 0,
+    });
+  }, [
+    activeCastDevice,
+    activeUrl,
+    channel.name,
+    channel.streamType,
+    displaySubtitle,
+    displayTitle,
+    isOnDemandVod,
+    isSeekable,
+    overrideStreamUrl,
+  ]);
+
+  const handleTriggerBrowserChromecast = async () => {
     setShowCastMenu(false);
     const streamTitle = isOnDemandVod
       ? displayTitle
       : `${channel.name} · ${displayTitle}`;
-    const res = await triggerChromecastStream({
+    const res = await triggerBrowserChromecastDialog({
       video: videoRef.current,
       engine: engineRef.current,
       rawStreamUrl: activeUrl,
@@ -966,6 +1187,17 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
             externalCanvasRef={synthCanvasRef}
           />
         )}
+
+        <video
+          ref={airplayBridgeVideoRef}
+          id="luma-airplay-bridge-video"
+          playsInline
+          preload="metadata"
+          muted={!isNativeAirPlayActive}
+          x-webkit-airplay="allow"
+          aria-hidden="true"
+          className="pointer-events-none fixed right-0 bottom-0 h-px w-px opacity-0"
+        />
 
         <video
           ref={videoRef}
@@ -1107,12 +1339,12 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
           {wirelessTargetLabel && (
             <button
               type="button"
-              onClick={() => setWirelessTargetLabel(null)}
-              className="inline-flex items-center gap-1.5 rounded-full bg-sky-400/25 px-3 py-1 text-[10px] font-bold text-sky-100 ring-1 ring-sky-300/50"
-              title="Wireless stream active (click to dismiss badge)"
+              onClick={() => void handleStopCasting()}
+              className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/25 px-3 py-1 text-[10px] font-bold text-emerald-100 ring-1 ring-emerald-400/50 hover:bg-rose-500/30 hover:text-white"
+              title="Streaming to TV — click to stop casting"
             >
-              <Cast className="h-3 w-3 text-sky-200" />
-              <span>{wirelessTargetLabel}</span>
+              <Cast className="h-3 w-3 text-emerald-300" />
+              <span>{wirelessTargetLabel} · Stop</span>
             </button>
           )}
 
@@ -1785,7 +2017,7 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
                 )}
               </div>
 
-              {/* Stream to Chromecast & Apple TV (AirPlay) */}
+              {/* Stream to Chromecast & Apple TV (Automatic Wi-Fi Network Discovery) */}
               <div ref={castMenuRef} className="relative shrink-0">
                 <button
                   id="btn-cast-airplay"
@@ -1794,7 +2026,11 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
                   aria-pressed={showCastMenu || Boolean(wirelessTargetLabel)}
                   onClick={() => {
                     setShowQualityMenu(false);
-                    setShowCastMenu((v) => !v);
+                    const nextOpen = !showCastMenu;
+                    setShowCastMenu(nextOpen);
+                    if (nextOpen) {
+                      void runNetworkCastScan();
+                    }
                   }}
                   className={
                     isM3
@@ -1809,7 +2045,7 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
                             : 'lg-capsule text-white/90'
                         } flex h-9 items-center justify-center gap-1.5 rounded-full px-2.5 text-[11px] font-medium`
                   }
-                  title="Stream to Chromecast or Apple TV (AirPlay)"
+                  title="Scan network & stream to Chromecast or Apple TV"
                 >
                   <Cast className="h-3.5 w-3.5 shrink-0" />
                   <span className="hidden whitespace-nowrap @4xl:inline">Cast / TV</span>
@@ -1817,108 +2053,181 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
 
                 {showCastMenu && (
                   <div
-                    className={`absolute right-0 bottom-12 z-40 w-72 p-3 text-xs shadow-2xl ${
+                    id="luma-cast-popover"
+                    className={`absolute right-0 bottom-12 z-40 w-80 p-3.5 text-xs shadow-2xl ${
                       isM3
                         ? 'rounded-[24px] bg-[#1C2334] ring-1 ring-[#7FD4FF]/35'
                         : 'lg-modal rounded-[22px] ring-1 ring-sky-300/30'
                     }`}
                   >
-                    <div className="mb-2 flex items-center justify-between px-1">
-                      <span className="text-[10px] font-bold uppercase tracking-wider text-sky-300">
-                        Stream to TV · Cast &amp; AirPlay
+                    <div className="mb-2.5 flex items-center justify-between gap-2 px-1">
+                      <span className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-sky-300">
+                        <Wifi className="h-3.5 w-3.5" />
+                        <span>Wi-Fi Cast &amp; AirPlay Devices</span>
                       </span>
-                      <Tv className="h-3.5 w-3.5 text-sky-300" />
+                      <button
+                        id="btn-cast-rescan"
+                        type="button"
+                        disabled={isScanningCast}
+                        onClick={() => void runNetworkCastScan()}
+                        className="inline-flex items-center gap-1 rounded-full bg-white/10 px-2.5 py-1 text-[10px] font-semibold text-sky-200 hover:bg-white/20 disabled:opacity-60"
+                        title="Rescan Wi-Fi network for Chromecast & Apple TV"
+                      >
+                        <RefreshCw
+                          className={`h-3 w-3 ${isScanningCast ? 'animate-spin' : ''}`}
+                        />
+                        <span>{isScanningCast ? 'Scanning…' : 'Rescan'}</span>
+                      </button>
                     </div>
 
-                    <div className="space-y-1.5">
-                      <button
-                        id="btn-cast-chromecast"
-                        type="button"
-                        onClick={() => void handleTriggerChromecast()}
-                        className={`flex w-full items-center justify-between gap-2.5 rounded-2xl px-3 py-2.5 text-left transition ${
-                          isM3
-                            ? 'bg-[#263148] text-white hover:bg-[#324160]'
-                            : 'bg-white/[0.07] text-white hover:bg-white/14'
-                        }`}
-                      >
-                        <div className="flex min-w-0 items-center gap-2.5">
-                          <Cast className="h-4 w-4 shrink-0 text-sky-300" />
-                          <div className="min-w-0">
-                            <div className="font-semibold">Chromecast / Google TV</div>
-                            <div className="truncate text-[10px] text-slate-300">
-                              Cast HLS / MP4 stream over Wi-Fi
-                            </div>
+                    {wirelessTargetLabel && (
+                      <div className="mb-2.5 flex items-center justify-between gap-2 rounded-2xl bg-emerald-500/15 px-3 py-2 ring-1 ring-emerald-400/35">
+                        <div className="min-w-0">
+                          <div className="text-[10px] font-bold uppercase text-emerald-300">
+                            Connected TV
+                          </div>
+                          <div className="truncate font-semibold text-white">
+                            {wirelessTargetLabel}
                           </div>
                         </div>
-                      </button>
-
-                      <button
-                        id="btn-cast-appletv"
-                        type="button"
-                        onClick={() => void handleTriggerAirPlay()}
-                        className={`flex w-full items-center justify-between gap-2.5 rounded-2xl px-3 py-2.5 text-left transition ${
-                          isM3
-                            ? 'bg-[#263148] text-white hover:bg-[#324160]'
-                            : 'bg-white/[0.07] text-white hover:bg-white/14'
-                        }`}
-                      >
-                        <div className="flex min-w-0 items-center gap-2.5">
-                          <Airplay className="h-4 w-4 shrink-0 text-sky-300" />
-                          <div className="min-w-0">
-                            <div className="flex items-center gap-1.5 font-semibold">
-                              <span>Apple TV (AirPlay)</span>
-                              {isAppleAirPlaySupported(videoRef.current) && (
-                                <span className="rounded bg-emerald-400/20 px-1.5 py-0.5 text-[9px] font-bold text-emerald-300">
-                                  NATIVE
-                                </span>
-                              )}
-                            </div>
-                            <div className="truncate text-[10px] text-slate-300">
-                              Native AirPlay 2 video &amp; audio picker
-                            </div>
-                          </div>
-                        </div>
-                      </button>
-
-                      {isAndroidCastBridgeAvailable() && (
                         <button
+                          id="btn-cast-disconnect"
                           type="button"
-                          onClick={() => {
-                            setShowCastMenu(false);
-                            triggerAndroidSystemCastSettings();
-                          }}
-                          className={`flex w-full items-center gap-2.5 rounded-2xl px-3 py-2 text-left transition ${
+                          onClick={() => void handleStopCasting()}
+                          className="shrink-0 rounded-full bg-rose-500/80 px-2.5 py-1 text-[10px] font-bold text-white hover:bg-rose-500"
+                        >
+                          Stop
+                        </button>
+                      </div>
+                    )}
+
+                    {/* Live Discovered Chromecast, Google TV, Android TV & Apple TV List */}
+                    <div
+                      id="luma-cast-network-list"
+                      className="luma-scroll max-h-56 space-y-1.5 overflow-y-auto"
+                    >
+                      {discoveredDevices.map((dev) => {
+                        const isConnecting = connectingDeviceId === dev.id;
+                        const isCurrent =
+                          activeCastDevice?.id === dev.id ||
+                          Boolean(dev.isSelected) ||
+                          wirelessTargetLabel === dev.name;
+                        return (
+                          <button
+                            key={dev.id}
+                            type="button"
+                            disabled={isConnecting}
+                            onClick={() => void handleSelectCastDevice(dev)}
+                            className={`flex w-full items-center justify-between gap-2.5 rounded-2xl px-3 py-2.5 text-left transition ${
+                              isCurrent
+                                ? isM3
+                                  ? 'm3-tonal-active font-bold'
+                                  : 'lg-pill-active font-bold'
+                                : isM3
+                                  ? 'bg-[#263148] text-white hover:bg-[#324160]'
+                                  : 'bg-white/[0.08] text-white hover:bg-white/15'
+                            }`}
+                          >
+                            <div className="flex min-w-0 items-center gap-2.5">
+                              {dev.protocol === 'airplay' ? (
+                                <Airplay className="h-4 w-4 shrink-0 text-sky-300" />
+                              ) : (
+                                <Cast className="h-4 w-4 shrink-0 text-sky-300" />
+                              )}
+                              <div className="min-w-0">
+                                <div className="truncate font-semibold">{dev.name}</div>
+                                <div className="truncate text-[10px] text-slate-300">
+                                  {dev.model}
+                                  {dev.host ? ` · ${dev.host}` : ''}
+                                </div>
+                              </div>
+                            </div>
+                            {isConnecting ? (
+                              <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-sky-300" />
+                            ) : isCurrent ? (
+                              <Check className="h-3.5 w-3.5 shrink-0 text-emerald-300" />
+                            ) : (
+                              <Tv className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+                            )}
+                          </button>
+                        );
+                      })}
+
+                      {discoveredDevices.length === 0 && isScanningCast && (
+                        <div className="flex items-center gap-2.5 rounded-2xl bg-white/[0.05] px-3 py-3 text-[11px] text-slate-300">
+                          <Loader2 className="h-4 w-4 shrink-0 animate-spin text-sky-300" />
+                          <span>
+                            Scanning your Wi-Fi network for Chromecast, Google TV &amp; Apple TV…
+                          </span>
+                        </div>
+                      )}
+
+                      {discoveredDevices.length === 0 && !isScanningCast && (
+                        <div className="rounded-2xl bg-white/[0.04] px-3 py-2.5 text-[11px] leading-relaxed text-slate-300">
+                          No Chromecast or Apple TV responded yet. Ensure your TV is powered on
+                          and connected to the same Wi-Fi network, then tap{' '}
+                          <span className="font-semibold text-sky-300">Rescan</span>.
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Native Apple AirPlay 2 Picker (macOS / iOS) & Web Browser Cast */}
+                    <div className="mt-2 space-y-1 border-t border-white/10 pt-2">
+                      {(isAppleAirPlaySupported(airplayBridgeVideoRef.current) ||
+                        isAppleAirPlaySupported(videoRef.current)) && (
+                        <button
+                          id="btn-cast-appletv"
+                          type="button"
+                          onClick={() => handleTriggerAirPlaySync()}
+                          className={`flex w-full items-center justify-between rounded-2xl px-3 py-2 text-left text-xs font-semibold transition ${
                             isM3
-                              ? 'bg-[#263148] text-slate-200 hover:bg-[#324160]'
-                              : 'bg-white/[0.05] text-slate-200 hover:bg-white/12'
+                              ? 'bg-[#263148] text-white hover:bg-[#324160]'
+                              : 'bg-sky-400/15 text-sky-100 ring-1 ring-sky-300/35 hover:bg-sky-400/25'
                           }`}
                         >
-                          <Tv className="h-3.5 w-3.5 shrink-0 text-sky-300" />
-                          <span>System Wireless Display / Cast Screen</span>
+                          <span className="flex items-center gap-2">
+                            <Airplay className="h-4 w-4 shrink-0 text-sky-300" />
+                            <span>Apple TV · Native macOS AirPlay 2…</span>
+                          </span>
+                          <span className="rounded bg-emerald-400/20 px-1.5 py-0.5 text-[9px] font-bold text-emerald-300">
+                            NATIVE
+                          </span>
                         </button>
                       )}
 
-                      <div className="border-t border-white/10 pt-1.5">
+                      {!isTauriNativeRuntime() && (
                         <button
-                          id="btn-cast-copy-url"
+                          id="btn-cast-chromecast"
                           type="button"
-                          onClick={() => void handleCopyCastUrl()}
-                          className="flex w-full items-center justify-between rounded-xl px-3 py-1.5 text-left text-[11px] text-slate-300 transition hover:bg-white/10 hover:text-white"
+                          onClick={() => void handleTriggerBrowserChromecast()}
+                          className="flex w-full items-center justify-between rounded-xl px-3 py-1.5 text-left text-[11px] font-medium text-slate-200 transition hover:bg-white/10"
                         >
                           <span className="flex items-center gap-2">
-                            {copiedCastUrl ? (
-                              <Check className="h-3.5 w-3.5 text-emerald-400" />
-                            ) : (
-                              <Copy className="h-3.5 w-3.5 text-sky-300" />
-                            )}
-                            <span>
-                              {copiedCastUrl
-                                ? 'Copied HLS/Media URL'
-                                : 'Copy Castable Stream URL'}
-                            </span>
+                            <Cast className="h-3.5 w-3.5 text-sky-300" />
+                            <span>Browser Google Cast Dialog…</span>
                           </span>
                         </button>
-                      </div>
+                      )}
+
+                      <button
+                        id="btn-cast-copy-url"
+                        type="button"
+                        onClick={() => void handleCopyCastUrl()}
+                        className="flex w-full items-center justify-between rounded-xl px-3 py-1.5 text-left text-[11px] text-slate-300 transition hover:bg-white/10 hover:text-white"
+                      >
+                        <span className="flex items-center gap-2">
+                          {copiedCastUrl ? (
+                            <Check className="h-3.5 w-3.5 text-emerald-400" />
+                          ) : (
+                            <Copy className="h-3.5 w-3.5 text-sky-300" />
+                          )}
+                          <span>
+                            {copiedCastUrl
+                              ? 'Copied HLS/Media URL'
+                              : 'Copy Castable Stream URL'}
+                          </span>
+                        </span>
+                      </button>
                     </div>
                   </div>
                 )}

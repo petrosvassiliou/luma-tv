@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
   inferCastContentType,
+  mergeDiscoveredCastDevices,
   toCastableHlsOrMediaUrl,
 } from './castAndAirPlayService';
 
-describe('castAndAirPlayService URL & MIME helpers', () => {
+describe('castAndAirPlayService URL, MIME & network discovery deduplication', () => {
   it('converts Xtream live .ts and extensionless stream URLs to .m3u8 for Apple TV & Chromecast', () => {
     expect(
       toCastableHlsOrMediaUrl('http://iptv.provider.tv:8080/live/alice/sec123/98765.ts')
@@ -37,5 +38,45 @@ describe('castAndAirPlayService URL & MIME helpers', () => {
     expect(
       inferCastContentType('http://cdn.example.com/movie/u/p/100.mkv')
     ).toBe('video/x-matroska');
+  });
+
+  it('merges Android MediaRouter routes and Rust mDNS Chromecast/AirPlay devices without duplicates', () => {
+    const merged = mergeDiscoveredCastDevices(
+      [
+        {
+          id: 'route:cast-living-room',
+          name: 'Living Room TV',
+          model: 'Chromecast Ultra',
+          protocol: 'chromecast',
+          source: 'android-mediarouter',
+        },
+      ],
+      [
+        {
+          id: 'lan:chromecast:192.168.178.42:8009',
+          name: 'Living Room TV',
+          model: 'Chromecast Ultra',
+          protocol: 'chromecast',
+          source: 'rust-mdns',
+          host: '192.168.178.42',
+          port: 8009,
+        },
+        {
+          id: 'lan:airplay:192.168.178.55:7000',
+          name: 'Bedroom Apple TV',
+          model: 'AppleTV14,1',
+          protocol: 'airplay',
+          source: 'rust-mdns',
+          host: '192.168.178.55',
+          port: 7000,
+        },
+      ]
+    );
+
+    expect(merged).toHaveLength(2);
+    expect(merged[0].name).toBe('Bedroom Apple TV');
+    expect(merged[0].protocol).toBe('airplay');
+    expect(merged[1].name).toBe('Living Room TV');
+    expect(merged[1].source).toBe('android-mediarouter');
   });
 });

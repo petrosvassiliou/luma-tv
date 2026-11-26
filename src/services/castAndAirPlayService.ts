@@ -1,5 +1,25 @@
-import { launchNativeChromecastSender } from '../engine/tauriNativeBridge';
+import {
+  playOnNativeLanCastDevice,
+  scanNativeLanCastDevices,
+  stopNativeLanCastDevice,
+} from '../engine/tauriNativeBridge';
 import type { LumaPlayerEngine } from '../engine/LumaPlayerEngine';
+
+export interface DiscoveredCastDevice {
+  id: string;
+  name: string;
+  model: string;
+  protocol: 'chromecast' | 'airplay';
+  source: 'android-mediarouter' | 'android-nsd' | 'rust-mdns';
+  host?: string;
+  port?: number;
+  isSelected?: boolean;
+}
+
+export interface AndroidCastStateSnapshot {
+  devices?: DiscoveredCastDevice[];
+  connectedDeviceName?: string | null;
+}
 
 interface WebKitVideoElement extends HTMLVideoElement {
   webkitShowPlaybackTargetPicker?: () => void;
@@ -7,12 +27,19 @@ interface WebKitVideoElement extends HTMLVideoElement {
 }
 
 interface LumaAndroidCastBridge {
-  openCastSettings?: () => boolean;
-  launchExternalCastChooser?: (
+  startCastScan?: () => string;
+  stopCastScan?: () => void;
+  getCastStateJson?: () => string;
+  connectAndCastRoute?: (
+    deviceId: string,
     streamUrl: string,
     title: string,
-    mimeType: string
+    subtitle: string,
+    mimeType: string,
+    isLive: boolean,
+    positionSec: number
   ) => boolean;
+  stopCasting?: () => void;
 }
 
 interface GoogleCastSession {
@@ -81,31 +108,26 @@ export function toCastableHlsOrMediaUrl(
     const parsed = new URL(trimmed);
     const path = parsed.pathname;
 
-    // Preserve explicit VOD containers (.mp4, .mkv, .webm, .m4v, .mov) and existing .m3u8
     if (/\.(m3u8|mp4|m4v|mov|webm|mkv)(\?|$)/i.test(path)) {
       return trimmed;
     }
 
-    // Xtream live stream ending in .ts -> swap extension to .m3u8 (supported by Xtream servers)
     if (/\/live\/[^/]+\/[^/]+\/\d+\.ts$/i.test(path)) {
       parsed.pathname = path.replace(/\.ts$/i, '.m3u8');
       return parsed.toString();
     }
 
-    // Extensionless Xtream live path `/live/user/pass/12345` -> append `.m3u8`
     if (/\/live\/[^/]+\/[^/]+\/\d+$/i.test(path)) {
       parsed.pathname = `${path}.m3u8`;
       return parsed.toString();
     }
 
-    // Short Xtream live path `/user/pass/12345.ts` -> `/live/user/pass/12345.m3u8`
     const shortTsMatch = path.match(/^\/([^/]+)\/([^/]+)\/(\d+)\.ts$/i);
     if (shortTsMatch) {
       parsed.pathname = `/live/${shortTsMatch[1]}/${shortTsMatch[2]}/${shortTsMatch[3]}.m3u8`;
       return parsed.toString();
     }
 
-    // Short extensionless Xtream live path `/user/pass/12345` when marked mpegts
     const shortBareMatch = path.match(/^\/([^/]+)\/([^/]+)\/(\d+)$/);
     if (shortBareMatch && streamType === 'mpegts') {
       parsed.pathname = `/live/${shortBareMatch[1]}/${shortBareMatch[2]}/${shortBareMatch[3]}.m3u8`;
@@ -140,19 +162,356 @@ export function isAppleAirPlaySupported(video: HTMLVideoElement | null): boolean
   return typeof (video as WebKitVideoElement).webkitShowPlaybackTargetPicker === 'function';
 }
 
-export function isAndroidCastBridgeAvailable(): boolean {
+/**
+ * Pre-warms a dedicated native WebKit `<video x-webkit-airplay="allow">` element with the
+ * direct castable HLS/MP4 URL as soon as the Cast menu opens on macOS/iOS so `AVFoundation`
+ * already has a live `AVPlayerItem` ready before the user clicks an Apple TV target.
+ */
+export function prewarmNativeAirPlayVideo(params: {
+  airplayVideo: HTMLVideoElement | null;
+  rawStreamUrl: string;
+  streamType?: 'hls' | 'mpegts';
+  isLive: boolean;
+  startTimeSec?: number;
+}): void {
+  const {
+    airplayVideo,
+    rawStreamUrl,
+    streamType,
+    isLive,
+    startTimeSec = 0,
+  } = params;
+  if (!airplayVideo || !isAppleAirPlaySupported(airplayVideo)) return;
+
+  const airplayUrl = toCastableHlsOrMediaUrl(rawStreamUrl, streamType);
+  if (!airplayUrl) return;
+
+  airplayVideo.setAttribute('x-webkit-airplay', 'allow');
+  airplayVideo.disableRemotePlayback = false;
+
+  if (airplayVideo.getAttribute('data-luma-airplay-src') !== airplayUrl) {
+    airplayVideo.setAttribute('data-luma-airplay-src', airplayUrl);
+    airplayVideo.src = airplayUrl;
+    airplayVideo.load();
+    if (!isLive && startTimeSec > 2) {
+      airplayVideo.addEventListener(
+        'loadedmetadata',
+        () => {
+          try {
+            airplayVideo.currentTime = Math.floor(startTimeSec);
+          } catch {
+            // Ignore seek before ready
+          }
+        },
+        { once: true }
+      );
+    }
+  }
+}
+
+/**
+ * Invokes macOS / iOS native AirPlay 2 picker (`webkitShowPlaybackTargetPicker`)
+ * SYNCHRONOUSLY inside the user's click gesture so WebKit never drops the gesture token.
+ */
+export function triggerAppleTvAirPlaySync(params: {
+  airplayVideo: HTMLVideoElement | null;
+  fallbackMainVideo?: HTMLVideoElement | null;
+  engine?: LumaPlayerEngine | null;
+  rawStreamUrl: string;
+  streamType?: 'hls' | 'mpegts';
+  isLive?: boolean;
+  startTimeSec?: number;
+}): { ok: boolean; message: string } {
+  const {
+    airplayVideo,
+    fallbackMainVideo = null,
+    engine = null,
+    rawStreamUrl,
+    streamType,
+    isLive = true,
+    startTimeSec = 0,
+  } = params;
+
+  const targetVideo = (
+    isAppleAirPlaySupported(airplayVideo) ? airplayVideo : fallbackMainVideo
+  ) as WebKitVideoElement | null;
+
+  if (!targetVideo || typeof targetVideo.webkitShowPlaybackTargetPicker !== 'function') {
+    return {
+      ok: false,
+      message: 'Select your Apple TV from the discovered Wi-Fi devices list.',
+    };
+  }
+
+  const airplayUrl = toCastableHlsOrMediaUrl(rawStreamUrl, streamType);
+  if (targetVideo === airplayVideo) {
+    prewarmNativeAirPlayVideo({
+      airplayVideo: targetVideo,
+      rawStreamUrl,
+      streamType,
+      isLive,
+      startTimeSec,
+    });
+  } else {
+    engine?.prepareDirectRemotePlayback(targetVideo, airplayUrl);
+  }
+
+  try {
+    targetVideo.webkitShowPlaybackTargetPicker();
+    return {
+      ok: true,
+      message: 'Choose your Apple TV in the native macOS AirPlay menu.',
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      message:
+        err instanceof Error ? err.message : 'Unable to open macOS AirPlay picker.',
+    };
+  }
+}
+
+export function isAndroidNativeCastAvailable(): boolean {
   if (typeof window === 'undefined') return false;
   const w = window as unknown as CastGlobalWindow;
-  return Boolean(
-    w.LumaAndroidWindow &&
-      (typeof w.LumaAndroidWindow.launchExternalCastChooser === 'function' ||
-        typeof w.LumaAndroidWindow.openCastSettings === 'function')
-  );
+  return typeof w.LumaAndroidWindow?.startCastScan === 'function';
+}
+
+/**
+ * Deduplicates discovered Chromecast & AirPlay receivers across Android MediaRouter,
+ * Android NsdManager, and Rust mDNS, preferring `android-mediarouter` routes when both
+ * report the same Chromecast TV.
+ */
+export function mergeDiscoveredCastDevices(
+  androidDevices: DiscoveredCastDevice[],
+  rustLanDevices: DiscoveredCastDevice[]
+): DiscoveredCastDevice[] {
+  const merged: DiscoveredCastDevice[] = [];
+  const seenIds = new Set<string>();
+  const mediaRouterChromecastNames = new Set<string>();
+
+  for (const d of androidDevices) {
+    if (!d?.id || !d?.name || seenIds.has(d.id)) continue;
+    seenIds.add(d.id);
+    if (d.source === 'android-mediarouter' && d.protocol === 'chromecast') {
+      mediaRouterChromecastNames.add(d.name.trim().toLowerCase());
+    }
+    merged.push(d);
+  }
+
+  for (const r of rustLanDevices) {
+    if (!r?.id || !r?.name || seenIds.has(r.id)) continue;
+    if (
+      r.protocol === 'chromecast' &&
+      mediaRouterChromecastNames.has(r.name.trim().toLowerCase())
+    ) {
+      continue;
+    }
+    seenIds.add(r.id);
+    merged.push(r);
+  }
+
+  return merged.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+export function parseAndroidCastStateJson(
+  rawJson: string | null | undefined
+): AndroidCastStateSnapshot {
+  if (!rawJson) return { devices: [], connectedDeviceName: null };
+  try {
+    const parsed = JSON.parse(rawJson) as AndroidCastStateSnapshot;
+    return {
+      devices: Array.isArray(parsed.devices) ? parsed.devices : [],
+      connectedDeviceName:
+        typeof parsed.connectedDeviceName === 'string' && parsed.connectedDeviceName
+          ? parsed.connectedDeviceName
+          : null,
+    };
+  } catch {
+    return { devices: [], connectedDeviceName: null };
+  }
+}
+
+/**
+ * Starts automatic Wi-Fi network scanning across Android MediaRouter/CastContext + NSD
+ * AND Native Rust mDNS (`_googlecast._tcp.local` + `_airplay._tcp.local`).
+ */
+export async function scanNetworkCastDevices(
+  timeoutMs = 1800
+): Promise<{
+  devices: DiscoveredCastDevice[];
+  connectedDeviceName: string | null;
+}> {
+  const w = (typeof window !== 'undefined' ? window : {}) as unknown as CastGlobalWindow;
+
+  let androidDevices: DiscoveredCastDevice[] = [];
+  let connectedDeviceName: string | null = null;
+
+  if (typeof w.LumaAndroidWindow?.startCastScan === 'function') {
+    const initialSnap = parseAndroidCastStateJson(w.LumaAndroidWindow.startCastScan());
+    androidDevices = initialSnap.devices ?? [];
+    connectedDeviceName = initialSnap.connectedDeviceName ?? null;
+  }
+
+  const rustRaw = await scanNativeLanCastDevices(timeoutMs);
+  const rustDevices: DiscoveredCastDevice[] = rustRaw.map((d) => ({
+    id: d.id,
+    name: d.name,
+    model: d.model,
+    protocol: d.protocol,
+    source: 'rust-mdns',
+    host: d.host,
+    port: d.port,
+  }));
+
+  // Refresh Android snapshot after mDNS window so newly found MediaRouter/NSD routes are included too
+  if (typeof w.LumaAndroidWindow?.getCastStateJson === 'function') {
+    const afterSnap = parseAndroidCastStateJson(w.LumaAndroidWindow.getCastStateJson());
+    androidDevices = afterSnap.devices ?? androidDevices;
+    connectedDeviceName = afterSnap.connectedDeviceName ?? connectedDeviceName;
+  }
+
+  return {
+    devices: mergeDiscoveredCastDevices(androidDevices, rustDevices),
+    connectedDeviceName,
+  };
+}
+
+export function stopNetworkCastScan(): void {
+  if (typeof window === 'undefined') return;
+  const w = window as unknown as CastGlobalWindow;
+  try {
+    w.LumaAndroidWindow?.stopCastScan?.();
+  } catch {
+    // Ignore
+  }
+}
+
+/**
+ * Streams directly to a discovered Chromecast / Google TV or Apple TV device on the Wi-Fi LAN
+ * without opening any external app chooser.
+ */
+export async function connectAndStreamToDiscoveredDevice(params: {
+  device: DiscoveredCastDevice;
+  video: HTMLVideoElement | null;
+  rawStreamUrl: string;
+  streamType?: 'hls' | 'mpegts';
+  title: string;
+  subtitle?: string;
+  isLive: boolean;
+  startTimeSec?: number;
+}): Promise<{ ok: boolean; deviceName: string; message: string }> {
+  const {
+    device,
+    video,
+    rawStreamUrl,
+    streamType,
+    title,
+    subtitle = '',
+    isLive,
+    startTimeSec = 0,
+  } = params;
+
+  const castUrl = toCastableHlsOrMediaUrl(rawStreamUrl, streamType);
+  const contentType = inferCastContentType(castUrl);
+  const w = (typeof window !== 'undefined' ? window : {}) as unknown as CastGlobalWindow;
+
+  // 1. Android MediaRouter / Google Play Services CastSession route (`route:...`)
+  if (
+    device.id.startsWith('route:') &&
+    typeof w.LumaAndroidWindow?.connectAndCastRoute === 'function'
+  ) {
+    const handled = w.LumaAndroidWindow.connectAndCastRoute(
+      device.id,
+      castUrl,
+      title,
+      subtitle,
+      contentType,
+      isLive,
+      startTimeSec
+    );
+    if (handled) {
+      video?.pause();
+      return {
+        ok: true,
+        deviceName: device.name,
+        message: `Connecting to ${device.name}…`,
+      };
+    }
+  }
+
+  // 2. Direct LAN CastV2 TLS (port 8009) or AirPlay HTTP (port 7000) via Native Rust Bridge
+  if (device.host && device.port) {
+    try {
+      const msg = await playOnNativeLanCastDevice({
+        protocol: device.protocol,
+        host: device.host,
+        port: device.port,
+        streamUrl: castUrl,
+        title,
+        subtitle,
+        contentType,
+        isLive,
+        positionSec: startTimeSec,
+      });
+      video?.pause();
+      return {
+        ok: true,
+        deviceName: device.name,
+        message: msg,
+      };
+    } catch (err) {
+      return {
+        ok: false,
+        deviceName: device.name,
+        message:
+          err instanceof Error
+            ? err.message
+            : `Failed to stream to ${device.name}.`,
+      };
+    }
+  }
+
+  return {
+    ok: false,
+    deviceName: device.name,
+    message: `Device ${device.name} is missing network address details.`,
+  };
+}
+
+export async function disconnectActiveCastSession(): Promise<void> {
+  const w = (typeof window !== 'undefined' ? window : {}) as unknown as CastGlobalWindow;
+  try {
+    w.LumaAndroidWindow?.stopCasting?.();
+  } catch {
+    // Ignore
+  }
+  try {
+    w.cast?.framework?.CastContext?.getInstance()?.endCurrentSession?.(true);
+  } catch {
+    // Ignore
+  }
+  await stopNativeLanCastDevice();
+}
+
+export async function triggerAppleTvAirPlay(params: {
+  video: HTMLVideoElement | null;
+  engine: LumaPlayerEngine | null;
+  rawStreamUrl: string;
+  streamType?: 'hls' | 'mpegts';
+}): Promise<{ ok: boolean; message: string }> {
+  return triggerAppleTvAirPlaySync({
+    airplayVideo: params.video,
+    fallbackMainVideo: params.video,
+    engine: params.engine,
+    rawStreamUrl: params.rawStreamUrl,
+    streamType: params.streamType,
+  });
 }
 
 let castSdkLoadPromise: Promise<boolean> | null = null;
 
-export function ensureGoogleCastSdkLoaded(timeoutMs = 3500): Promise<boolean> {
+export function ensureGoogleCastSdkLoaded(timeoutMs = 2600): Promise<boolean> {
   if (typeof window === 'undefined' || typeof document === 'undefined') {
     return Promise.resolve(false);
   }
@@ -191,7 +550,7 @@ export function ensureGoogleCastSdkLoaded(timeoutMs = 3500): Promise<boolean> {
               w.chrome.cast.AutoJoinPolicy?.ORIGIN_SCOPED || 'origin_scoped',
           });
         } catch {
-          // Ignore duplicate setOptions calls
+          // Ignore
         }
         finish(true);
       } else {
@@ -217,44 +576,10 @@ export function ensureGoogleCastSdkLoaded(timeoutMs = 3500): Promise<boolean> {
   return castSdkLoadPromise;
 }
 
-export async function triggerAppleTvAirPlay(params: {
-  video: HTMLVideoElement | null;
-  engine: LumaPlayerEngine | null;
-  rawStreamUrl: string;
-  streamType?: 'hls' | 'mpegts';
-}): Promise<{ ok: boolean; message: string }> {
-  const { video, engine, rawStreamUrl, streamType } = params;
-  const wkVideo = video as WebKitVideoElement | null;
-
-  if (!wkVideo || typeof wkVideo.webkitShowPlaybackTargetPicker !== 'function') {
-    return {
-      ok: false,
-      message:
-        'Native AirPlay picker requires macOS (Luma.app / Safari) or iOS/iPadOS.',
-    };
-  }
-
-  const airplayUrl = toCastableHlsOrMediaUrl(rawStreamUrl, streamType);
-
-  // Switch <video> from MSE blob: to direct HLS/MP4 URL so Apple TV receives full video + audio
-  engine?.prepareDirectRemotePlayback(wkVideo, airplayUrl);
-
-  try {
-    wkVideo.webkitShowPlaybackTargetPicker();
-    return {
-      ok: true,
-      message: 'Select your Apple TV or AirPlay 2 TV from the system picker.',
-    };
-  } catch (err) {
-    return {
-      ok: false,
-      message:
-        err instanceof Error ? err.message : 'Unable to open AirPlay target picker.',
-    };
-  }
-}
-
-export async function triggerChromecastStream(params: {
+/**
+ * Web Browser PWA Google Cast dialog (used only when running in desktop Chrome/Edge PWA).
+ */
+export async function triggerBrowserChromecastDialog(params: {
   video: HTMLVideoElement | null;
   engine: LumaPlayerEngine | null;
   rawStreamUrl: string;
@@ -279,7 +604,6 @@ export async function triggerChromecastStream(params: {
   const contentType = inferCastContentType(castUrl);
   const w = (typeof window !== 'undefined' ? window : {}) as unknown as CastGlobalWindow;
 
-  // 1. Native Google Cast Framework (Chrome, ChromeOS PWA, Edge, Brave)
   const castSdkReady = await ensureGoogleCastSdkLoaded(2600);
   if (
     castSdkReady &&
@@ -290,13 +614,6 @@ export async function triggerChromecastStream(params: {
   ) {
     try {
       const ctx = w.cast.framework.CastContext.getInstance();
-      ctx.setOptions({
-        receiverApplicationId:
-          w.chrome.cast.media.DEFAULT_MEDIA_RECEIVER_APP_ID || 'CC1AD845',
-        autoJoinPolicy:
-          w.chrome.cast.AutoJoinPolicy?.ORIGIN_SCOPED || 'origin_scoped',
-      });
-
       let session = ctx.getCurrentSession();
       if (!session) {
         await ctx.requestSession();
@@ -338,24 +655,6 @@ export async function triggerChromecastStream(params: {
     }
   }
 
-  // 2. Android / Googlebook Native Cast App Chooser (VLC, Web Video Caster, LocalCast, etc.)
-  if (w.LumaAndroidWindow?.launchExternalCastChooser) {
-    const launched = w.LumaAndroidWindow.launchExternalCastChooser(
-      castUrl,
-      title,
-      contentType
-    );
-    if (launched) {
-      video?.pause();
-      return {
-        ok: true,
-        deviceName: 'Chromecast / Cast Player',
-        message: `Opened Android / Googlebook Cast chooser for "${title}"`,
-      };
-    }
-  }
-
-  // 3. W3C RemotePlayback API (`video.remote.prompt()`) on Mobile / Chromium WebViews
   if (video && 'remote' in video && typeof video.remote?.prompt === 'function') {
     try {
       engine?.prepareDirectRemotePlayback(video, castUrl);
@@ -366,47 +665,13 @@ export async function triggerChromecastStream(params: {
         message: `Remote playback started for "${title}"`,
       };
     } catch {
-      // Fall through to native desktop Chrome Cast sender bridge
+      // Ignore
     }
-  }
-
-  // 4. macOS / Desktop Tauri Native Bridge -> Launches embedded localhost Chromecast Controller in Chrome/Edge/Brave
-  try {
-    const msg = await launchNativeChromecastSender({
-      streamUrl: castUrl,
-      title,
-      subtitle: subtitle ?? '',
-      contentType,
-      isLive,
-    });
-    video?.pause();
-    return {
-      ok: true,
-      deviceName: 'Chrome Cast Sender',
-      message: msg,
-    };
-  } catch {
-    // Fall through if not in Tauri desktop or Chrome isn't installed
-  }
-
-  // 5. Android / Googlebook System Cast Screen fallback
-  if (w.LumaAndroidWindow?.openCastSettings?.()) {
-    return {
-      ok: true,
-      deviceName: 'System Cast',
-      message: 'Opened system Chromecast / Cast Display settings.',
-    };
   }
 
   return {
     ok: false,
     message:
-      'Chromecast requires Google Chrome / ChromeOS or a Cast app (VLC / Web Video Caster). Use Copy Stream URL below if needed.',
+      'No browser Cast extension detected. Select a discovered Wi-Fi device from the list.',
   };
-}
-
-export function triggerAndroidSystemCastSettings(): boolean {
-  if (typeof window === 'undefined') return false;
-  const w = window as unknown as CastGlobalWindow;
-  return Boolean(w.LumaAndroidWindow?.openCastSettings?.());
 }

@@ -285,19 +285,85 @@ describe('Luma TV End-to-End UI & Button Smoke Test', () => {
     clickEl(host.querySelector('button[title="Reset offset"]'), 'Reset subtitle offset');
     expect(host.textContent).toContain('0.0s');
 
-    // Clicking Cast / AirPlay menu must automatically close DSP & Spuren and open Cast / AirPlay
-    clickEl(host.querySelector('#btn-cast-airplay'), '#btn-cast-airplay open');
-    expect(host.querySelector('button[title="+0.5s"]')).toBeNull();
-    expect(host.querySelector('#btn-cast-chromecast')).not.toBeNull();
-    expect(host.querySelector('#btn-cast-appletv')).not.toBeNull();
+    // Mock Android MediaRouter network scanner discovering a Chromecast on Wi-Fi
+    const connectAndCastRouteMock = vi.fn(() => true);
+    const mockSnap = JSON.stringify({
+      devices: [
+        {
+          id: 'route:cast-living-room',
+          name: 'Living Room Chromecast',
+          model: 'Chromecast Ultra',
+          protocol: 'chromecast',
+          source: 'android-mediarouter',
+        },
+      ],
+      connectedDeviceName: null,
+    });
+    (window as unknown as Record<string, unknown>).LumaAndroidWindow = {
+      startCastScan: vi.fn(() => mockSnap),
+      getCastStateJson: vi.fn(() => mockSnap),
+      stopCastScan: vi.fn(),
+      connectAndCastRoute: connectAndCastRouteMock,
+      stopCasting: vi.fn(),
+    };
 
-    // Clicking anywhere outside (e.g. titlebar) must close Cast / AirPlay menu immediately
+    // Clicking Cast / AirPlay menu must automatically close DSP & Spuren and scan network for TVs
+    await act(async () => {
+      clickEl(host.querySelector('#btn-cast-airplay'), '#btn-cast-airplay open');
+    });
+    expect(host.querySelector('button[title="+0.5s"]')).toBeNull();
+    expect(host.querySelector('#luma-cast-popover')).not.toBeNull();
+    expect(host.querySelector('#luma-cast-network-list')?.textContent).toContain(
+      'Living Room Chromecast'
+    );
+
+    // Clicking the discovered Chromecast streams directly via MediaRouter without external app chooser
+    const castDeviceBtn = Array.from(
+      host.querySelectorAll('#luma-cast-network-list button')
+    ).find((b) => b.textContent?.includes('Living Room Chromecast'));
+    await act(async () => {
+      clickEl(castDeviceBtn ?? null, 'Connect to Living Room Chromecast');
+    });
+    expect(connectAndCastRouteMock).toHaveBeenCalledTimes(1);
+    expect(host.querySelector('#luma-cast-popover')).toBeNull();
+
+    // Re-open Cast menu and verify clicking anywhere outside (e.g. titlebar) closes it immediately
+    await act(async () => {
+      clickEl(host.querySelector('#btn-cast-airplay'), '#btn-cast-airplay reopen');
+    });
+    expect(host.querySelector('#luma-cast-popover')).not.toBeNull();
     act(() => {
       host
         .querySelector('#luma-custom-titlebar')!
         .dispatchEvent(new Event('pointerdown', { bubbles: true }));
     });
-    expect(host.querySelector('#btn-cast-chromecast')).toBeNull();
+    expect(host.querySelector('#luma-cast-popover')).toBeNull();
+    delete (window as unknown as Record<string, unknown>).LumaAndroidWindow;
+
+    // Verify macOS native WebKit AirPlay 2 pre-warming & synchronous picker invocation
+    const airplayPickerMock = vi.fn();
+    Object.defineProperty(
+      HTMLMediaElement.prototype,
+      'webkitShowPlaybackTargetPicker',
+      {
+        configurable: true,
+        writable: true,
+        value: airplayPickerMock,
+      }
+    );
+    await act(async () => {
+      clickEl(host.querySelector('#btn-cast-airplay'), '#btn-cast-airplay macOS open');
+    });
+    const bridgeVideo = host.querySelector(
+      '#luma-airplay-bridge-video'
+    ) as HTMLVideoElement | null;
+    expect(bridgeVideo).not.toBeNull();
+    expect(bridgeVideo?.getAttribute('data-luma-airplay-src')).toContain('.m3u8');
+    expect(host.querySelector('#btn-cast-appletv')).not.toBeNull();
+    clickEl(host.querySelector('#btn-cast-appletv'), '#btn-cast-appletv macOS AirPlay');
+    expect(airplayPickerMock).toHaveBeenCalledTimes(1);
+    delete (HTMLMediaElement.prototype as unknown as Record<string, unknown>)
+      .webkitShowPlaybackTargetPicker;
 
     // Fullscreen toggle & exit via #btn-fullscreen and Escape
     await act(async () => {

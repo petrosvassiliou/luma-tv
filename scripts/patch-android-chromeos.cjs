@@ -3,14 +3,20 @@
  * Patches Tauri v2's generated Android project (`src-tauri/gen/android`) for
  * Googlebook / Chromebook (ChromeOS ARCVM), Android TV, and Android phones/tablets:
  *
- * 1. Sets stable compileSdk = 36, targetSdk = 34, minSdk = 26, and monotonic versionCode.
- * 2. Marks touchscreen/faketouch optional, enables usesCleartextTraffic="true" for HTTP IPTV,
- *    and sets resizeableActivity="true" + full configChanges so window resize/fullscreen never
- *    recreates the Activity.
- * 3. Injects `LumaAndroidWindow` (@JavascriptInterface) into `MainActivity.kt` so Luma's
- *    Fullscreen button toggles true ChromeOS ARCVM / Android OS immersive fullscreen
- *    (hiding captionBar, navigationBars, and statusBars + OnBackPressedCallback exit).
- * 4. Appends R8 / ProGuard keep rules so release APK minification preserves @JavascriptInterface.
+ * 1. Sets stable compileSdk = 36, targetSdk = 34, minSdk = 26, monotonic versionCode,
+ *    and adds Official Google Cast Framework (`play-services-cast-framework:22.0.0`) +
+ *    `androidx.mediarouter:mediarouter:1.7.0`.
+ * 2. Adds Wi-Fi / Multicast discovery permissions, registers `LumaCastOptionsProvider`,
+ *    marks touchscreen/faketouch optional, enables usesCleartextTraffic="true" for HTTP IPTV,
+ *    and sets resizeableActivity="true" + full configChanges.
+ * 3. Writes `LumaCastOptionsProvider.kt` and injects `LumaAndroidWindow` (@JavascriptInterface)
+ *    into `MainActivity.kt` for:
+ *    - True ChromeOS ARCVM / Android OS immersive fullscreen + Back-gesture exit
+ *    - Automatic Wi-Fi network discovery of Chromecast / Google TV / Android TV (`MediaRouter`
+ *      active scan + `CastContext`) and AirPlay / LAN devices (`NsdManager` + `MulticastLock`),
+ *      plus direct `RemoteMediaClient.load()` streaming without any external app chooser.
+ * 4. Appends R8 / ProGuard keep rules so release APK minification preserves @JavascriptInterface
+ *    and `LumaCastOptionsProvider`.
  */
 
 const fs = require('fs');
@@ -24,7 +30,7 @@ const verCode = m
     Number(m[2]) * 10000 +
     Number(m[3]) * 100 +
     (m[4] ? Number(m[4]) : 99)
-  : 80005;
+  : 80009;
 
 // 1. Patch app/build.gradle.kts
 const gradlePath = path.join(
@@ -36,10 +42,46 @@ gradle = gradle.replace(/compileSdk\s*=\s*\d+/g, 'compileSdk = 36');
 gradle = gradle.replace(/targetSdk\s*=\s*\d+/g, 'targetSdk = 34');
 gradle = gradle.replace(/minSdk\s*=\s*\d+/g, 'minSdk = 26');
 gradle = gradle.replace(/versionCode\s*=\s*[^\n]+/g, `versionCode = ${verCode}`);
+
+if (!gradle.includes('play-services-cast-framework')) {
+  gradle = gradle.replace(
+    'dependencies {',
+    `dependencies {\n` +
+      `    implementation("androidx.mediarouter:mediarouter:1.7.0")\n` +
+      `    implementation("com.google.android.gms:play-services-cast-framework:22.0.0")`
+  );
+}
 fs.writeFileSync(gradlePath, gradle);
 console.log(
-  `Patched build.gradle.kts (compileSdk=36, targetSdk=34, minSdk=26, versionCode=${verCode})`
+  `Patched build.gradle.kts (compileSdk=36, targetSdk=34, minSdk=26, versionCode=${verCode}, Google Cast SDK 22.0.0)`
 );
+
+// Locate MainActivity.kt early so we know the exact Android package name
+function findMainActivity(dir) {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      const found = findMainActivity(full);
+      if (found) return found;
+    } else if (entry.name === 'MainActivity.kt') {
+      return full;
+    }
+  }
+  return null;
+}
+
+const javaSrcRoot = path.join(
+  rootDir,
+  'src-tauri/gen/android/app/src/main/java'
+);
+const mainActivityPath = findMainActivity(javaSrcRoot);
+if (!mainActivityPath) {
+  throw new Error(`MainActivity.kt not found under ${javaSrcRoot}`);
+}
+const origMain = fs.readFileSync(mainActivityPath, 'utf8');
+const pkgMatch = origMain.match(/^package\s+([^\s]+)/m);
+const androidPkg = pkgMatch ? pkgMatch[1] : 'app.lumatv.client';
+const mainDir = path.dirname(mainActivityPath);
 
 // 2. Patch AndroidManifest.xml
 const manifestPath = path.join(
@@ -47,6 +89,17 @@ const manifestPath = path.join(
   'src-tauri/gen/android/app/src/main/AndroidManifest.xml'
 );
 let manifest = fs.readFileSync(manifestPath, 'utf8');
+
+if (!manifest.includes('CHANGE_WIFI_MULTICAST_STATE')) {
+  manifest = manifest.replace(
+    '<uses-permission android:name="android.permission.INTERNET" />',
+    `<uses-permission android:name="android.permission.INTERNET" />\n` +
+      `    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />\n` +
+      `    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />\n` +
+      `    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />`
+  );
+}
+
 if (!manifest.includes('android.hardware.touchscreen')) {
   manifest = manifest.replace(
     '<application',
@@ -88,42 +141,56 @@ if (!manifest.includes('smallestScreenSize')) {
     );
   }
 }
+
+if (!manifest.includes('OPTIONS_PROVIDER_CLASS_NAME')) {
+  manifest = manifest.replace(
+    '</application>',
+    `        <meta-data\n` +
+      `            android:name="com.google.android.gms.cast.framework.OPTIONS_PROVIDER_CLASS_NAME"\n` +
+      `            android:value="${androidPkg}.LumaCastOptionsProvider" />\n` +
+      `    </application>`
+  );
+}
+
 fs.writeFileSync(manifestPath, manifest);
-console.log('Patched AndroidManifest.xml for Chromebook & HTTP IPTV compatibility.');
-
-// 3. Patch MainActivity.kt with LumaAndroidWindow immersive fullscreen bridge
-function findMainActivity(dir) {
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      const found = findMainActivity(full);
-      if (found) return found;
-    } else if (entry.name === 'MainActivity.kt') {
-      return full;
-    }
-  }
-  return null;
-}
-
-const javaSrcRoot = path.join(
-  rootDir,
-  'src-tauri/gen/android/app/src/main/java'
+console.log(
+  'Patched AndroidManifest.xml with Wi-Fi Multicast permissions, CastOptionsProvider, and Chromebook support.'
 );
-const mainActivityPath = findMainActivity(javaSrcRoot);
-if (!mainActivityPath) {
-  throw new Error(`MainActivity.kt not found under ${javaSrcRoot}`);
-}
-const origMain = fs.readFileSync(mainActivityPath, 'utf8');
-const pkgMatch = origMain.match(/^package\s+([^\s]+)/m);
-const androidPkg = pkgMatch ? pkgMatch[1] : 'app.lumatv.client';
 
+// 3a. Write LumaCastOptionsProvider.kt alongside MainActivity.kt
+const castProviderPath = path.join(mainDir, 'LumaCastOptionsProvider.kt');
+const castProviderKotlin = `package ${androidPkg}
+
+import android.content.Context
+import com.google.android.gms.cast.CastMediaControlIntent
+import com.google.android.gms.cast.framework.CastOptions
+import com.google.android.gms.cast.framework.OptionsProvider
+import com.google.android.gms.cast.framework.SessionProvider
+
+class LumaCastOptionsProvider : OptionsProvider {
+  override fun getCastOptions(context: Context): CastOptions {
+    return CastOptions.Builder()
+      .setReceiverApplicationId(CastMediaControlIntent.DEFAULT_MEDIA_RECEIVER_APPLICATION_ID)
+      .build()
+  }
+
+  override fun getAdditionalSessionProviders(context: Context): MutableList<SessionProvider>? = null
+}
+`;
+fs.writeFileSync(castProviderPath, castProviderKotlin);
+console.log(`Created ${path.relative(rootDir, castProviderPath)}.`);
+
+// 3b. Patch MainActivity.kt with LumaAndroidWindow fullscreen + native Cast/NSD network scanner
 const patchedMain = `package ${androidPkg}
 
-import android.content.Intent
-import android.net.Uri
+import android.content.Context
+import android.net.nsd.NsdManager
+import android.net.nsd.NsdServiceInfo
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
-import android.provider.Settings
+import android.os.Handler
+import android.os.Looper
 import android.view.View
 import android.view.WindowInsets
 import android.view.WindowInsetsController
@@ -131,12 +198,126 @@ import android.view.WindowManager
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import androidx.activity.OnBackPressedCallback
+import androidx.core.content.ContextCompat
+import androidx.mediarouter.media.MediaRouteSelector
+import androidx.mediarouter.media.MediaRouter
+import com.google.android.gms.cast.CastMediaControlIntent
+import com.google.android.gms.cast.MediaInfo
+import com.google.android.gms.cast.MediaLoadRequestData
+import com.google.android.gms.cast.MediaMetadata
+import com.google.android.gms.cast.framework.CastContext
+import com.google.android.gms.cast.framework.CastSession
+import com.google.android.gms.cast.framework.SessionManagerListener
+import org.json.JSONArray
+import org.json.JSONObject
+import java.nio.charset.StandardCharsets
+import java.util.ArrayDeque
+import java.util.concurrent.ConcurrentHashMap
 
 class MainActivity : TauriActivity() {
+  private data class PendingCastLoad(
+    val streamUrl: String,
+    val title: String,
+    val subtitle: String,
+    val mimeType: String,
+    val isLive: Boolean,
+    val positionSec: Double
+  )
+
   @Volatile
   private var lumaImmersiveFullscreen: Boolean = false
   private var lumaWebView: WebView? = null
   private var fullscreenBackCallback: OnBackPressedCallback? = null
+  private val mainHandler = Handler(Looper.getMainLooper())
+
+  // Native Google Cast & MediaRouter Discovery State
+  private var mediaRouter: MediaRouter? = null
+  private var routeSelector: MediaRouteSelector? = null
+  private var castContext: CastContext? = null
+  private var castScannerAttached: Boolean = false
+  private var sessionListenerAttached: Boolean = false
+  private var pendingCastLoad: PendingCastLoad? = null
+  @Volatile
+  private var connectedCastDeviceName: String? = null
+  @Volatile
+  private var latestCastSnapshotJson: String = "{\\"devices\\":[],\\"connectedDeviceName\\":null}"
+
+  // NSD (_airplay._tcp & _googlecast._tcp) + MulticastLock State
+  private var multicastLock: WifiManager.MulticastLock? = null
+  private var nsdManager: NsdManager? = null
+  private var airplayDiscoveryListener: NsdManager.DiscoveryListener? = null
+  private var googlecastDiscoveryListener: NsdManager.DiscoveryListener? = null
+  private val nsdResolveQueue = ArrayDeque<NsdServiceInfo>()
+  private var nsdResolving: Boolean = false
+  private val nsdDiscoveredDevices = ConcurrentHashMap<String, JSONObject>()
+
+  private val mediaRouterCallback = object : MediaRouter.Callback() {
+    override fun onRouteAdded(router: MediaRouter, route: MediaRouter.RouteInfo) {
+      pushCastUpdateToJs()
+    }
+
+    override fun onRouteChanged(router: MediaRouter, route: MediaRouter.RouteInfo) {
+      pushCastUpdateToJs()
+    }
+
+    override fun onRouteRemoved(router: MediaRouter, route: MediaRouter.RouteInfo) {
+      pushCastUpdateToJs()
+    }
+
+    override fun onRouteSelected(router: MediaRouter, route: MediaRouter.RouteInfo, reason: Int) {
+      connectedCastDeviceName = route.name
+      pushCastUpdateToJs()
+    }
+
+    override fun onRouteUnselected(router: MediaRouter, route: MediaRouter.RouteInfo, reason: Int) {
+      if (connectedCastDeviceName == route.name) {
+        connectedCastDeviceName = null
+      }
+      pushCastUpdateToJs()
+    }
+  }
+
+  private val castSessionListener = object : SessionManagerListener<CastSession> {
+    override fun onSessionStarting(session: CastSession) {}
+
+    override fun onSessionStarted(session: CastSession, sessionId: String) {
+      connectedCastDeviceName = session.castDevice?.friendlyName ?: connectedCastDeviceName
+      pendingCastLoad?.let { load ->
+        pendingCastLoad = null
+        loadMediaIntoSession(session, load)
+      }
+      pushCastUpdateToJs()
+    }
+
+    override fun onSessionStartFailed(session: CastSession, error: Int) {
+      notifyCastErrorToJs("Chromecast session failed to start (code $error).")
+      pushCastUpdateToJs()
+    }
+
+    override fun onSessionEnding(session: CastSession) {}
+
+    override fun onSessionEnded(session: CastSession, error: Int) {
+      connectedCastDeviceName = null
+      pushCastUpdateToJs()
+    }
+
+    override fun onSessionResuming(session: CastSession, sessionId: String) {}
+
+    override fun onSessionResumed(session: CastSession, wasSuspended: Boolean) {
+      connectedCastDeviceName = session.castDevice?.friendlyName ?: connectedCastDeviceName
+      pendingCastLoad?.let { load ->
+        pendingCastLoad = null
+        loadMediaIntoSession(session, load)
+      }
+      pushCastUpdateToJs()
+    }
+
+    override fun onSessionResumeFailed(session: CastSession, error: Int) {
+      pushCastUpdateToJs()
+    }
+
+    override fun onSessionSuspended(session: CastSession, reason: Int) {}
+  }
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
@@ -147,12 +328,348 @@ class MainActivity : TauriActivity() {
     }
     fullscreenBackCallback = callback
     onBackPressedDispatcher.addCallback(this, callback)
+    initCastSubsystemOnMainThread()
   }
 
   override fun onWebViewCreate(webView: WebView) {
     super.onWebViewCreate(webView)
     lumaWebView = webView
     webView.addJavascriptInterface(LumaWindowBridge(), "LumaAndroidWindow")
+  }
+
+  override fun onDestroy() {
+    stopNetworkDiscoveryInternal()
+    try {
+      if (sessionListenerAttached) {
+        castContext?.sessionManager?.removeSessionManagerListener(
+          castSessionListener,
+          CastSession::class.java
+        )
+        sessionListenerAttached = false
+      }
+    } catch (_: Throwable) {}
+    super.onDestroy()
+  }
+
+  private fun initCastSubsystemOnMainThread() {
+    runOnUiThread {
+      try {
+        val category = CastMediaControlIntent.categoryForCast(
+          CastMediaControlIntent.DEFAULT_MEDIA_RECEIVER_APPLICATION_ID
+        )
+        routeSelector = MediaRouteSelector.Builder()
+          .addControlCategory(category)
+          .build()
+        mediaRouter = MediaRouter.getInstance(applicationContext)
+
+        CastContext.getSharedInstance(this, ContextCompat.getMainExecutor(this))
+          .addOnSuccessListener { ctx ->
+            castContext = ctx
+            if (!sessionListenerAttached) {
+              ctx.sessionManager.addSessionManagerListener(
+                castSessionListener,
+                CastSession::class.java
+              )
+              sessionListenerAttached = true
+            }
+            ctx.sessionManager.currentCastSession?.castDevice?.friendlyName?.let {
+              connectedCastDeviceName = it
+            }
+            pushCastUpdateToJs()
+          }
+      } catch (_: Throwable) {
+        // Device without Google Play Services falls back seamlessly to NSD + Rust CastV2/AirPlay
+      }
+    }
+  }
+
+  private fun startNetworkDiscoveryInternal() {
+    runOnUiThread {
+      initCastSubsystemOnMainThread()
+
+      // 1. Acquire Wi-Fi MulticastLock so Android Wi-Fi chip forwards mDNS advertisements
+      try {
+        if (multicastLock == null) {
+          val wifi = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+          multicastLock = wifi?.createMulticastLock("luma_tv_cast_discovery")?.apply {
+            setReferenceCounted(false)
+          }
+        }
+        if (multicastLock?.isHeld == false) {
+          multicastLock?.acquire()
+        }
+      } catch (_: Throwable) {}
+
+      // 2. Attach active MediaRouter callback for Google Cast receivers
+      try {
+        val router = mediaRouter
+        val selector = routeSelector
+        if (router != null && selector != null) {
+          if (castScannerAttached) {
+            router.removeCallback(mediaRouterCallback)
+          }
+          router.addCallback(
+            selector,
+            mediaRouterCallback,
+            MediaRouter.CALLBACK_FLAG_PERFORM_ACTIVE_SCAN or
+              MediaRouter.CALLBACK_FLAG_REQUEST_DISCOVERY
+          )
+          castScannerAttached = true
+        }
+      } catch (_: Throwable) {}
+
+      // 3. Start NSD mDNS discovery for both _airplay._tcp. and _googlecast._tcp.
+      try {
+        if (nsdManager == null) {
+          nsdManager = getSystemService(Context.NSD_SERVICE) as? NsdManager
+        }
+        startNsdListenerForType("_airplay._tcp.", isAirPlay = true)
+        startNsdListenerForType("_googlecast._tcp.", isAirPlay = false)
+      } catch (_: Throwable) {}
+
+      pushCastUpdateToJs()
+    }
+  }
+
+  private fun startNsdListenerForType(serviceType: String, isAirPlay: Boolean) {
+    val nsd = nsdManager ?: return
+    if (isAirPlay && airplayDiscoveryListener != null) return
+    if (!isAirPlay && googlecastDiscoveryListener != null) return
+
+    val listener = object : NsdManager.DiscoveryListener {
+      override fun onStartDiscoveryFailed(type: String?, errorCode: Int) {}
+      override fun onStopDiscoveryFailed(type: String?, errorCode: Int) {}
+      override fun onDiscoveryStarted(type: String?) {}
+      override fun onDiscoveryStopped(type: String?) {}
+
+      override fun onServiceFound(serviceInfo: NsdServiceInfo?) {
+        if (serviceInfo == null) return
+        mainHandler.post {
+          nsdResolveQueue.addLast(serviceInfo)
+          drainNsdResolveQueue()
+        }
+      }
+
+      override fun onServiceLost(serviceInfo: NsdServiceInfo?) {
+        if (serviceInfo == null) return
+        val keysToRemove = nsdDiscoveredDevices
+          .filterValues { obj ->
+            obj.optString("name").equals(serviceInfo.serviceName.trim(), ignoreCase = true)
+          }
+          .keys
+        for (k in keysToRemove) {
+          nsdDiscoveredDevices.remove(k)
+        }
+        pushCastUpdateToJs()
+      }
+    }
+
+    try {
+      nsd.discoverServices(serviceType, NsdManager.PROTOCOL_DNS_SD, listener)
+      if (isAirPlay) {
+        airplayDiscoveryListener = listener
+      } else {
+        googlecastDiscoveryListener = listener
+      }
+    } catch (_: Throwable) {}
+  }
+
+  private fun drainNsdResolveQueue() {
+    if (nsdResolving) return
+    val nsd = nsdManager ?: return
+    val next = nsdResolveQueue.pollFirst() ?: return
+    nsdResolving = true
+
+    try {
+      @Suppress("DEPRECATION")
+      nsd.resolveService(next, object : NsdManager.ResolveListener {
+        override fun onResolveFailed(serviceInfo: NsdServiceInfo?, errorCode: Int) {
+          mainHandler.post {
+            nsdResolving = false
+            drainNsdResolveQueue()
+          }
+        }
+
+        override fun onServiceResolved(resolved: NsdServiceInfo?) {
+          if (resolved != null) {
+            @Suppress("DEPRECATION")
+            val hostAddr = resolved.host?.hostAddress
+            val port = resolved.port
+            if (!hostAddr.isNullOrBlank() && !hostAddr.contains(":") && port > 0) {
+              val svcType = resolved.serviceType ?: ""
+              val isAirPlay = svcType.contains("airplay", ignoreCase = true)
+              val proto = if (isAirPlay) "airplay" else "chromecast"
+              val attrs = resolved.attributes
+              val fnBytes = attrs?.get("fn")
+              val mdBytes = attrs?.get("md") ?: attrs?.get("model")
+              val friendly = if (fnBytes != null && fnBytes.isNotEmpty()) {
+                String(fnBytes, StandardCharsets.UTF_8).trim()
+              } else {
+                resolved.serviceName.trim()
+              }
+              val model = if (mdBytes != null && mdBytes.isNotEmpty()) {
+                String(mdBytes, StandardCharsets.UTF_8).trim()
+              } else if (isAirPlay) {
+                "Apple TV / AirPlay"
+              } else {
+                "Chromecast"
+              }
+
+              val key = "lan:$proto:$hostAddr:$port"
+              val obj = JSONObject().apply {
+                put("id", key)
+                put("name", friendly.ifBlank { if (isAirPlay) "Apple TV" else "Chromecast" })
+                put("model", model)
+                put("protocol", proto)
+                put("source", "android-nsd")
+                put("host", hostAddr)
+                put("port", port)
+              }
+              nsdDiscoveredDevices[key] = obj
+              pushCastUpdateToJs()
+            }
+          }
+          mainHandler.post {
+            nsdResolving = false
+            drainNsdResolveQueue()
+          }
+        }
+      })
+    } catch (_: Throwable) {
+      nsdResolving = false
+    }
+  }
+
+  private fun stopNetworkDiscoveryInternal() {
+    runOnUiThread {
+      try {
+        if (castScannerAttached) {
+          mediaRouter?.removeCallback(mediaRouterCallback)
+          castScannerAttached = false
+        }
+      } catch (_: Throwable) {}
+
+      try {
+        airplayDiscoveryListener?.let { nsdManager?.stopServiceDiscovery(it) }
+      } catch (_: Throwable) {}
+      airplayDiscoveryListener = null
+
+      try {
+        googlecastDiscoveryListener?.let { nsdManager?.stopServiceDiscovery(it) }
+      } catch (_: Throwable) {}
+      googlecastDiscoveryListener = null
+
+      nsdResolveQueue.clear()
+      nsdResolving = false
+
+      try {
+        if (multicastLock?.isHeld == true) {
+          multicastLock?.release()
+        }
+      } catch (_: Throwable) {}
+    }
+  }
+
+  private fun buildCastStateSnapshot(): JSONObject {
+    val devicesArray = JSONArray()
+    val seenChromecastNames = HashSet<String>()
+
+    try {
+      val router = mediaRouter
+      val selector = routeSelector
+      if (router != null && selector != null) {
+        for (route in router.routes) {
+          if (!route.isDefault && !route.isBluetooth && route.isEnabled && route.matchesSelector(selector)) {
+            val cleanName = route.name.trim()
+            if (cleanName.isNotEmpty()) {
+              seenChromecastNames.add(cleanName.lowercase())
+              val routeObj = JSONObject().apply {
+                put("id", "route:\${route.id}")
+                put("name", cleanName)
+                put("model", (route.description ?: "Google Cast").trim().ifBlank { "Google Cast" })
+                put("protocol", "chromecast")
+                put("source", "android-mediarouter")
+                put("isSelected", route.isSelected)
+              }
+              devicesArray.put(routeObj)
+            }
+          }
+        }
+      }
+    } catch (_: Throwable) {}
+
+    for (nsdObj in nsdDiscoveredDevices.values) {
+      val proto = nsdObj.optString("protocol")
+      val nameLower = nsdObj.optString("name").trim().lowercase()
+      // Avoid listing duplicate Chromecast if MediaRouter already surfaced the same TV
+      if (proto == "chromecast" && seenChromecastNames.contains(nameLower)) {
+        continue
+      }
+      devicesArray.put(nsdObj)
+    }
+
+    return JSONObject().apply {
+      put("devices", devicesArray)
+      put("connectedDeviceName", connectedCastDeviceName ?: JSONObject.NULL)
+    }
+  }
+
+  private fun pushCastUpdateToJs() {
+    runOnUiThread {
+      val snapshot = buildCastStateSnapshot().toString()
+      latestCastSnapshotJson = snapshot
+      lumaWebView?.evaluateJavascript(
+        "window.dispatchEvent(new CustomEvent('luma-android-cast-update',{detail:$snapshot}));",
+        null
+      )
+    }
+  }
+
+  private fun notifyCastErrorToJs(message: String) {
+    runOnUiThread {
+      val quoted = JSONObject.quote(message)
+      lumaWebView?.evaluateJavascript(
+        "window.dispatchEvent(new CustomEvent('luma-android-cast-error',{detail:{message:$quoted}}));",
+        null
+      )
+    }
+  }
+
+  private fun loadMediaIntoSession(session: CastSession, load: PendingCastLoad) {
+    try {
+      val metadata = MediaMetadata(MediaMetadata.MEDIA_TYPE_MOVIE).apply {
+        putString(MediaMetadata.KEY_TITLE, load.title)
+        if (load.subtitle.isNotBlank()) {
+          putString(MediaMetadata.KEY_SUBTITLE, load.subtitle)
+        }
+      }
+      val streamType = if (load.isLive) {
+        MediaInfo.STREAM_TYPE_LIVE
+      } else {
+        MediaInfo.STREAM_TYPE_BUFFERED
+      }
+      val mediaInfo = MediaInfo.Builder(load.streamUrl)
+        .setStreamType(streamType)
+        .setContentType(load.mimeType.ifBlank { "application/x-mpegurl" })
+        .setMetadata(metadata)
+        .build()
+
+      val startMs = if (!load.isLive && load.positionSec > 2.0) {
+        (load.positionSec * 1000.0).toLong()
+      } else {
+        0L
+      }
+
+      val request = MediaLoadRequestData.Builder()
+        .setMediaInfo(mediaInfo)
+        .setAutoplay(true)
+        .setCurrentTime(startMs)
+        .build()
+
+      session.remoteMediaClient?.load(request)
+    } catch (e: Throwable) {
+      notifyCastErrorToJs(e.message ?: "Failed to load stream on Chromecast.")
+    }
   }
 
   private fun applyLumaFullscreen(enabled: Boolean, notifyJs: Boolean) {
@@ -231,42 +748,80 @@ class MainActivity : TauriActivity() {
     fun isFullscreen(): Boolean = lumaImmersiveFullscreen
 
     @JavascriptInterface
-    fun openCastSettings(): Boolean {
-      return try {
-        val castIntent = Intent(Settings.ACTION_CAST_SETTINGS).apply {
-          addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
-        startActivity(castIntent)
-        true
-      } catch (_: Exception) {
-        false
-      }
+    fun startCastScan(): String {
+      startNetworkDiscoveryInternal()
+      return latestCastSnapshotJson
     }
 
     @JavascriptInterface
-    fun launchExternalCastChooser(
+    fun stopCastScan() {
+      stopNetworkDiscoveryInternal()
+    }
+
+    @JavascriptInterface
+    fun getCastStateJson(): String {
+      pushCastUpdateToJs()
+      return latestCastSnapshotJson
+    }
+
+    @JavascriptInterface
+    fun connectAndCastRoute(
+      deviceId: String,
       streamUrl: String,
       title: String,
-      mimeType: String
+      subtitle: String,
+      mimeType: String,
+      isLive: Boolean,
+      positionSec: Double
     ): Boolean {
-      val trimmed = streamUrl.trim()
-      if (!trimmed.startsWith("http://") && !trimmed.startsWith("https://")) {
+      if (!deviceId.startsWith("route:")) {
         return false
       }
-      return try {
-        val viewIntent = Intent(Intent.ACTION_VIEW).apply {
-          setDataAndType(Uri.parse(trimmed), mimeType.ifBlank { "application/x-mpegurl" })
-          putExtra(Intent.EXTRA_TITLE, title)
-          putExtra("title", title)
-          addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+      val rawRouteId = deviceId.removePrefix("route:")
+      val load = PendingCastLoad(
+        streamUrl = streamUrl.trim(),
+        title = title,
+        subtitle = subtitle,
+        mimeType = mimeType,
+        isLive = isLive,
+        positionSec = positionSec
+      )
+
+      runOnUiThread {
+        val router = mediaRouter
+        val targetRoute = router?.routes?.firstOrNull { it.id == rawRouteId }
+        if (targetRoute == null) {
+          notifyCastErrorToJs("Selected Chromecast is no longer available on Wi-Fi.")
+          return@runOnUiThread
         }
-        val chooser = Intent.createChooser(viewIntent, "Cast or Play: $title").apply {
-          addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+
+        val currentSession = castContext?.sessionManager?.currentCastSession
+        if (targetRoute.isSelected && currentSession != null && currentSession.isConnected) {
+          connectedCastDeviceName = targetRoute.name
+          loadMediaIntoSession(currentSession, load)
+          pushCastUpdateToJs()
+        } else {
+          pendingCastLoad = load
+          connectedCastDeviceName = targetRoute.name
+          router.selectRoute(targetRoute)
+          pushCastUpdateToJs()
         }
-        startActivity(chooser)
-        true
-      } catch (_: Exception) {
-        false
+      }
+      return true
+    }
+
+    @JavascriptInterface
+    fun stopCasting() {
+      runOnUiThread {
+        pendingCastLoad = null
+        connectedCastDeviceName = null
+        try {
+          castContext?.sessionManager?.endCurrentSession(true)
+        } catch (_: Throwable) {}
+        try {
+          mediaRouter?.unselect(MediaRouter.UNSELECT_REASON_STOPPED)
+        } catch (_: Throwable) {}
+        pushCastUpdateToJs()
       }
     }
   }
@@ -275,31 +830,34 @@ class MainActivity : TauriActivity() {
 
 fs.writeFileSync(mainActivityPath, patchedMain);
 console.log(
-  `Patched ${path.relative(rootDir, mainActivityPath)} with LumaAndroidWindow immersive fullscreen bridge.`
+  `Patched ${path.relative(rootDir, mainActivityPath)} with LumaAndroidWindow fullscreen + MediaRouter/Cast/NSD network scanner.`
 );
 
-// 4. Preserve @JavascriptInterface methods under R8 / ProGuard release minification
+// 4. Preserve @JavascriptInterface & LumaCastOptionsProvider under R8 / ProGuard release minification
 const proguardPath = path.join(
   rootDir,
   'src-tauri/gen/android/app/proguard-rules.pro'
 );
 const keepRules = [
   '',
-  '# Keep LumaAndroidWindow JavascriptInterface methods in release builds',
+  '# Keep LumaAndroidWindow JavascriptInterface & Google Cast OptionsProvider in release builds',
   '-keepattributes JavascriptInterface',
   '-keepclassmembers class * {',
   '    @android.webkit.JavascriptInterface <methods>;',
   '}',
   '-keep class **.MainActivity$LumaWindowBridge { *; }',
+  '-keep class **.LumaCastOptionsProvider { *; }',
   '',
 ].join('\n');
 
 if (fs.existsSync(proguardPath)) {
   const existingPro = fs.readFileSync(proguardPath, 'utf8');
-  if (!existingPro.includes('LumaWindowBridge')) {
+  if (!existingPro.includes('LumaCastOptionsProvider')) {
     fs.writeFileSync(proguardPath, existingPro + keepRules);
   }
 } else {
   fs.writeFileSync(proguardPath, keepRules);
 }
-console.log('Patched proguard-rules.pro with JavascriptInterface keep rules.');
+console.log(
+  'Patched proguard-rules.pro with JavascriptInterface and LumaCastOptionsProvider keep rules.'
+);

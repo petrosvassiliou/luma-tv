@@ -98,6 +98,68 @@ export async function launchNativeMpvStream(
   });
 }
 
+export interface NativeLanCastDevice {
+  id: string;
+  name: string;
+  model: string;
+  protocol: 'chromecast' | 'airplay';
+  source: string;
+  host: string;
+  port: number;
+}
+
+export async function scanNativeLanCastDevices(
+  timeoutMs = 1800
+): Promise<NativeLanCastDevice[]> {
+  const invoke = getTauriInvoke();
+  if (!invoke) return [];
+  try {
+    return await invoke<NativeLanCastDevice[]>('luma_native_scan_cast_devices', {
+      timeoutMs,
+    });
+  } catch {
+    return [];
+  }
+}
+
+export async function playOnNativeLanCastDevice(params: {
+  protocol: 'chromecast' | 'airplay';
+  host: string;
+  port: number;
+  streamUrl: string;
+  title: string;
+  subtitle?: string;
+  contentType: string;
+  isLive: boolean;
+  positionSec?: number;
+}): Promise<string> {
+  const invoke = getTauriInvoke();
+  if (!invoke) {
+    throw new Error('Native LAN Cast requires Tauri runtime.');
+  }
+  return await invoke<string>('luma_native_cast_play_on_device', {
+    protocol: params.protocol,
+    host: params.host,
+    port: params.port,
+    streamUrl: params.streamUrl,
+    title: params.title,
+    subtitle: params.subtitle ?? '',
+    contentType: params.contentType,
+    isLive: params.isLive,
+    positionSec: params.positionSec ?? 0,
+  });
+}
+
+export async function stopNativeLanCastDevice(): Promise<void> {
+  const invoke = getTauriInvoke();
+  if (!invoke) return;
+  try {
+    await invoke('luma_native_cast_stop_device');
+  } catch {
+    // Ignore
+  }
+}
+
 export async function launchNativeChromecastSender(params: {
   streamUrl: string;
   title: string;

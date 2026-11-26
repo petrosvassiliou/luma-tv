@@ -1,3 +1,5 @@
+mod cast_lan;
+
 use bytes::Bytes;
 use futures_util::TryStreamExt;
 use http_body_util::combinators::BoxBody;
@@ -1170,6 +1172,52 @@ async fn luma_native_launch_chromecast_sender(
 }
 
 #[tauri::command]
+async fn luma_native_scan_cast_devices(
+    timeout_ms: Option<u64>,
+) -> Result<Vec<cast_lan::LanCastDevice>, String> {
+    Ok(cast_lan::discover_lan_cast_devices(timeout_ms.unwrap_or(1800)).await)
+}
+
+#[tauri::command]
+async fn luma_native_cast_play_on_device(
+    protocol: String,
+    host: String,
+    port: u16,
+    stream_url: String,
+    title: String,
+    subtitle: String,
+    content_type: String,
+    is_live: bool,
+    position_sec: f64,
+) -> Result<String, String> {
+    let validated_stream = validate_proxy_upstream_url(&stream_url, 0)?;
+    let clean_title = sanitize_cli_value(&title);
+    let clean_sub = sanitize_cli_value(&subtitle);
+    let clean_mime = sanitize_cli_value(&content_type);
+
+    if protocol == "airplay" {
+        cast_lan::airplay_play_stream(&host, port, validated_stream.as_str(), &clean_title).await
+    } else {
+        cast_lan::castv2_play_stream(
+            &host,
+            port,
+            validated_stream.as_str(),
+            &clean_title,
+            &clean_sub,
+            &clean_mime,
+            is_live,
+            position_sec,
+        )
+        .await
+    }
+}
+
+#[tauri::command]
+async fn luma_native_cast_stop_device() -> Result<(), String> {
+    cast_lan::stop_active_lan_cast().await
+}
+
+#[tauri::command]
 fn luma_native_get_update_progress() -> NativeUpdateProgress {
     update_progress_store()
         .lock()
@@ -1371,6 +1419,9 @@ pub fn run() {
             luma_native_fetch_text,
             luma_native_launch_mpv,
             luma_native_launch_chromecast_sender,
+            luma_native_scan_cast_devices,
+            luma_native_cast_play_on_device,
+            luma_native_cast_stop_device,
             luma_native_get_update_progress,
             luma_native_open_external_url,
             luma_native_install_macos_update
