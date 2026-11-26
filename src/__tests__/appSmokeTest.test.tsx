@@ -663,4 +663,159 @@ describe('Luma TV End-to-End UI & Button Smoke Test', () => {
       'DW International HD'
     );
   });
+
+  it('displays synced Favorites and Greek collection channels across Live TV, Favorites, and Collections views (both via snapshots and orphaned-ID self-healing)', async () => {
+    await act(async () => {
+      root!.unmount();
+    });
+
+    const { lumaDb } = await import('../db/lumaDb');
+    await Promise.all([
+      lumaDb.sources.clear(),
+      lumaDb.channels.clear(),
+    ]);
+
+    // Seed IndexedDB with playlist `xtream-device2-777`, while synced Favorites & "Greek"
+    // collection initially carry orphaned prefix `xtream-device1-111-xt-*` + a snapshot channel!
+    await lumaDb.sources.put({
+      id: 'xtream-device2-777',
+      name: 'Home Xtream',
+      type: 'xtream',
+      endpoint: 'http://provider.example:8080',
+      rawUrlOrHost: 'http://provider.example:8080',
+      username: 'alice',
+      password: 'pw',
+      outputFormat: 'm3u8',
+      hiddenGroupIds: ['gr-general'], // Even when raw group is hidden!
+      epgOffsetHours: 0,
+      channelCount: 2,
+      vodCount: 0,
+      seriesCount: 0,
+      epgStatus: 'synced',
+      lastUpdated: 'Synced',
+      createdAt: 1795800000000,
+    });
+
+    await lumaDb.channels.bulkPut([
+      {
+        id: 'xtream-device2-777-xt-9001',
+        sourceId: 'xtream-device2-777',
+        number: 101,
+        sortOrder: 0,
+        name: 'GR| ERT 1 HD',
+        shortCode: 'ERT1',
+        groupId: 'gr-general',
+        groupName: 'GR| GREECE',
+        streamUrl: 'http://provider.example:8080/live/alice/pw/9001.m3u8',
+        streamType: 'hls',
+        resolution: '1080p',
+        audioBadge: 'EAC3 5.1',
+        codec: 'H.264',
+        hasCatchup: true,
+        catchupDays: 7,
+        xtreamStreamId: 9001,
+        accentColor: '#38BDF8',
+        country: 'GR',
+        epgArchetype: 0,
+      },
+      {
+        id: 'xtream-device2-777-xt-9002',
+        sourceId: 'xtream-device2-777',
+        number: 102,
+        sortOrder: 1,
+        name: 'GR| MEGA HD',
+        shortCode: 'MEGA',
+        groupId: 'gr-general',
+        groupName: 'GR| GREECE',
+        streamUrl: 'http://provider.example:8080/live/alice/pw/9002.m3u8',
+        streamType: 'hls',
+        resolution: '1080p',
+        audioBadge: 'EAC3 5.1',
+        codec: 'H.264',
+        hasCatchup: true,
+        catchupDays: 7,
+        xtreamStreamId: 9002,
+        accentColor: '#38BDF8',
+        country: 'GR',
+        epgArchetype: 1,
+      },
+    ]);
+
+    localStorage.setItem('luma.demoDeleted.v1', '1');
+    localStorage.setItem(
+      'luma.favorites.v1',
+      JSON.stringify(['xtream-device1-111-xt-9001', 'xtream-pending-999-xt-9003'])
+    );
+    localStorage.setItem(
+      'luma.bouquets.v1',
+      JSON.stringify([
+        {
+          id: 'col-greek',
+          name: 'Greek',
+          channelIds: [
+            'xtream-device1-111-xt-9001',
+            'xtream-device1-111-xt-9002',
+            'xtream-pending-999-xt-9003',
+          ],
+          isPinLocked: false,
+        },
+      ])
+    );
+    localStorage.setItem(
+      'luma.cloud.mediaSnapshots.v1',
+      JSON.stringify({
+        channels: {
+          'xtream-pending-999-xt-9003': {
+            id: 'xtream-pending-999-xt-9003',
+            number: 103,
+            name: 'GR| SKAI HD',
+            shortCode: 'SKAI',
+            groupId: 'gr-general',
+            groupName: 'GR| GREECE',
+            streamUrl: 'http://provider2.example:8080/live/alice/pw/9003.m3u8',
+            streamType: 'hls',
+            resolution: '1080p',
+            audioBadge: 'EAC3 5.1',
+            codec: 'H.264',
+            hasCatchup: false,
+            catchupDays: 0,
+            accentColor: '#38BDF8',
+            country: 'GR',
+            epgArchetype: 2,
+          },
+        },
+        vod: {},
+        series: {},
+      })
+    );
+
+    root = createRoot(host);
+    await act(async () => {
+      root!.render(<AppComponent />);
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 80));
+    });
+
+    // 1. Click "Greek" chip in Live TV drawer -> all 3 Greek channels MUST display!
+    const greekChip = Array.from(host.querySelectorAll('aside button')).find((b) =>
+      b.textContent?.includes('Greek')
+    );
+    expect(greekChip).toBeDefined();
+    clickEl(greekChip ?? null, 'Click Greek collection chip in Live TV');
+    expect(host.textContent).toContain('GR| ERT 1 HD');
+    expect(host.textContent).toContain('GR| MEGA HD');
+    expect(host.textContent).toContain('GR| SKAI HD');
+
+    // 2. Navigate to Favorites view -> both favorited Greek channels MUST display!
+    clickEl(host.querySelector('#nav-favorites'), '#nav-favorites');
+    expect(host.textContent).toContain('GR| ERT 1 HD');
+    expect(host.textContent).toContain('GR| SKAI HD');
+
+    // 3. Navigate to Collections view -> Greek collection MUST display all 3 channels!
+    clickEl(host.querySelector('#nav-collections'), '#nav-collections');
+    expect(host.textContent).toContain('GR| ERT 1 HD');
+    expect(host.textContent).toContain('GR| MEGA HD');
+    expect(host.textContent).toContain('GR| SKAI HD');
+  });
 });

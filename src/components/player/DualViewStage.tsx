@@ -242,6 +242,7 @@ interface DualViewStageProps {
   activeAudioSlot: 0 | 1;
   globalMuted: boolean;
   isStageFullscreen: boolean;
+  favoriteAndCollectionPool?: Channel[];
   onChangeStageFullscreen: (fullscreen: boolean) => void;
   onSelectAudioSlot: (slot: 0 | 1) => void;
   onChangeGlobalMuted: (muted: boolean) => void;
@@ -256,6 +257,7 @@ export const DualViewStage: React.FC<DualViewStageProps> = ({
   designMode,
   locale = 'de',
   channels,
+  favoriteAndCollectionPool,
   favoriteIds,
   collections,
   slotChannelIds,
@@ -340,14 +342,14 @@ export const DualViewStage: React.FC<DualViewStageProps> = ({
 
   const resolveChannel = useCallback(
     (channelId: string, fallbackIndex: number): Channel | null => {
-      if (channels.length === 0) return null;
-      return (
-        channels.find((c) => c.id === channelId) ??
-        channels[fallbackIndex % channels.length] ??
-        channels[0]
-      );
+      const fromActive = channels.find((c) => c.id === channelId);
+      if (fromActive) return fromActive;
+      const fromSpecial = favoriteAndCollectionPool?.find((c) => c.id === channelId);
+      if (fromSpecial) return fromSpecial;
+      if (channels.length === 0) return favoriteAndCollectionPool?.[0] ?? null;
+      return channels[fallbackIndex % channels.length] ?? channels[0];
     },
-    [channels]
+    [channels, favoriteAndCollectionPool]
   );
 
   const leftChannel = resolveChannel(slotChannelIds[0], 0);
@@ -380,13 +382,17 @@ export const DualViewStage: React.FC<DualViewStageProps> = ({
   }, [isStageFullscreen, onChangeStageFullscreen, wakeHud]);
 
   const pickerPool = useMemo(() => {
+    const specialPool =
+      favoriteAndCollectionPool && favoriteAndCollectionPool.length > 0
+        ? favoriteAndCollectionPool
+        : channels;
     let base = channels;
     if (pickerScope === 'favorites') {
-      base = channels.filter((c) => favoriteIds.has(c.id));
+      base = specialPool.filter((c) => favoriteIds.has(c.id));
     } else if (pickerScope !== 'all') {
       const bq = collections.find((b) => b.id === pickerScope);
       if (bq) {
-        const byId = new Map(channels.map((c) => [c.id, c]));
+        const byId = new Map(specialPool.map((c) => [c.id, c]));
         base = bq.channelIds
           .map((id) => byId.get(id))
           .filter((c): c is Channel => Boolean(c));
@@ -394,7 +400,14 @@ export const DualViewStage: React.FC<DualViewStageProps> = ({
     }
     if (!pickerQuery.trim()) return base.slice(0, 120);
     return searchChannelsRanked(base, pickerQuery, 120).items;
-  }, [channels, favoriteIds, collections, pickerScope, pickerQuery]);
+  }, [
+    channels,
+    favoriteAndCollectionPool,
+    favoriteIds,
+    collections,
+    pickerScope,
+    pickerQuery,
+  ]);
 
   const hudVisible = hudAwake || hudHovered || pickerSlot !== null || isDraggingSplit;
 

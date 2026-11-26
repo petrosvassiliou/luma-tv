@@ -444,6 +444,7 @@ fn with_cors_headers(mut builder: hyper::http::response::Builder) -> hyper::http
             ACCESS_CONTROL_ALLOW_HEADERS,
             "Range, Content-Type, X-Luma-User-Agent",
         )
+        .header("Access-Control-Allow-Private-Network", "true")
         .header(
             ACCESS_CONTROL_EXPOSE_HEADERS,
             "Content-Length, Content-Range, Content-Type, Accept-Ranges",

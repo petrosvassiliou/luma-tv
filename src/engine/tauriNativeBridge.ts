@@ -98,6 +98,27 @@ export async function launchNativeMpvStream(
   });
 }
 
+/**
+ * Fetches remote M3U, Xtream API JSON, or XMLTV text directly through Tauri's Rust `reqwest`
+ * HTTP client over IPC — completely bypassing WebView CORS, HTTP/HTTPS Mixed Content, and
+ * Chromium Private Network Access restrictions on both macOS and Android/Googlebook.
+ */
+export async function fetchNativeTextViaRust(
+  url: string,
+  userAgent?: string
+): Promise<string | null> {
+  const invoke = getTauriInvoke();
+  if (!invoke) return null;
+  try {
+    return await invoke<string>('luma_native_fetch_text', {
+      url,
+      userAgent,
+    });
+  } catch {
+    return null;
+  }
+}
+
 export interface NativeLanCastDevice {
   id: string;
   name: string;

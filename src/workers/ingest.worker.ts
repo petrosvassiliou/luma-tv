@@ -30,6 +30,15 @@ export type WorkerIngestRequest =
       password: string;
       outputFormat: 'm3u8' | 'ts';
       proxyEndpoint?: string;
+      prefetchedXtreamJson?: {
+        authRaw?: string | null;
+        liveCategoriesRaw: string;
+        liveStreamsRaw: string;
+        vodCategoriesRaw?: string | null;
+        vodStreamsRaw?: string | null;
+        seriesCategoriesRaw?: string | null;
+        seriesStreamsRaw?: string | null;
+      };
     }
   | {
       type: 'parse-xmltv';
@@ -164,79 +173,9 @@ self.onmessage = async (event: MessageEvent<WorkerIngestRequest>) => {
         percent: 18,
       } satisfies WorkerIngestResponse);
 
-      const [authInfoRes, catsRes, streamsRes] = await Promise.all([
-        fetch(
-          wrapProxy(`${base}/player_api.php?${authParams}`, req.proxyEndpoint)
-        ).catch(() => null),
-        fetch(
-          wrapProxy(
-            `${base}/player_api.php?${authParams}&action=get_live_categories`,
-            req.proxyEndpoint
-          )
-        ),
-        fetch(
-          wrapProxy(
-            `${base}/player_api.php?${authParams}&action=get_live_streams`,
-            req.proxyEndpoint
-          )
-        ),
-      ]);
-
-      if (!catsRes.ok || !streamsRes.ok) {
-        throw new Error(`Xtream Server antwortete mit HTTP ${streamsRes.status}`);
-      }
-
       let accountInfo: PlaylistAccountInfo | undefined;
-      if (authInfoRes && authInfoRes.ok) {
-        try {
-          const authJson = (await authInfoRes.json()) as {
-            user_info?: {
-              username?: string;
-              status?: string;
-              exp_date?: string | number | null;
-              created_at?: string | number | null;
-              is_trial?: string | number;
-              active_cons?: string | number;
-              max_connections?: string | number;
-            };
-            server_info?: {
-              timezone?: string;
-            };
-          };
-          const ui = authJson.user_info;
-          if (ui) {
-            const parseEpoch = (val: unknown): number | null => {
-              if (val === null || val === undefined || val === '' || val === 'null') {
-                return null;
-              }
-              const n = Number(val);
-              if (!Number.isFinite(n) || n <= 0) return null;
-              return n < 1e11 ? n * 1000 : n;
-            };
-            const activeCons = Number(ui.active_cons);
-            const maxCons = Number(ui.max_connections);
-            accountInfo = {
-              status: String(ui.status || 'Active'),
-              username: ui.username || req.username,
-              expiresAtMs: parseEpoch(ui.exp_date),
-              createdAtMs: parseEpoch(ui.created_at),
-              isTrial: String(ui.is_trial) === '1',
-              activeConnections: Number.isFinite(activeCons) ? activeCons : undefined,
-              maxConnections: Number.isFinite(maxCons) && maxCons > 0 ? maxCons : undefined,
-              serverTimezone: authJson.server_info?.timezone || undefined,
-              checkedAtMs: Date.now(),
-            };
-          }
-        } catch {
-          // Optional account metadata
-        }
-      }
-
-      const categories = (await catsRes.json()) as {
-        category_id: string;
-        category_name: string;
-      }[];
-      const streams = (await streamsRes.json()) as {
+      let categories: { category_id: string; category_name: string }[] = [];
+      let streams: {
         num?: number;
         name: string;
         stream_id: number;
@@ -245,56 +184,174 @@ self.onmessage = async (event: MessageEvent<WorkerIngestRequest>) => {
         category_id?: string;
         tv_archive?: number;
         tv_archive_duration?: number;
-      }[];
+      }[] = [];
+      let vodCats: { category_id: string; category_name: string }[] = [];
+      let vodStreams: {
+        stream_id: number;
+        name: string;
+        stream_icon?: string;
+        rating?: string | number;
+        category_id?: string;
+        container_extension?: string;
+      }[] = [];
+      let seriesCats: { category_id: string; category_name: string }[] = [];
+      let seriesStreams: {
+        series_id: number;
+        name: string;
+        cover?: string;
+        plot?: string;
+        genre?: string;
+        releaseDate?: string;
+        rating?: string | number;
+        category_id?: string;
+      }[] = [];
 
-      self.postMessage({
-        type: 'progress',
-        phase: 'Synchronisiere Xtream VOD-Filme & Serien-Katalog…',
-        percent: 52,
-      } satisfies WorkerIngestResponse);
+      const parseAccountJson = (authJson: {
+        user_info?: {
+          username?: string;
+          status?: string;
+          exp_date?: string | number | null;
+          created_at?: string | number | null;
+          is_trial?: string | number;
+          active_cons?: string | number;
+          max_connections?: string | number;
+        };
+        server_info?: {
+          timezone?: string;
+        };
+      }) => {
+        const ui = authJson.user_info;
+        if (!ui) return;
+        const parseEpoch = (val: unknown): number | null => {
+          if (val === null || val === undefined || val === '' || val === 'null') {
+            return null;
+          }
+          const n = Number(val);
+          if (!Number.isFinite(n) || n <= 0) return null;
+          return n < 1e11 ? n * 1000 : n;
+        };
+        const activeCons = Number(ui.active_cons);
+        const maxCons = Number(ui.max_connections);
+        accountInfo = {
+          status: String(ui.status || 'Active'),
+          username: ui.username || req.username,
+          expiresAtMs: parseEpoch(ui.exp_date),
+          createdAtMs: parseEpoch(ui.created_at),
+          isTrial: String(ui.is_trial) === '1',
+          activeConnections: Number.isFinite(activeCons) ? activeCons : undefined,
+          maxConnections: Number.isFinite(maxCons) && maxCons > 0 ? maxCons : undefined,
+          serverTimezone: authJson.server_info?.timezone || undefined,
+          checkedAtMs: Date.now(),
+        };
+      };
 
-      const [vodCats, vodStreams, seriesCats, seriesStreams] = await Promise.all([
-        fetchJsonArraySafe<{ category_id: string; category_name: string }>(
-          wrapProxy(
-            `${base}/player_api.php?${authParams}&action=get_vod_categories`,
-            req.proxyEndpoint
-          )
-        ),
-        fetchJsonArraySafe<{
-          stream_id: number;
-          name: string;
-          stream_icon?: string;
-          rating?: string | number;
-          category_id?: string;
-          container_extension?: string;
-        }>(
-          wrapProxy(
-            `${base}/player_api.php?${authParams}&action=get_vod_streams`,
-            req.proxyEndpoint
-          )
-        ),
-        fetchJsonArraySafe<{ category_id: string; category_name: string }>(
-          wrapProxy(
-            `${base}/player_api.php?${authParams}&action=get_series_categories`,
-            req.proxyEndpoint
-          )
-        ),
-        fetchJsonArraySafe<{
-          series_id: number;
-          name: string;
-          cover?: string;
-          plot?: string;
-          genre?: string;
-          releaseDate?: string;
-          rating?: string | number;
-          category_id?: string;
-        }>(
-          wrapProxy(
-            `${base}/player_api.php?${authParams}&action=get_series`,
-            req.proxyEndpoint
-          )
-        ),
-      ]);
+      const parseJsonArray = <T>(raw?: string | null): T[] => {
+        if (!raw) return [];
+        try {
+          const parsed: unknown = JSON.parse(raw);
+          return Array.isArray(parsed) ? (parsed as T[]) : [];
+        } catch {
+          return [];
+        }
+      };
+
+      if (req.prefetchedXtreamJson) {
+        if (req.prefetchedXtreamJson.authRaw) {
+          try {
+            parseAccountJson(JSON.parse(req.prefetchedXtreamJson.authRaw));
+          } catch {
+            // Optional account metadata
+          }
+        }
+        categories = parseJsonArray(req.prefetchedXtreamJson.liveCategoriesRaw);
+        streams = parseJsonArray(req.prefetchedXtreamJson.liveStreamsRaw);
+        vodCats = parseJsonArray(req.prefetchedXtreamJson.vodCategoriesRaw);
+        vodStreams = parseJsonArray(req.prefetchedXtreamJson.vodStreamsRaw);
+        seriesCats = parseJsonArray(req.prefetchedXtreamJson.seriesCategoriesRaw);
+        seriesStreams = parseJsonArray(req.prefetchedXtreamJson.seriesStreamsRaw);
+      } else {
+        const [authInfoRes, catsRes, streamsRes] = await Promise.all([
+          fetch(
+            wrapProxy(`${base}/player_api.php?${authParams}`, req.proxyEndpoint)
+          ).catch(() => null),
+          fetch(
+            wrapProxy(
+              `${base}/player_api.php?${authParams}&action=get_live_categories`,
+              req.proxyEndpoint
+            )
+          ),
+          fetch(
+            wrapProxy(
+              `${base}/player_api.php?${authParams}&action=get_live_streams`,
+              req.proxyEndpoint
+            )
+          ),
+        ]);
+
+        if (!catsRes.ok || !streamsRes.ok) {
+          throw new Error(`Xtream Server antwortete mit HTTP ${streamsRes.status}`);
+        }
+
+        if (authInfoRes && authInfoRes.ok) {
+          try {
+            parseAccountJson(await authInfoRes.json());
+          } catch {
+            // Optional account metadata
+          }
+        }
+
+        categories = (await catsRes.json()) as typeof categories;
+        streams = (await streamsRes.json()) as typeof streams;
+
+        self.postMessage({
+          type: 'progress',
+          phase: 'Synchronisiere Xtream VOD-Filme & Serien-Katalog…',
+          percent: 52,
+        } satisfies WorkerIngestResponse);
+
+        [vodCats, vodStreams, seriesCats, seriesStreams] = await Promise.all([
+          fetchJsonArraySafe<{ category_id: string; category_name: string }>(
+            wrapProxy(
+              `${base}/player_api.php?${authParams}&action=get_vod_categories`,
+              req.proxyEndpoint
+            )
+          ),
+          fetchJsonArraySafe<{
+            stream_id: number;
+            name: string;
+            stream_icon?: string;
+            rating?: string | number;
+            category_id?: string;
+            container_extension?: string;
+          }>(
+            wrapProxy(
+              `${base}/player_api.php?${authParams}&action=get_vod_streams`,
+              req.proxyEndpoint
+            )
+          ),
+          fetchJsonArraySafe<{ category_id: string; category_name: string }>(
+            wrapProxy(
+              `${base}/player_api.php?${authParams}&action=get_series_categories`,
+              req.proxyEndpoint
+            )
+          ),
+          fetchJsonArraySafe<{
+            series_id: number;
+            name: string;
+            cover?: string;
+            plot?: string;
+            genre?: string;
+            releaseDate?: string;
+            rating?: string | number;
+            category_id?: string;
+          }>(
+            wrapProxy(
+              `${base}/player_api.php?${authParams}&action=get_series`,
+              req.proxyEndpoint
+            )
+          ),
+        ]);
+      }
 
       const catMap = new Map<string, string>();
       for (const c of Array.isArray(categories) ? categories : []) {

@@ -13,6 +13,11 @@ import {
 import { VERIFIED_HLS_STREAMS } from '../data/mockCatalog';
 import { parseXtreamLiveStreamUrl } from '../engine/catchupUrlBuilder';
 import {
+  fetchNativeTextViaRust,
+  isTauriDesktopOrMobile,
+  probeTauriNativeEngine,
+} from '../engine/tauriNativeBridge';
+import {
   computePlaylistCanonicalKey,
   remapEntityIdWithSourceMap,
 } from './lumaCloudSync';
@@ -194,6 +199,98 @@ function runWorkerTask<T extends WorkerIngestResponse['type']>(
   });
 }
 
+async function resolveEffectiveIngestProxy(
+  explicitProxy?: string
+): Promise<string | undefined> {
+  if (explicitProxy && explicitProxy.trim()) {
+    return explicitProxy.trim();
+  }
+  const probe = await probeTauriNativeEngine();
+  return probe.localProxyUrl || undefined;
+}
+
+async function tryPrefetchM3uOrXmlTextViaRust(
+  url?: string
+): Promise<string | undefined> {
+  if (!url || !url.startsWith('http') || !isTauriDesktopOrMobile()) {
+    return undefined;
+  }
+  const fetched = await fetchNativeTextViaRust(url);
+  return fetched && fetched.trim().length > 0 ? fetched : undefined;
+}
+
+async function tryPrefetchXtreamCatalogViaRust(params: {
+  serverUrl: string;
+  username: string;
+  password: string;
+  onProgress?: (phase: string, percent: number) => void;
+}): Promise<
+  | {
+      authRaw?: string | null;
+      liveCategoriesRaw: string;
+      liveStreamsRaw: string;
+      vodCategoriesRaw?: string | null;
+      vodStreamsRaw?: string | null;
+      seriesCategoriesRaw?: string | null;
+      seriesStreamsRaw?: string | null;
+    }
+  | undefined
+> {
+  if (!isTauriDesktopOrMobile()) return undefined;
+  const base = params.serverUrl.trim().replace(/\/+$/, '');
+  const authParams = `username=${encodeURIComponent(params.username)}&password=${encodeURIComponent(params.password)}`;
+
+  params.onProgress?.(
+    'Authentifiziere Xtream Codes API über Native Bridge…',
+    18
+  );
+
+  const [authRaw, liveCategoriesRaw, liveStreamsRaw] = await Promise.all([
+    fetchNativeTextViaRust(`${base}/player_api.php?${authParams}`),
+    fetchNativeTextViaRust(
+      `${base}/player_api.php?${authParams}&action=get_live_categories`
+    ),
+    fetchNativeTextViaRust(
+      `${base}/player_api.php?${authParams}&action=get_live_streams`
+    ),
+  ]);
+
+  if (!liveCategoriesRaw || !liveStreamsRaw) {
+    return undefined;
+  }
+
+  params.onProgress?.(
+    'Synchronisiere Xtream VOD-Filme & Serien-Katalog…',
+    52
+  );
+
+  const [vodCategoriesRaw, vodStreamsRaw, seriesCategoriesRaw, seriesStreamsRaw] =
+    await Promise.all([
+      fetchNativeTextViaRust(
+        `${base}/player_api.php?${authParams}&action=get_vod_categories`
+      ),
+      fetchNativeTextViaRust(
+        `${base}/player_api.php?${authParams}&action=get_vod_streams`
+      ),
+      fetchNativeTextViaRust(
+        `${base}/player_api.php?${authParams}&action=get_series_categories`
+      ),
+      fetchNativeTextViaRust(
+        `${base}/player_api.php?${authParams}&action=get_series`
+      ),
+    ]);
+
+  return {
+    authRaw,
+    liveCategoriesRaw,
+    liveStreamsRaw,
+    vodCategoriesRaw,
+    vodStreamsRaw,
+    seriesCategoriesRaw,
+    seriesStreamsRaw,
+  };
+}
+
 export async function importM3uPlaylist(params: {
   name: string;
   rawText?: string;
@@ -238,13 +335,19 @@ export async function importM3uPlaylist(params: {
     }
   }
 
+  const effectiveProxy = await resolveEffectiveIngestProxy(params.proxyEndpoint);
+  const prefetchedM3u =
+    !params.rawText && params.url
+      ? await tryPrefetchM3uOrXmlTextViaRust(params.url)
+      : undefined;
+
   const res = await runWorkerTask(
     {
       type: 'parse-m3u',
       sourceId,
-      rawText: params.rawText,
-      url: params.url,
-      proxyEndpoint: params.proxyEndpoint,
+      rawText: params.rawText ?? prefetchedM3u,
+      url: prefetchedM3u ? undefined : params.url,
+      proxyEndpoint: effectiveProxy,
     },
     'm3u-result',
     params.onProgress
@@ -371,6 +474,14 @@ export async function importXtreamSource(params: {
     }
   }
 
+  const effectiveProxy = await resolveEffectiveIngestProxy(params.proxyEndpoint);
+  const prefetchedXtreamJson = await tryPrefetchXtreamCatalogViaRust({
+    serverUrl: params.serverUrl,
+    username: params.username,
+    password: params.password,
+    onProgress: params.onProgress,
+  });
+
   const res = await runWorkerTask(
     {
       type: 'ingest-xtream',
@@ -379,7 +490,8 @@ export async function importXtreamSource(params: {
       username: params.username,
       password: params.password,
       outputFormat: params.outputFormat,
-      proxyEndpoint: params.proxyEndpoint,
+      proxyEndpoint: effectiveProxy,
+      prefetchedXtreamJson,
     },
     'm3u-result',
     params.onProgress
@@ -578,14 +690,20 @@ export async function importXmltvForSource(params: {
   proxyEndpoint?: string;
   onProgress?: (phase: string, percent: number) => void;
 }): Promise<number> {
+  const effectiveProxy = await resolveEffectiveIngestProxy(params.proxyEndpoint);
+  const prefetchedXml =
+    !params.rawText && !params.rawBuffer && params.url && !params.url.endsWith('.gz')
+      ? await tryPrefetchM3uOrXmlTextViaRust(params.url)
+      : undefined;
+
   const res = await runWorkerTask(
     {
       type: 'parse-xmltv',
       sourceId: params.sourceId,
-      url: params.url,
+      url: prefetchedXml ? undefined : params.url,
       rawBuffer: params.rawBuffer,
-      rawText: params.rawText,
-      proxyEndpoint: params.proxyEndpoint,
+      rawText: params.rawText ?? prefetchedXml,
+      proxyEndpoint: effectiveProxy,
     },
     'xmltv-result',
     params.onProgress
@@ -982,6 +1100,7 @@ export async function resyncPersistedSource(params: {
     }
   }
 
+  const effectiveProxy = await resolveEffectiveIngestProxy(proxyEndpoint);
   let res: Extract<WorkerIngestResponse, { type: 'm3u-result' }>;
   if (
     source.type === 'xtream' &&
@@ -989,6 +1108,12 @@ export async function resyncPersistedSource(params: {
     source.username &&
     source.password
   ) {
+    const prefetchedXtreamJson = await tryPrefetchXtreamCatalogViaRust({
+      serverUrl: source.rawUrlOrHost,
+      username: source.username,
+      password: source.password,
+      onProgress,
+    });
     res = await runWorkerTask(
       {
         type: 'ingest-xtream',
@@ -997,18 +1122,23 @@ export async function resyncPersistedSource(params: {
         username: source.username,
         password: source.password,
         outputFormat: source.outputFormat ?? 'm3u8',
-        proxyEndpoint,
+        proxyEndpoint: effectiveProxy,
+        prefetchedXtreamJson,
       },
       'm3u-result',
       onProgress
     );
   } else if (source.rawUrlOrHost && source.rawUrlOrHost.startsWith('http')) {
+    const prefetchedM3u = await tryPrefetchM3uOrXmlTextViaRust(
+      source.rawUrlOrHost
+    );
     res = await runWorkerTask(
       {
         type: 'parse-m3u',
         sourceId: source.id,
-        url: source.rawUrlOrHost,
-        proxyEndpoint,
+        rawText: prefetchedM3u,
+        url: prefetchedM3u ? undefined : source.rawUrlOrHost,
+        proxyEndpoint: effectiveProxy,
       },
       'm3u-result',
       onProgress
@@ -1044,6 +1174,7 @@ export async function resyncPersistedSource(params: {
     channelCount: mergedChannels.length,
     vodCount: res.vodItems.length,
     seriesCount: res.seriesItems?.length ?? 0,
+    epgStatus: 'synced',
     lastUpdated: formatSyncTimestamp(),
     lastSyncedAtMs: Date.now(),
     ...(res.discoveredXmltvUrl && !source.xmltvUrl
@@ -1058,7 +1189,7 @@ export async function resyncPersistedSource(params: {
       await importXmltvForSource({
         sourceId: source.id,
         url: effectiveXmltvUrl,
-        proxyEndpoint,
+        proxyEndpoint: effectiveProxy,
         onProgress,
       });
     } catch {

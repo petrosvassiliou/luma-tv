@@ -22,10 +22,13 @@ import {
 import type { StoredPlaylistSource } from '../db/lumaDb';
 import type { LumaPreferences } from '../i18n/translations';
 import type {
+  Channel,
   CustomBouquet,
   EpgReminder,
   ParentalControlConfig,
   PlatformDesignMode,
+  SeriesItem,
+  VodItem,
 } from '../types/luma';
 
 export interface WatchHistoryEntry {
@@ -88,6 +91,9 @@ export interface LumaSyncPlainPayload {
   activeSourceId?: string;
   demoSourceDeleted?: boolean;
   playlists?: SyncedPlaylistSource[];
+  channelSnapshots?: Record<string, Channel>;
+  vodSnapshots?: Record<string, VodItem>;
+  seriesSnapshots?: Record<string, SeriesItem>;
   syncMeta?: EncryptedSyncMetadataV3;
 }
 
@@ -150,6 +156,9 @@ const DEVICE_ID_STORAGE = 'luma.cloud.deviceId.v1';
 const DEVICE_SYNC_STATE_PREFIX = 'luma.cloud.syncState.v3:';
 const TOMBSTONE_RETENTION_MS = 90 * 24 * 3_600_000;
 const MAX_TOMBSTONE_ENTRIES = 1200;
+const MAX_CHANNEL_SNAPSHOTS = 500;
+const MAX_VOD_SNAPSHOTS = 180;
+const MAX_SERIES_SNAPSHOTS = 180;
 
 export const LUMA_FACTORY_DEFAULT_FAVORITES = [
   'ch-redbull-tv',
@@ -671,6 +680,18 @@ export function remapPayloadSourceIds(
     ? remapEntityIdWithSourceMap(payload.activeSourceId, sourceIdRemap)
     : payload.activeSourceId;
 
+  const remapSnapshotMap = <T extends { id: string }>(
+    snapMap?: Record<string, T>
+  ): Record<string, T> | undefined => {
+    if (!snapMap) return undefined;
+    const out: Record<string, T> = {};
+    for (const [rawKey, item] of Object.entries(snapMap)) {
+      const nextId = remapEntityIdWithSourceMap(item.id || rawKey, sourceIdRemap);
+      out[nextId] = { ...item, id: nextId };
+    }
+    return out;
+  };
+
   return {
     ...payload,
     favorites: remapList(payload.favorites),
@@ -687,6 +708,173 @@ export function remapPayloadSourceIds(
     ...(remappedDual ? { dualSlotIds: remappedDual } : {}),
     ...(remappedMulti ? { multiviewSlotIds: remappedMulti } : {}),
     ...(remappedActiveSource ? { activeSourceId: remappedActiveSource } : {}),
+    ...(payload.channelSnapshots
+      ? { channelSnapshots: remapSnapshotMap(payload.channelSnapshots) }
+      : {}),
+    ...(payload.vodSnapshots
+      ? { vodSnapshots: remapSnapshotMap(payload.vodSnapshots) }
+      : {}),
+    ...(payload.seriesSnapshots
+      ? { seriesSnapshots: remapSnapshotMap(payload.seriesSnapshots) }
+      : {}),
+  };
+}
+
+/**
+ * Extracts the provider-invariant canonical tail from a Luma item ID
+ * (e.g. `xtream-1795500001-xt-36037` -> `{ prefix: 'xtream-1795500001', tail: 'xt:36037' }`).
+ */
+export function parseSourcePrefixedMediaId(
+  id: string
+): { sourcePrefix: string; tail: string } | null {
+  const dashMatch = /^(.+)-(xt|ch|xvod|vod|xser)-(\d+)$/.exec(id);
+  if (dashMatch) {
+    return {
+      sourcePrefix: dashMatch[1],
+      tail: `${dashMatch[2]}:${dashMatch[3]}`,
+    };
+  }
+  const colonMatch = /^(.+):(live|vod|series):(\d+)$/.exec(id);
+  if (colonMatch) {
+    const kind =
+      colonMatch[2] === 'live'
+        ? 'xt'
+        : colonMatch[2] === 'vod'
+          ? 'xvod'
+          : 'xser';
+    return {
+      sourcePrefix: colonMatch[1],
+      tail: `${kind}:${colonMatch[3]}`,
+    };
+  }
+  return null;
+}
+
+function extractStreamIdentityTail(streamUrl?: string): string | null {
+  if (!streamUrl) return null;
+  const xcMatch = /\/(live|movie|series)\/[^/]+\/[^/]+\/(\d+)(?:\.[a-z0-9]+)?$/i.exec(
+    streamUrl.trim()
+  );
+  if (xcMatch) {
+    return `${xcMatch[1].toLowerCase()}:${xcMatch[2]}`;
+  }
+  return normalizePlaylistServerOrUrl(streamUrl);
+}
+
+function normalizeMatchText(text?: string): string {
+  return (text ?? '')
+    .normalize('NFKD')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Resolves any favorite or collection channel IDs whose `sourceId` prefix was orphaned
+ * (e.g. from an earlier duplicate playlist deletion/re-import) or whose M3U index shifted,
+ * returning both the matched stored channels and an `oldId -> liveId` heal map.
+ */
+export function resolveMissingChannelsAndBuildHealMap<T extends Channel>(params: {
+  neededIds: readonly string[];
+  exactFoundIds: ReadonlySet<string>;
+  candidateChannels: readonly T[];
+  snapshots?: Record<string, Channel>;
+  validSourceIds?: ReadonlySet<string>;
+  demoSourceDeleted?: boolean;
+}): { resolvedChannels: T[]; healIdMap: Map<string, string> } {
+  const {
+    neededIds,
+    exactFoundIds,
+    candidateChannels,
+    snapshots,
+    validSourceIds,
+    demoSourceDeleted,
+  } = params;
+
+  const missingIds = neededIds.filter((id) => {
+    if (!id || exactFoundIds.has(id)) return false;
+    if (!demoSourceDeleted && id.startsWith('ch-')) return false;
+    return true;
+  });
+
+  if (missingIds.length === 0 || candidateChannels.length === 0) {
+    return { resolvedChannels: [], healIdMap: new Map() };
+  }
+
+  const byTail = new Map<string, T>();
+  const byStreamTail = new Map<string, T>();
+  const byTvgAndGroup = new Map<string, T>();
+  const byNameAndGroup = new Map<string, T>();
+  const byNameOnly = new Map<string, T>();
+
+  for (const ch of candidateChannels) {
+    const parsed = parseSourcePrefixedMediaId(ch.id);
+    if (parsed && !byTail.has(parsed.tail)) {
+      byTail.set(parsed.tail, ch);
+    }
+    const sTail = extractStreamIdentityTail(ch.streamUrl);
+    if (sTail && !byStreamTail.has(sTail)) {
+      byStreamTail.set(sTail, ch);
+    }
+    const normName = normalizeMatchText(ch.name);
+    const normGroup = normalizeMatchText(ch.groupName);
+    if (ch.tvgId) {
+      const k = `${ch.tvgId.toLowerCase()}|${normGroup}`;
+      if (!byTvgAndGroup.has(k)) byTvgAndGroup.set(k, ch);
+    }
+    if (normName) {
+      const ng = `${normName}|${normGroup}`;
+      if (!byNameAndGroup.has(ng)) byNameAndGroup.set(ng, ch);
+      if (!byNameOnly.has(normName)) byNameOnly.set(normName, ch);
+    }
+  }
+
+  const resolvedMap = new Map<string, T>();
+  const healIdMap = new Map<string, string>();
+
+  for (const missingId of missingIds) {
+    const parsed = parseSourcePrefixedMediaId(missingId);
+    const snap = snapshots?.[missingId];
+    const isSourceStillActive =
+      Boolean(parsed && validSourceIds?.has(parsed.sourcePrefix));
+
+    let matched: T | undefined;
+
+    // 1. If we have a synced snapshot, match deterministically by stream identity or metadata
+    if (snap) {
+      const snapStreamTail = extractStreamIdentityTail(snap.streamUrl);
+      if (snapStreamTail) {
+        matched = byStreamTail.get(snapStreamTail);
+      }
+      if (!matched && parsed && !isSourceStillActive) {
+        matched = byTail.get(parsed.tail);
+      }
+      const normName = normalizeMatchText(snap.name);
+      const normGroup = normalizeMatchText(snap.groupName);
+      if (!matched && snap.tvgId) {
+        matched = byTvgAndGroup.get(`${snap.tvgId.toLowerCase()}|${normGroup}`);
+      }
+      if (!matched && normName) {
+        matched =
+          byNameAndGroup.get(`${normName}|${normGroup}`) ??
+          byNameOnly.get(normName);
+      }
+    } else if (parsed && !isSourceStillActive) {
+      // 2. Orphaned source prefix (e.g. duplicate playlist removed earlier): match exact stream tail
+      matched = byTail.get(parsed.tail);
+    }
+
+    if (matched) {
+      resolvedMap.set(matched.id, matched);
+      if (matched.id !== missingId) {
+        healIdMap.set(missingId, matched.id);
+      }
+    }
+  }
+
+  return {
+    resolvedChannels: Array.from(resolvedMap.values()),
+    healIdMap,
   };
 }
 
@@ -865,6 +1053,12 @@ export function computeSyncContentDigest(payload: LumaSyncPlainPayload): string 
     ([a], [b]) => a.localeCompare(b)
   );
 
+  const snapshotKeys = normalizeSortedUniqueStrings([
+    ...Object.keys(payload.channelSnapshots ?? {}).map((k) => `ch:${k}`),
+    ...Object.keys(payload.vodSnapshots ?? {}).map((k) => `vod:${k}`),
+    ...Object.keys(payload.seriesSnapshots ?? {}).map((k) => `ser:${k}`),
+  ]);
+
   return JSON.stringify({
     favorites: normalizeUniquePreserveOrder(payload.favorites),
     favoriteVodIds: normalizeUniquePreserveOrder(payload.favoriteVodIds),
@@ -882,6 +1076,7 @@ export function computeSyncContentDigest(payload: LumaSyncPlainPayload): string 
     demoSourceDeleted: Boolean(payload.demoSourceDeleted),
     playlists: canonicalPlaylists,
     tombstones: tombstoneEntries,
+    snapshotKeys,
   });
 }
 
@@ -942,7 +1137,16 @@ function remapSyncMetaKeys(
 function stripPayloadBaseSnapshot(
   payload: LumaSyncPlainPayload
 ): LumaSyncPlainPayload {
-  const { syncMeta, ...rest } = payload;
+  const {
+    syncMeta,
+    channelSnapshots: _cs,
+    vodSnapshots: _vs,
+    seriesSnapshots: _ss,
+    ...rest
+  } = payload;
+  void _cs;
+  void _vs;
+  void _ss;
   return {
     ...rest,
     schemaVersion: 3,
@@ -1962,6 +2166,59 @@ export function reconcileCloudSyncPayloads(params: {
     nowMs
   );
 
+  // Merge portable media snapshots for active favorites & collection items so synced devices
+  // display and play favorites/collections immediately (even before full playlist hydration).
+  const activeChannelIds = new Set<string>(mergedFavorites);
+  const activeVodIds = new Set<string>(mergedVodFavorites);
+  const activeSeriesIds = new Set<string>(mergedSeriesFavorites);
+  if (mergedPreferences?.startupChannelId) {
+    activeChannelIds.add(mergedPreferences.startupChannelId);
+  }
+  for (const bq of mergedBouquets) {
+    for (const cid of bq.channelIds) activeChannelIds.add(cid);
+    for (const vid of bq.vodIds ?? []) activeVodIds.add(vid);
+    for (const sid of bq.seriesIds ?? []) activeSeriesIds.add(sid);
+  }
+
+  const mergeActiveSnapshots = <T extends { id: string }>(
+    remoteMap: Record<string, T> | undefined,
+    localMap: Record<string, T> | undefined,
+    activeSet: ReadonlySet<string>,
+    limit: number
+  ): Record<string, T> | undefined => {
+    if (!remoteMap && !localMap) return undefined;
+    const out: Record<string, T> = {};
+    let count = 0;
+    for (const id of activeSet) {
+      if (count >= limit) break;
+      const item = localMap?.[id] ?? remoteMap?.[id];
+      if (item) {
+        out[id] = item;
+        count += 1;
+      }
+    }
+    return count > 0 ? out : undefined;
+  };
+
+  const mergedChannelSnapshots = mergeActiveSnapshots(
+    cleanRemote.channelSnapshots,
+    alignedLocal.channelSnapshots,
+    activeChannelIds,
+    MAX_CHANNEL_SNAPSHOTS
+  );
+  const mergedVodSnapshots = mergeActiveSnapshots(
+    cleanRemote.vodSnapshots,
+    alignedLocal.vodSnapshots,
+    activeVodIds,
+    MAX_VOD_SNAPSHOTS
+  );
+  const mergedSeriesSnapshots = mergeActiveSnapshots(
+    cleanRemote.seriesSnapshots,
+    alignedLocal.seriesSnapshots,
+    activeSeriesIds,
+    MAX_SERIES_SNAPSHOTS
+  );
+
   const candidateMerged: LumaSyncPlainPayload = {
     schemaVersion: 3,
     exportedAt: nowMs,
@@ -1980,6 +2237,13 @@ export function reconcileCloudSyncPayloads(params: {
     activeSourceId: mergedActiveSourceId,
     demoSourceDeleted: mergedDemoDeleted,
     playlists: mergedPlaylists,
+    ...(mergedChannelSnapshots
+      ? { channelSnapshots: mergedChannelSnapshots }
+      : {}),
+    ...(mergedVodSnapshots ? { vodSnapshots: mergedVodSnapshots } : {}),
+    ...(mergedSeriesSnapshots
+      ? { seriesSnapshots: mergedSeriesSnapshots }
+      : {}),
     syncMeta: candidateMeta,
   };
 

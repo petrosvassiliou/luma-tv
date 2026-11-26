@@ -31,11 +31,13 @@ import {
   computePlaylistCanonicalKey,
   computeSyncContentDigest,
   loadDeviceCloudSyncState,
+  parseSourcePrefixedMediaId,
   pullAccountCloudVault,
   pushAccountCloudVault,
   reconcileCloudSyncPayloads,
   recordLocalSyncMutation,
   remapEntityIdWithSourceMap,
+  resolveMissingChannelsAndBuildHealMap,
   saveDeviceCloudSyncState,
   sendLumaPasswordReset,
   serializePlaylistForSync,
@@ -672,6 +674,33 @@ export function App() {
 
   const [persistedSources, setPersistedSources] = useState<StoredPlaylistSource[]>([]);
   const [sourcesDbLoaded, setSourcesDbLoaded] = useState<boolean>(false);
+  const [playlistHydrationEpoch, setPlaylistHydrationEpoch] = useState<number>(0);
+  const [cloudHydratingPlaylists, setCloudHydratingPlaylists] =
+    useState<boolean>(false);
+  const [syncedMediaSnapshots, setSyncedMediaSnapshots] = useState<{
+    channels: Record<string, Channel>;
+    vod: Record<string, VodItem>;
+    series: Record<string, SeriesItem>;
+  }>(() => {
+    try {
+      const raw = localStorage.getItem('luma.cloud.mediaSnapshots.v1');
+      if (raw) {
+        const parsed = JSON.parse(raw) as {
+          channels?: Record<string, Channel>;
+          vod?: Record<string, VodItem>;
+          series?: Record<string, SeriesItem>;
+        };
+        return {
+          channels: parsed.channels ?? {},
+          vod: parsed.vod ?? {},
+          series: parsed.series ?? {},
+        };
+      }
+    } catch {
+      // Ignore
+    }
+    return { channels: {}, vod: {}, series: {} };
+  });
   const [persistedChannels, setPersistedChannels] = useState<StoredChannel[]>([]);
   const [loadedBundleSourceId, setLoadedBundleSourceId] = useState<string | null>(null);
   const [crossSourceLookupChannels, setCrossSourceLookupChannels] = useState<
@@ -926,7 +955,8 @@ export function App() {
     };
   }, [activeSourceId]);
 
-  // Resolve any Startup, Favorite, or Collection channel IDs stored in IndexedDB across ALL playlists
+  // Resolve any Startup, Favorite, or Collection channel IDs stored in IndexedDB across ALL playlists,
+  // and self-heal orphaned source prefixes (e.g. from deduplicated or re-imported playlists).
   useEffect(() => {
     const neededIds = new Set<string>(favoriteIds);
     if (preferences.startupChannelId) {
@@ -941,22 +971,130 @@ export function App() {
       return;
     }
     let cancelled = false;
-    lumaDb.channels
-      .bulkGet(Array.from(neededIds))
-      .then((rows) => {
+    const neededArray = Array.from(neededIds);
+
+    void (async () => {
+      try {
+        const rows = await lumaDb.channels.bulkGet(neededArray);
         if (cancelled) return;
-        setCrossSourceLookupChannels(
-          rows.filter((r): r is StoredChannel => Boolean(r))
+        const exactFound = rows.filter((r): r is StoredChannel => Boolean(r));
+        const exactFoundIds = new Set(exactFound.map((c) => c.id));
+
+        const hasUnresolvedNonDemo = neededArray.some(
+          (id) =>
+            !exactFoundIds.has(id) && !(!demoSourceDeleted && id.startsWith('ch-'))
         );
-      })
-      .catch(() => undefined)
-      .finally(() => {
+
+        let healedResolved: StoredChannel[] = [];
+        if (hasUnresolvedNonDemo) {
+          const allDbChannels = await lumaDb.channels.toArray();
+          if (cancelled) return;
+          if (allDbChannels.length > 0) {
+            const validSourceIds = new Set<string>();
+            for (const ch of allDbChannels) validSourceIds.add(ch.sourceId);
+            if (cloudHydratingPlaylists) {
+              for (const s of persistedSources) validSourceIds.add(s.id);
+            }
+            const { resolvedChannels, healIdMap } =
+              resolveMissingChannelsAndBuildHealMap({
+                neededIds: neededArray,
+                exactFoundIds,
+                candidateChannels: allDbChannels,
+                snapshots: syncedMediaSnapshots.channels,
+                validSourceIds,
+                demoSourceDeleted,
+              });
+            healedResolved = resolvedChannels;
+
+            if (healIdMap.size > 0 && !cancelled) {
+              setFavoriteIds((prev) => {
+                let changed = false;
+                const nextArr = Array.from(prev).map((id) => {
+                  const mapped = healIdMap.get(id);
+                  if (mapped && mapped !== id) {
+                    changed = true;
+                    return mapped;
+                  }
+                  return id;
+                });
+                if (!changed) return prev;
+                const dedup = Array.from(new Set(nextArr));
+                try {
+                  localStorage.setItem('luma.favorites.v1', JSON.stringify(dedup));
+                } catch {
+                  // Ignore
+                }
+                return new Set(dedup);
+              });
+
+              setCustomBouquets((prev) => {
+                let changed = false;
+                const nextBq = prev.map((bq) => {
+                  let bqChanged = false;
+                  const mappedCh = bq.channelIds.map((id) => {
+                    const mapped = healIdMap.get(id);
+                    if (mapped && mapped !== id) {
+                      changed = true;
+                      bqChanged = true;
+                      return mapped;
+                    }
+                    return id;
+                  });
+                  return bqChanged
+                    ? { ...bq, channelIds: Array.from(new Set(mappedCh)) }
+                    : bq;
+                });
+                if (!changed) return prev;
+                try {
+                  localStorage.setItem('luma.bouquets.v1', JSON.stringify(nextBq));
+                } catch {
+                  // Ignore
+                }
+                return nextBq;
+              });
+
+              if (
+                preferences.startupChannelId &&
+                healIdMap.has(preferences.startupChannelId)
+              ) {
+                const healedStartup = healIdMap.get(preferences.startupChannelId)!;
+                handleUpdatePreferences(
+                  { ...preferences, startupChannelId: healedStartup },
+                  true
+                );
+              }
+            }
+          }
+        }
+
+        const mergedLookup = new Map<string, StoredChannel>();
+        for (const ch of exactFound) mergedLookup.set(ch.id, ch);
+        for (const ch of healedResolved) mergedLookup.set(ch.id, ch);
+        if (!cancelled) {
+          setCrossSourceLookupChannels(Array.from(mergedLookup.values()));
+        }
+      } catch {
+        // Ignore lookup error
+      } finally {
         if (!cancelled) setFavoritesLookupLoaded(true);
-      });
+      }
+    })();
+
     return () => {
       cancelled = true;
     };
-  }, [favoriteIds, preferences.startupChannelId, customBouquets, persistedSources]);
+  }, [
+    favoriteIds,
+    preferences,
+    handleUpdatePreferences,
+    customBouquets,
+    persistedSources,
+    persistedChannels.length,
+    playlistHydrationEpoch,
+    cloudHydratingPlaylists,
+    demoSourceDeleted,
+    syncedMediaSnapshots.channels,
+  ]);
 
   // Resolve any Favorite or Collection VOD IDs stored in IndexedDB across ALL playlists
   useEffect(() => {
@@ -969,19 +1107,65 @@ export function App() {
       return;
     }
     let cancelled = false;
-    lumaDb.vodItems
-      .bulkGet(Array.from(neededVodIds))
-      .then((rows) => {
+    const neededArray = Array.from(neededVodIds);
+    void (async () => {
+      try {
+        const rows = await lumaDb.vodItems.bulkGet(neededArray);
         if (cancelled) return;
-        setCrossSourceLookupVod(
-          rows.filter((r): r is StoredVodItem => Boolean(r))
-        );
-      })
-      .catch(() => undefined);
+        const exact = rows.filter((r): r is StoredVodItem => Boolean(r));
+        const exactIds = new Set(exact.map((v) => v.id));
+        const validSourceIds = new Set(persistedSources.map((s) => s.id));
+        const missingOrphans = neededArray.filter((id) => {
+          if (exactIds.has(id) || id.startsWith('vod-')) return false;
+          const p = parseSourcePrefixedMediaId(id);
+          return Boolean(p && !validSourceIds.has(p.sourcePrefix));
+        });
+        if (missingOrphans.length > 0) {
+          const allVod = await lumaDb.vodItems.toArray();
+          if (cancelled) return;
+          const byTail = new Map<string, StoredVodItem>();
+          for (const v of allVod) {
+            const p = parseSourcePrefixedMediaId(v.id);
+            if (p && !byTail.has(p.tail)) byTail.set(p.tail, v);
+          }
+          const healVodMap = new Map<string, string>();
+          for (const mid of missingOrphans) {
+            const p = parseSourcePrefixedMediaId(mid);
+            const match = p ? byTail.get(p.tail) : undefined;
+            if (match) {
+              exact.push(match);
+              healVodMap.set(mid, match.id);
+            }
+          }
+          if (healVodMap.size > 0 && !cancelled) {
+            setFavoriteVodIds((prev) => {
+              const next = Array.from(
+                new Set(Array.from(prev).map((id) => healVodMap.get(id) ?? id))
+              );
+              try {
+                localStorage.setItem('luma.favoriteVod.v1', JSON.stringify(next));
+              } catch {
+                // Ignore
+              }
+              return new Set(next);
+            });
+          }
+        }
+        if (!cancelled) setCrossSourceLookupVod(exact);
+      } catch {
+        // Ignore
+      }
+    })();
     return () => {
       cancelled = true;
     };
-  }, [favoriteVodIds, customBouquets, persistedSources]);
+  }, [
+    favoriteVodIds,
+    customBouquets,
+    persistedSources,
+    persistedVod.length,
+    playlistHydrationEpoch,
+  ]);
 
   // Resolve any Favorite or Collection series IDs stored in IndexedDB across ALL playlists
   useEffect(() => {
@@ -994,19 +1178,65 @@ export function App() {
       return;
     }
     let cancelled = false;
-    lumaDb.seriesItems
-      .bulkGet(Array.from(neededSeriesIds))
-      .then((rows) => {
+    const neededArray = Array.from(neededSeriesIds);
+    void (async () => {
+      try {
+        const rows = await lumaDb.seriesItems.bulkGet(neededArray);
         if (cancelled) return;
-        setCrossSourceLookupSeries(
-          rows.filter((r): r is StoredSeriesItem => Boolean(r))
-        );
-      })
-      .catch(() => undefined);
+        const exact = rows.filter((r): r is StoredSeriesItem => Boolean(r));
+        const exactIds = new Set(exact.map((s) => s.id));
+        const validSourceIds = new Set(persistedSources.map((s) => s.id));
+        const missingOrphans = neededArray.filter((id) => {
+          if (exactIds.has(id) || id.startsWith('ser-')) return false;
+          const p = parseSourcePrefixedMediaId(id);
+          return Boolean(p && !validSourceIds.has(p.sourcePrefix));
+        });
+        if (missingOrphans.length > 0) {
+          const allSer = await lumaDb.seriesItems.toArray();
+          if (cancelled) return;
+          const byTail = new Map<string, StoredSeriesItem>();
+          for (const s of allSer) {
+            const p = parseSourcePrefixedMediaId(s.id);
+            if (p && !byTail.has(p.tail)) byTail.set(p.tail, s);
+          }
+          const healSerMap = new Map<string, string>();
+          for (const mid of missingOrphans) {
+            const p = parseSourcePrefixedMediaId(mid);
+            const match = p ? byTail.get(p.tail) : undefined;
+            if (match) {
+              exact.push(match);
+              healSerMap.set(mid, match.id);
+            }
+          }
+          if (healSerMap.size > 0 && !cancelled) {
+            setFavoriteSeriesIds((prev) => {
+              const next = Array.from(
+                new Set(Array.from(prev).map((id) => healSerMap.get(id) ?? id))
+              );
+              try {
+                localStorage.setItem('luma.favoriteSeries.v1', JSON.stringify(next));
+              } catch {
+                // Ignore
+              }
+              return new Set(next);
+            });
+          }
+        }
+        if (!cancelled) setCrossSourceLookupSeries(exact);
+      } catch {
+        // Ignore
+      }
+    })();
     return () => {
       cancelled = true;
     };
-  }, [favoriteSeriesIds, customBouquets, persistedSources]);
+  }, [
+    favoriteSeriesIds,
+    customBouquets,
+    persistedSources,
+    persistedSeries.length,
+    playlistHydrationEpoch,
+  ]);
 
   const builtinCatalog = useMemo(
     () => buildChannelCatalog(stressMode20k ? 20_400 : 2_400),
@@ -1080,18 +1310,27 @@ export function App() {
       builtinCatalog,
     ]);
 
-  // Unified lookup pool for Favorites & Collections (includes hidden-group & cross-playlist channels)
+  // Unified lookup pool for Favorites & Collections (includes hidden-group, cross-playlist, and synced snapshot channels)
   const collectionAndFavoritePool: Channel[] = useMemo(() => {
     const map = new Map<string, Channel>();
     for (const ch of persistedChannels) map.set(ch.id, ch);
     for (const ch of crossSourceLookupChannels) map.set(ch.id, ch);
+    for (const snapCh of Object.values(syncedMediaSnapshots.channels)) {
+      if (!map.has(snapCh.id)) map.set(snapCh.id, snapCh);
+    }
     if (!demoSourceDeleted) {
       for (const ch of builtinCatalog.channels) {
         if (!map.has(ch.id)) map.set(ch.id, ch);
       }
     }
     return Array.from(map.values());
-  }, [persistedChannels, crossSourceLookupChannels, demoSourceDeleted, builtinCatalog]);
+  }, [
+    persistedChannels,
+    crossSourceLookupChannels,
+    syncedMediaSnapshots.channels,
+    demoSourceDeleted,
+    builtinCatalog,
+  ]);
 
   const groups: ChannelGroup[] = useMemo(() => {
     const bouquetGroups: ChannelGroup[] = customBouquets.map((bq) => ({
@@ -1118,25 +1357,41 @@ export function App() {
     const map = new Map<string, VodItem>();
     for (const vod of persistedVod) map.set(vod.id, vod);
     for (const vod of crossSourceLookupVod) map.set(vod.id, vod);
+    for (const snapVod of Object.values(syncedMediaSnapshots.vod)) {
+      if (!map.has(snapVod.id)) map.set(snapVod.id, snapVod);
+    }
     if (!demoSourceDeleted) {
       for (const vod of DEMO_VOD_CATALOG) {
         if (!map.has(vod.id)) map.set(vod.id, vod);
       }
     }
     return Array.from(map.values());
-  }, [persistedVod, crossSourceLookupVod, demoSourceDeleted]);
+  }, [
+    persistedVod,
+    crossSourceLookupVod,
+    syncedMediaSnapshots.vod,
+    demoSourceDeleted,
+  ]);
 
   const collectionAndFavoriteSeriesPool: SeriesItem[] = useMemo(() => {
     const map = new Map<string, SeriesItem>();
     for (const ser of persistedSeries) map.set(ser.id, ser);
     for (const ser of crossSourceLookupSeries) map.set(ser.id, ser);
+    for (const snapSer of Object.values(syncedMediaSnapshots.series)) {
+      if (!map.has(snapSer.id)) map.set(snapSer.id, snapSer);
+    }
     if (!demoSourceDeleted) {
       for (const ser of DEMO_SERIES_CATALOG) {
         if (!map.has(ser.id)) map.set(ser.id, ser);
       }
     }
     return Array.from(map.values());
-  }, [persistedSeries, crossSourceLookupSeries, demoSourceDeleted]);
+  }, [
+    persistedSeries,
+    crossSourceLookupSeries,
+    syncedMediaSnapshots.series,
+    demoSourceDeleted,
+  ]);
 
   const combinedVodCatalog: VodItem[] = useMemo(
     () =>
@@ -2159,8 +2414,6 @@ export function App() {
     }
   );
   const [cloudBusy, setCloudBusy] = useState<boolean>(false);
-  const [cloudHydratingPlaylists, setCloudHydratingPlaylists] =
-    useState<boolean>(false);
   const [cloudLastSyncedAtMs, setCloudLastSyncedAtMs] = useState<number | null>(null);
   const [cloudLastDeviceLabel, setCloudLastDeviceLabel] = useState<string | null>(
     null
@@ -2261,6 +2514,10 @@ export function App() {
             toHydrate.push(created);
           }
         } else {
+          const actualStoredCount = await lumaDb.channels
+            .where('sourceId')
+            .equals(prev.id)
+            .count();
           const credsChanged =
             computePlaylistCanonicalKey(prev) !== canonKey ||
             (prev.password ?? '') !== (sp.password ?? '') ||
@@ -2268,6 +2525,7 @@ export function App() {
             (prev.xmltvUrl ?? '') !== (sp.xmltvUrl ?? '');
           const updated: StoredPlaylistSource = {
             ...prev,
+            channelCount: actualStoredCount > 0 ? actualStoredCount : prev.channelCount,
             name: sp.name,
             endpoint: sp.endpoint,
             rawUrlOrHost: sp.rawUrlOrHost,
@@ -2281,7 +2539,7 @@ export function App() {
           };
           await lumaDb.sources.put(updated);
           if (
-            (credsChanged || updated.channelCount === 0) &&
+            (credsChanged || actualStoredCount === 0) &&
             ((updated.type === 'xtream' &&
               updated.rawUrlOrHost &&
               updated.username &&
@@ -2326,11 +2584,14 @@ export function App() {
             proxyConfig.enabled || isLocalRustProxyEndpoint(proxyConfig.endpointUrl)
               ? proxyConfig.endpointUrl
               : nativeProbe?.localProxyUrl || undefined;
+          let hydrationErrors: string[] = [];
           for (const src of toHydrate) {
             try {
               await resyncPersistedSource({ source: src, proxyEndpoint });
-            } catch {
-              // Keep remaining playlists hydrating even if one provider is offline
+            } catch (err) {
+              hydrationErrors.push(
+                `${src.name}: ${err instanceof Error ? err.message : 'sync error'}`
+              );
             }
           }
           const afterHydrate = await lumaDb.sources
@@ -2338,6 +2599,7 @@ export function App() {
             .reverse()
             .toArray();
           setPersistedSources(afterHydrate);
+          setPlaylistHydrationEpoch((n) => n + 1);
           const targetActive = preferredActiveId || activeSourceId;
           if (
             targetActive &&
@@ -2345,6 +2607,11 @@ export function App() {
             targetActive !== 'none'
           ) {
             await refreshActiveSourceBundle(targetActive);
+          }
+          if (hydrationErrors.length > 0) {
+            setCloudErrorMessage(
+              `Playlist refresh issue — ${hydrationErrors[0]}`
+            );
           }
         } finally {
           setCloudHydratingPlaylists(false);
@@ -2415,6 +2682,38 @@ export function App() {
       if (payload.multiviewSlotIds && payload.multiviewSlotIds.length === 4) {
         setMultiviewSlotIds(payload.multiviewSlotIds);
       }
+      if (
+        payload.channelSnapshots ||
+        payload.vodSnapshots ||
+        payload.seriesSnapshots
+      ) {
+        setSyncedMediaSnapshots((prev) => {
+          const next = {
+            channels: {
+              ...prev.channels,
+              ...(payload.channelSnapshots ?? {}),
+            },
+            vod: {
+              ...prev.vod,
+              ...(payload.vodSnapshots ?? {}),
+            },
+            series: {
+              ...prev.series,
+              ...(payload.seriesSnapshots ?? {}),
+            },
+          };
+          try {
+            localStorage.setItem(
+              'luma.cloud.mediaSnapshots.v1',
+              JSON.stringify(next)
+            );
+          } catch {
+            // Ignore
+          }
+          return next;
+        });
+      }
+
       if (typeof payload.demoSourceDeleted === 'boolean') {
         setDemoSourceDeleted(payload.demoSourceDeleted);
       }
@@ -2491,6 +2790,88 @@ export function App() {
   const buildFullCloudSyncPayload = useCallback(
     (overrideSources?: StoredPlaylistSource[]): LumaSyncPlainPayload => {
       const effectiveSources = overrideSources ?? persistedSources;
+
+      // Capture compact portable snapshots of favorited & collected items so any synced
+      // device renders Favorites and Collections ("Greek", etc.) immediately with zero delay.
+      const neededChIds = new Set<string>(favoriteIds);
+      if (preferences.startupChannelId) {
+        neededChIds.add(preferences.startupChannelId);
+      }
+      const neededVodIds = new Set<string>(favoriteVodIds);
+      const neededSerIds = new Set<string>(favoriteSeriesIds);
+      for (const bq of customBouquets) {
+        for (const cid of bq.channelIds) neededChIds.add(cid);
+        for (const vid of bq.vodIds ?? []) neededVodIds.add(vid);
+        for (const sid of bq.seriesIds ?? []) neededSerIds.add(sid);
+      }
+
+      const chById = new Map(collectionAndFavoritePool.map((c) => [c.id, c]));
+      const channelSnapshots: Record<string, Channel> = {};
+      let chCount = 0;
+      for (const cid of neededChIds) {
+        if (chCount >= 500) break;
+        if (cid.startsWith('ch-')) continue;
+        const ch = chById.get(cid);
+        if (ch) {
+          channelSnapshots[cid] = {
+            id: ch.id,
+            number: ch.number,
+            name: ch.name,
+            shortCode: ch.shortCode,
+            groupId: ch.groupId,
+            groupName: ch.groupName,
+            streamUrl: ch.streamUrl,
+            streamType: ch.streamType,
+            resolution: ch.resolution,
+            audioBadge: ch.audioBadge,
+            codec: ch.codec,
+            hasCatchup: ch.hasCatchup,
+            catchupDays: ch.catchupDays,
+            ...(ch.catchupMode ? { catchupMode: ch.catchupMode } : {}),
+            ...(ch.catchupSource ? { catchupSource: ch.catchupSource } : {}),
+            ...(ch.xtreamStreamId ? { xtreamStreamId: ch.xtreamStreamId } : {}),
+            ...(ch.tvgId ? { tvgId: ch.tvgId } : {}),
+            ...(ch.logoUrl ? { logoUrl: ch.logoUrl } : {}),
+            accentColor: ch.accentColor,
+            country: ch.country,
+            epgArchetype: ch.epgArchetype,
+          };
+          chCount += 1;
+        }
+      }
+
+      const vodById = new Map(collectionAndFavoriteVodPool.map((v) => [v.id, v]));
+      const vodSnapshots: Record<string, VodItem> = {};
+      let vodCount = 0;
+      for (const vid of neededVodIds) {
+        if (vodCount >= 180) break;
+        if (vid.startsWith('vod-')) continue;
+        const vod = vodById.get(vid);
+        if (vod) {
+          vodSnapshots[vid] = vod;
+          vodCount += 1;
+        }
+      }
+
+      const serById = new Map(
+        collectionAndFavoriteSeriesPool.map((s) => [s.id, s])
+      );
+      const seriesSnapshots: Record<string, SeriesItem> = {};
+      let serCount = 0;
+      for (const sid of neededSerIds) {
+        if (serCount >= 180) break;
+        if (sid.startsWith('ser-')) continue;
+        const ser = serById.get(sid);
+        if (ser) {
+          seriesSnapshots[sid] = {
+            ...ser,
+            seasonsLoaded: false,
+            seasons: [{ seasonNumber: 1, title: 'Season 1', episodes: [] }],
+          };
+          serCount += 1;
+        }
+      }
+
       return {
         schemaVersion: 3,
         exportedAt: Date.now(),
@@ -2511,11 +2892,17 @@ export function App() {
         playlists: cloudSyncPlaylistsEnabled
           ? effectiveSources.map(serializePlaylistForSync)
           : undefined,
+        ...(chCount > 0 ? { channelSnapshots } : {}),
+        ...(vodCount > 0 ? { vodSnapshots } : {}),
+        ...(serCount > 0 ? { seriesSnapshots } : {}),
       };
     },
     [
       activeSourceId,
       cloudSyncPlaylistsEnabled,
+      collectionAndFavoritePool,
+      collectionAndFavoriteSeriesPool,
+      collectionAndFavoriteVodPool,
       customBouquets,
       demoSourceDeleted,
       designMode,
@@ -3644,6 +4031,7 @@ export function App() {
               designMode={designMode}
               locale={preferences.locale}
               channels={channels}
+              favoriteAndCollectionPool={collectionAndFavoritePool}
               favoriteIds={favoriteIds}
               collections={customBouquets}
               slotChannelIds={dualSlotIds}

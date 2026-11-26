@@ -1,6 +1,7 @@
 import 'fake-indexeddb/auto';
 import { describe, expect, it } from 'vitest';
 import { lumaDb } from '../db/lumaDb';
+import type { Channel } from '../types/luma';
 import {
   deduplicateStoredPlaylistSources,
   migratePersistedSourceId,
@@ -21,6 +22,7 @@ import {
   LUMA_FACTORY_DEFAULT_FAVORITES,
   reconcileCloudSyncPayloads,
   resolveEnvFirebaseConfig,
+  resolveMissingChannelsAndBuildHealMap,
   type LumaSyncPlainPayload,
 } from './lumaCloudSync';
 
@@ -766,5 +768,124 @@ describe('lumaCloudSync v3 (Zero-Knowledge Crypto, Playlist Deduplication & Incr
       { epgOffsetHours: 2 }
     );
     expect(updatedSame?.epgOffsetHours).toBe(2);
+  });
+
+  it('preserves channelSnapshots for Favorites & Greek collection and heals orphaned or shifted channel IDs on synced devices', () => {
+    const ertChannel: Channel = {
+      id: 'xtream-old-111-xt-9001',
+      number: 1,
+      name: 'GR| ERT 1 HD',
+      shortCode: 'ERT1',
+      groupId: 'gr-general',
+      groupName: 'GR| GREECE',
+      streamUrl: 'http://provider.example:8080/live/alice/pw/9001.m3u8',
+      streamType: 'hls',
+      resolution: '1080p',
+      audioBadge: 'EAC3 5.1',
+      codec: 'H.264',
+      hasCatchup: true,
+      catchupDays: 7,
+      xtreamStreamId: 9001,
+      tvgId: 'ert1.gr',
+      accentColor: '#38BDF8',
+      country: 'GR',
+      epgArchetype: 0,
+    };
+
+    const megaChannel = {
+      ...ertChannel,
+      id: 'xtream-old-111-xt-9002',
+      number: 2,
+      name: 'GR| MEGA HD',
+      shortCode: 'MEGA',
+      streamUrl: 'http://provider.example:8080/live/alice/pw/9002.m3u8',
+      xtreamStreamId: 9002,
+      tvgId: 'mega.gr',
+    };
+
+    // 1. Syncing from Device 1 carries portable channelSnapshots to Device 2 for instant zero-wait display
+    const device1CloudPayload: LumaSyncPlainPayload = {
+      ...samplePayload,
+      demoSourceDeleted: true,
+      favorites: ['xtream-100-xt-9001'],
+      customBouquets: [
+        {
+          id: 'col-greek',
+          name: 'Greek',
+          channelIds: ['xtream-100-xt-9001', 'xtream-100-xt-9002'],
+          isPinLocked: false,
+        },
+      ],
+      channelSnapshots: {
+        'xtream-100-xt-9001': { ...ertChannel, id: 'xtream-100-xt-9001' },
+        'xtream-100-xt-9002': { ...megaChannel, id: 'xtream-100-xt-9002' },
+      },
+    };
+
+    const device2Sync = reconcileCloudSyncPayloads({
+      uid: 'uid-user-gr',
+      local: makeFactoryDefaultLocalPayload(),
+      remote: device1CloudPayload,
+      deviceSyncState: null,
+      isLocalAppleDevice: false,
+    });
+
+    expect(device2Sync.mode).toBe('adopted-remote');
+    expect(
+      device2Sync.mergedPayload.channelSnapshots?.['xtream-100-xt-9001']?.name
+    ).toBe('GR| ERT 1 HD');
+    expect(
+      device2Sync.mergedPayload.channelSnapshots?.['xtream-100-xt-9002']?.name
+    ).toBe('GR| MEGA HD');
+
+    // 2. Self-healing orphaned IDs (even WITHOUT snapshots, e.g. from older beta vaults)
+    // where favorites/Greek collection hold `xtream-old-111-xt-*` while DB has `xtream-new-222-xt-*`
+    const dbChannelsOnDevice2 = [
+      { ...ertChannel, id: 'xtream-new-222-xt-9001' },
+      { ...megaChannel, id: 'xtream-new-222-xt-9002' },
+    ];
+
+    const healed = resolveMissingChannelsAndBuildHealMap({
+      neededIds: ['xtream-old-111-xt-9001', 'xtream-old-111-xt-9002'],
+      exactFoundIds: new Set(),
+      candidateChannels: dbChannelsOnDevice2,
+      validSourceIds: new Set(['xtream-new-222']),
+      demoSourceDeleted: true,
+    });
+
+    expect(healed.resolvedChannels.map((c) => c.name)).toEqual([
+      'GR| ERT 1 HD',
+      'GR| MEGA HD',
+    ]);
+    expect(healed.healIdMap.get('xtream-old-111-xt-9001')).toBe(
+      'xtream-new-222-xt-9001'
+    );
+    expect(healed.healIdMap.get('xtream-old-111-xt-9002')).toBe(
+      'xtream-new-222-xt-9002'
+    );
+
+    // 3. Self-healing M3U line-index shifts via snapshot stream/name matching
+    const shiftedM3uDbChannels = [
+      {
+        ...ertChannel,
+        id: 'src-500-ch-419',
+        streamUrl: 'http://m3u.example.org/live/u/p/9001.ts',
+      },
+    ];
+    const m3uHealed = resolveMissingChannelsAndBuildHealMap({
+      neededIds: ['src-500-ch-412'],
+      exactFoundIds: new Set(),
+      candidateChannels: shiftedM3uDbChannels,
+      snapshots: {
+        'src-500-ch-412': {
+          ...ertChannel,
+          id: 'src-500-ch-412',
+          streamUrl: 'http://m3u.example.org/live/u/p/9001.m3u8',
+        },
+      },
+      validSourceIds: new Set(['src-500']),
+      demoSourceDeleted: true,
+    });
+    expect(m3uHealed.healIdMap.get('src-500-ch-412')).toBe('src-500-ch-419');
   });
 });
