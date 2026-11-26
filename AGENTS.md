@@ -1,6 +1,6 @@
 # Luma TV (`app.lumatv.client`) — Antigravity Workspace Context
 
-**Luma TV** (System/Dock short name: **Luma**, Bundle ID: `app.lumatv.client`, current version: `0.8.0-beta.9`) is a cross-platform M3U/M3U_Plus, Xtream Codes & XMLTV streaming player targeting:
+**Luma TV** (System/Dock short name: **Luma**, Bundle ID: `app.lumatv.client`, current version: `0.8.0-beta.10`) is a cross-platform M3U/M3U_Plus, Xtream Codes & XMLTV streaming player targeting:
 1. **macOS (Apple Silicon & Intel)** via **Tauri v2** — native **Apple Liquid Glass** (`data-design="liquid-glass"`) design language, traffic-light titlebar overlay, CORS-free Rust `reqwest` ingestion, and hardware `MPV` handoff.
 2. **Android, Android TV & GoogleOS / Chromebook** via **Tauri v2 Mobile** — native **Google Material 3 Expressive** (`data-design="m3-expressive"`) tonal hierarchy, 10-foot D-Pad spatial focus engine, and freeform resizable windows.
 3. **ChromeOS / Web PWA** via **Vite 8 + Firebase Hosting & Cloud Functions** — standalone PWA with `window-controls-overlay`, offline Service Worker (`public/sw.js`), and optional `lumaStreamProxy` CORS/HLS rewriter (`functions/src/index.ts`).

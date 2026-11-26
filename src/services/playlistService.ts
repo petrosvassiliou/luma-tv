@@ -12,6 +12,10 @@ import {
 } from '../db/lumaDb';
 import { VERIFIED_HLS_STREAMS } from '../data/mockCatalog';
 import { parseXtreamLiveStreamUrl } from '../engine/catchupUrlBuilder';
+import {
+  computePlaylistCanonicalKey,
+  remapEntityIdWithSourceMap,
+} from './lumaCloudSync';
 import type {
   PlaylistAccountInfo,
   SeriesEpisode,
@@ -198,7 +202,41 @@ export async function importM3uPlaylist(params: {
   proxyEndpoint?: string;
   onProgress?: (phase: string, percent: number) => void;
 }): Promise<StoredPlaylistSource> {
-  const sourceId = `src-${Date.now()}`;
+  const candidateEndpoint =
+    params.url?.trim() || `Lokaler M3U-Import`;
+  const candidateRawUrl = params.url?.trim() || 'local://m3u';
+  const candidateKey = computePlaylistCanonicalKey({
+    type: 'm3u_plus',
+    name: params.name.trim() || 'M3U_Plus Playlist',
+    endpoint: candidateEndpoint,
+    rawUrlOrHost: candidateRawUrl,
+  });
+
+  const existingSources = await lumaDb.sources.toArray();
+  const existingMatch = params.url?.trim()
+    ? existingSources.find((s) => computePlaylistCanonicalKey(s) === candidateKey)
+    : undefined;
+
+  const sourceId = existingMatch?.id ?? `src-${Date.now()}`;
+
+  const existingOverridesByStream = new Map<
+    string,
+    { customName?: string; isHidden?: boolean }
+  >();
+  if (existingMatch) {
+    const prevChannels = await lumaDb.channels
+      .where('sourceId')
+      .equals(existingMatch.id)
+      .toArray();
+    for (const ch of prevChannels) {
+      if (ch.customName || ch.isHidden) {
+        existingOverridesByStream.set(ch.streamUrl, {
+          customName: ch.customName,
+          isHidden: ch.isHidden,
+        });
+      }
+    }
+  }
 
   const res = await runWorkerTask(
     {
@@ -217,7 +255,30 @@ export async function importM3uPlaylist(params: {
     92
   );
 
-  await bulkSaveChannelsChunked(res.channels);
+  const mergedChannels =
+    existingOverridesByStream.size > 0
+      ? res.channels.map((ch) => {
+          const prev = existingOverridesByStream.get(ch.streamUrl);
+          return prev
+            ? {
+                ...ch,
+                customName: prev.customName,
+                name: prev.customName || ch.name,
+                isHidden: prev.isHidden,
+              }
+            : ch;
+        })
+      : res.channels;
+
+  if (existingMatch) {
+    await Promise.all([
+      lumaDb.channels.where('sourceId').equals(sourceId).delete(),
+      lumaDb.vodItems.where('sourceId').equals(sourceId).delete(),
+      lumaDb.seriesItems.where('sourceId').equals(sourceId).delete(),
+    ]);
+  }
+
+  await bulkSaveChannelsChunked(mergedChannels);
   if (res.vodItems.length > 0) {
     await bulkSaveVodChunked(res.vodItems);
   }
@@ -225,24 +286,28 @@ export async function importM3uPlaylist(params: {
     await bulkSaveSeriesChunked(res.seriesItems);
   }
 
-  const resolvedXmltv = params.xmltvUrl?.trim() || res.discoveredXmltvUrl;
+  const now = Date.now();
+  const resolvedXmltv =
+    params.xmltvUrl?.trim() || existingMatch?.xmltvUrl || res.discoveredXmltvUrl;
   const source: StoredPlaylistSource = {
     id: sourceId,
-    name: params.name.trim() || 'M3U_Plus Playlist',
+    name: params.name.trim() || existingMatch?.name || 'M3U_Plus Playlist',
     type: 'm3u_plus',
-    endpoint: params.url?.trim() || `Lokaler M3U-Import (${res.channels.length} Kanäle)`,
+    endpoint:
+      params.url?.trim() || `Lokaler M3U-Import (${mergedChannels.length} Kanäle)`,
     rawUrlOrHost: params.url?.trim() || 'local://m3u',
     xmltvUrl: resolvedXmltv,
-    channelCount: res.channels.length,
+    channelCount: mergedChannels.length,
     vodCount: res.vodItems.length,
     seriesCount: res.seriesItems?.length ?? 0,
     epgStatus: 'synced',
-    epgOffsetHours: 0,
-    hiddenGroupIds: [],
-    lastUpdated: formatSyncTimestamp(),
-    accountInfo: res.accountInfo,
-    createdAt: Date.now(),
-    lastSyncedAtMs: Date.now(),
+    epgOffsetHours: existingMatch?.epgOffsetHours ?? 0,
+    hiddenGroupIds: existingMatch?.hiddenGroupIds ?? [],
+    lastUpdated: formatSyncTimestamp(now),
+    accountInfo: res.accountInfo ?? existingMatch?.accountInfo,
+    createdAt: existingMatch?.createdAt ?? now,
+    lastSyncedAtMs: now,
+    updatedAtMs: now,
   };
 
   await lumaDb.sources.put(source);
@@ -273,7 +338,38 @@ export async function importXtreamSource(params: {
   proxyEndpoint?: string;
   onProgress?: (phase: string, percent: number) => void;
 }): Promise<StoredPlaylistSource> {
-  const sourceId = `xtream-${Date.now()}`;
+  const candidateKey = computePlaylistCanonicalKey({
+    type: 'xtream',
+    name: params.name.trim() || 'Xtream Codes Server',
+    endpoint: params.serverUrl.trim(),
+    rawUrlOrHost: params.serverUrl.trim(),
+    username: params.username.trim(),
+  });
+
+  const existingSources = await lumaDb.sources.toArray();
+  const existingMatch = existingSources.find(
+    (s) => computePlaylistCanonicalKey(s) === candidateKey
+  );
+  const sourceId = existingMatch?.id ?? `xtream-${Date.now()}`;
+
+  const existingOverridesById = new Map<
+    string,
+    { customName?: string; isHidden?: boolean }
+  >();
+  if (existingMatch) {
+    const prevChannels = await lumaDb.channels
+      .where('sourceId')
+      .equals(existingMatch.id)
+      .toArray();
+    for (const ch of prevChannels) {
+      if (ch.customName || ch.isHidden) {
+        existingOverridesById.set(ch.id, {
+          customName: ch.customName,
+          isHidden: ch.isHidden,
+        });
+      }
+    }
+  }
 
   const res = await runWorkerTask(
     {
@@ -289,12 +385,35 @@ export async function importXtreamSource(params: {
     params.onProgress
   );
 
+  const mergedChannels =
+    existingOverridesById.size > 0
+      ? res.channels.map((ch) => {
+          const prev = existingOverridesById.get(ch.id);
+          return prev
+            ? {
+                ...ch,
+                customName: prev.customName,
+                name: prev.customName || ch.name,
+                isHidden: prev.isHidden,
+              }
+            : ch;
+        })
+      : res.channels;
+
+  if (existingMatch) {
+    await Promise.all([
+      lumaDb.channels.where('sourceId').equals(sourceId).delete(),
+      lumaDb.vodItems.where('sourceId').equals(sourceId).delete(),
+      lumaDb.seriesItems.where('sourceId').equals(sourceId).delete(),
+    ]);
+  }
+
   const seriesItems = res.seriesItems ?? [];
   params.onProgress?.(
-    `Speichere ${res.channels.length.toLocaleString('de-DE')} Live, ${res.vodItems.length.toLocaleString('de-DE')} VOD & ${seriesItems.length.toLocaleString('de-DE')} Serien…`,
+    `Speichere ${mergedChannels.length.toLocaleString('de-DE')} Live, ${res.vodItems.length.toLocaleString('de-DE')} VOD & ${seriesItems.length.toLocaleString('de-DE')} Serien…`,
     92
   );
-  await bulkSaveChannelsChunked(res.channels);
+  await bulkSaveChannelsChunked(mergedChannels);
   if (res.vodItems.length > 0) {
     await bulkSaveVodChunked(res.vodItems);
   }
@@ -302,35 +421,37 @@ export async function importXtreamSource(params: {
     await bulkSaveSeriesChunked(seriesItems);
   }
 
+  const now = Date.now();
   const source: StoredPlaylistSource = {
     id: sourceId,
-    name: params.name.trim() || 'Xtream Codes Server',
+    name: params.name.trim() || existingMatch?.name || 'Xtream Codes Server',
     type: 'xtream',
     endpoint: params.serverUrl.trim(),
     rawUrlOrHost: params.serverUrl.trim(),
     username: params.username.trim(),
     password: params.password,
     outputFormat: params.outputFormat,
-    xmltvUrl: res.discoveredXmltvUrl,
-    channelCount: res.channels.length,
+    xmltvUrl: existingMatch?.xmltvUrl || res.discoveredXmltvUrl,
+    channelCount: mergedChannels.length,
     vodCount: res.vodItems.length,
     seriesCount: seriesItems.length,
     epgStatus: 'synced',
-    epgOffsetHours: 0,
-    hiddenGroupIds: [],
-    lastUpdated: formatSyncTimestamp(),
-    accountInfo: res.accountInfo,
-    createdAt: Date.now(),
-    lastSyncedAtMs: Date.now(),
+    epgOffsetHours: existingMatch?.epgOffsetHours ?? 0,
+    hiddenGroupIds: existingMatch?.hiddenGroupIds ?? [],
+    lastUpdated: formatSyncTimestamp(now),
+    accountInfo: res.accountInfo ?? existingMatch?.accountInfo,
+    createdAt: existingMatch?.createdAt ?? now,
+    lastSyncedAtMs: now,
+    updatedAtMs: now,
   };
 
   await lumaDb.sources.put(source);
 
-  if (res.discoveredXmltvUrl && res.discoveredXmltvUrl.startsWith('http')) {
+  if (source.xmltvUrl && source.xmltvUrl.startsWith('http')) {
     try {
       await importXmltvForSource({
         sourceId,
-        url: res.discoveredXmltvUrl,
+        url: source.xmltvUrl,
         proxyEndpoint: params.proxyEndpoint,
         onProgress: params.onProgress,
       });
@@ -632,14 +753,209 @@ export async function renamePersistedSource(
 ): Promise<void> {
   const trimmed = nextName.trim();
   if (!trimmed) return;
-  await lumaDb.sources.update(sourceId, { name: trimmed });
+  await lumaDb.sources.update(sourceId, {
+    name: trimmed,
+    updatedAtMs: Date.now(),
+  });
 }
 
 export async function updateSourceHiddenGroups(
   sourceId: string,
   hiddenGroupIds: string[]
 ): Promise<void> {
-  await lumaDb.sources.update(sourceId, { hiddenGroupIds });
+  await lumaDb.sources.update(sourceId, {
+    hiddenGroupIds,
+    updatedAtMs: Date.now(),
+  });
+}
+
+/**
+ * Migrates a persisted playlist source and all of its cached IndexedDB channels, VOD,
+ * series, and EPG rows in-place from `oldSourceId` to `newSourceId` so deduplicating
+ * a local playlist against a synced cloud playlist keeps cached streams without creating double entries.
+ */
+export async function migratePersistedSourceId(
+  oldSourceId: string,
+  newSourceId: string,
+  mergedOverrides?: Partial<StoredPlaylistSource>
+): Promise<StoredPlaylistSource | null> {
+  if (oldSourceId === newSourceId) {
+    const cur = await lumaDb.sources.get(newSourceId);
+    if (!cur) return null;
+    const next: StoredPlaylistSource = {
+      ...cur,
+      ...mergedOverrides,
+      id: newSourceId,
+    };
+    await lumaDb.sources.put(next);
+    return next;
+  }
+
+  const [oldSource, existingTarget, targetChannelCount] = await Promise.all([
+    lumaDb.sources.get(oldSourceId),
+    lumaDb.sources.get(newSourceId),
+    lumaDb.channels.where('sourceId').equals(newSourceId).count(),
+  ]);
+
+  if (!oldSource && !existingTarget) {
+    return null;
+  }
+
+  const remap = new Map<string, string>([[oldSourceId, newSourceId]]);
+  let migratedCounts: {
+    channelCount: number;
+    vodCount: number;
+    seriesCount: number;
+  } | null = null;
+
+  if (oldSource && targetChannelCount === 0) {
+    const [oldChannels, oldVod, oldSeries, oldEpg] = await Promise.all([
+      lumaDb.channels.where('sourceId').equals(oldSourceId).toArray(),
+      lumaDb.vodItems.where('sourceId').equals(oldSourceId).toArray(),
+      lumaDb.seriesItems.where('sourceId').equals(oldSourceId).toArray(),
+      lumaDb.epgPrograms.where('sourceId').equals(oldSourceId).toArray(),
+    ]);
+
+    if (oldChannels.length > 0) {
+      const rekeyedChannels: StoredChannel[] = oldChannels.map((ch) => ({
+        ...ch,
+        id: remapEntityIdWithSourceMap(ch.id, remap),
+        sourceId: newSourceId,
+      }));
+      await bulkSaveChannelsChunked(rekeyedChannels);
+    }
+
+    if (oldVod.length > 0) {
+      const rekeyedVod: StoredVodItem[] = oldVod.map((v) => ({
+        ...v,
+        id: remapEntityIdWithSourceMap(v.id, remap),
+        sourceId: newSourceId,
+      }));
+      await bulkSaveVodChunked(rekeyedVod);
+    }
+
+    if (oldSeries.length > 0) {
+      const rekeyedSeries: StoredSeriesItem[] = oldSeries.map((ser) => ({
+        ...ser,
+        id: remapEntityIdWithSourceMap(ser.id, remap),
+        sourceId: newSourceId,
+        seasons: ser.seasons.map((sea) => ({
+          ...sea,
+          episodes: sea.episodes.map((ep) => ({
+            ...ep,
+            id: remapEntityIdWithSourceMap(ep.id, remap),
+          })),
+        })),
+      }));
+      await bulkSaveSeriesChunked(rekeyedSeries);
+    }
+
+    if (oldEpg.length > 0) {
+      const rekeyedEpg: StoredEpgProgram[] = oldEpg.map((epg) => ({
+        ...epg,
+        id: remapEntityIdWithSourceMap(epg.id, remap),
+        sourceId: newSourceId,
+      }));
+      await bulkSaveEpgChunked(rekeyedEpg);
+    }
+
+    migratedCounts = {
+      channelCount: oldChannels.length,
+      vodCount: oldVod.length,
+      seriesCount: oldSeries.length,
+    };
+  }
+
+  await deletePersistedSource(oldSourceId);
+
+  const base = existingTarget ?? oldSource!;
+  const mergedHidden = Array.from(
+    new Set([
+      ...(existingTarget?.hiddenGroupIds ?? []),
+      ...(oldSource?.hiddenGroupIds ?? []),
+      ...(mergedOverrides?.hiddenGroupIds ?? []),
+    ])
+  );
+
+  const finalSource: StoredPlaylistSource = {
+    ...base,
+    ...mergedOverrides,
+    id: newSourceId,
+    hiddenGroupIds: mergedOverrides?.hiddenGroupIds ?? mergedHidden,
+    channelCount:
+      existingTarget && existingTarget.channelCount > 0
+        ? existingTarget.channelCount
+        : (migratedCounts?.channelCount ?? oldSource?.channelCount ?? 0),
+    vodCount:
+      existingTarget && existingTarget.vodCount > 0
+        ? existingTarget.vodCount
+        : (migratedCounts?.vodCount ?? oldSource?.vodCount ?? 0),
+    seriesCount:
+      existingTarget && (existingTarget.seriesCount ?? 0) > 0
+        ? existingTarget.seriesCount
+        : (migratedCounts?.seriesCount ?? oldSource?.seriesCount ?? 0),
+    accountInfo:
+      mergedOverrides?.accountInfo ??
+      existingTarget?.accountInfo ??
+      oldSource?.accountInfo,
+    createdAt: Math.min(
+      existingTarget?.createdAt ?? Number.MAX_SAFE_INTEGER,
+      oldSource?.createdAt ?? Number.MAX_SAFE_INTEGER,
+      mergedOverrides?.createdAt ?? Date.now()
+    ),
+    lastSyncedAtMs:
+      existingTarget?.lastSyncedAtMs ?? oldSource?.lastSyncedAtMs,
+    updatedAtMs: mergedOverrides?.updatedAtMs ?? Date.now(),
+  };
+
+  await lumaDb.sources.put(finalSource);
+  return finalSource;
+}
+
+/**
+ * Deduplicates any duplicate playlist rows in IndexedDB (`lumaDb.sources`) that share the
+ * same canonical URL/server + credentials, migrating cached streams and returning `oldId -> canonicalId`.
+ */
+export async function deduplicateStoredPlaylistSources(
+  preferredIds?: ReadonlySet<string>
+): Promise<Map<string, string>> {
+  const allSources = await lumaDb.sources.toArray();
+  const groups = new Map<string, StoredPlaylistSource[]>();
+
+  for (const src of allSources) {
+    const key = computePlaylistCanonicalKey(src);
+    const list = groups.get(key);
+    if (list) list.push(src);
+    else groups.set(key, [src]);
+  }
+
+  const remap = new Map<string, string>();
+  for (const bucket of groups.values()) {
+    if (bucket.length <= 1) continue;
+
+    bucket.sort((a, b) => {
+      const aPref = preferredIds?.has(a.id) ? 1 : 0;
+      const bPref = preferredIds?.has(b.id) ? 1 : 0;
+      if (aPref !== bPref) return bPref - aPref;
+      if (a.channelCount !== b.channelCount) return b.channelCount - a.channelCount;
+      return a.createdAt - b.createdAt;
+    });
+
+    const winner = bucket[0];
+    for (let i = 1; i < bucket.length; i++) {
+      const dup = bucket[i];
+      remap.set(dup.id, winner.id);
+      await migratePersistedSourceId(dup.id, winner.id, {
+        name:
+          winner.name && winner.name !== 'Xtream Codes Server'
+            ? winner.name
+            : dup.name,
+        xmltvUrl: winner.xmltvUrl || dup.xmltvUrl,
+      });
+    }
+  }
+
+  return remap;
 }
 
 export async function resyncPersistedSource(params: {

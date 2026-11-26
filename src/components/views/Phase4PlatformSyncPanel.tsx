@@ -92,7 +92,7 @@ export const Phase4PlatformSyncPanel: React.FC<PlatformSyncPanelProps> = ({
   }, []);
 
   const buildCurrentPayload = (): LumaSyncPlainPayload => ({
-    schemaVersion: 2,
+    schemaVersion: 3,
     exportedAt: Date.now(),
     favorites: Array.from(favoriteIds),
     watchHistory,

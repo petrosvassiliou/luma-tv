@@ -28,8 +28,15 @@ import {
 } from './i18n/translations';
 import { isProviderDividerChannel } from './services/channelSearch';
 import {
+  computePlaylistCanonicalKey,
+  computeSyncContentDigest,
+  loadDeviceCloudSyncState,
   pullAccountCloudVault,
   pushAccountCloudVault,
+  reconcileCloudSyncPayloads,
+  recordLocalSyncMutation,
+  remapEntityIdWithSourceMap,
+  saveDeviceCloudSyncState,
   sendLumaPasswordReset,
   serializePlaylistForSync,
   signInLumaCloudAccount,
@@ -38,6 +45,7 @@ import {
   subscribeAccountCloudVault,
   subscribeLumaAuthState,
   unlockExistingCloudSessionWithPassword,
+  type EncryptedSyncEnvelope,
   type LumaCloudSessionInfo,
   type LumaSyncPlainPayload,
   type SyncedPlaylistSource,
@@ -60,6 +68,7 @@ import {
 } from './services/platformDetection';
 import {
   bulkSetChannelsHidden,
+  deduplicateStoredPlaylistSources,
   deletePersistedSource,
   fetchXtreamSeriesEpisodes,
   importM3uPlaylist,
@@ -67,6 +76,7 @@ import {
   importXtreamSource,
   isPlaylistSourceStale,
   loadPersistedSourceBundle,
+  migratePersistedSourceId,
   refreshSourceAccountInfo,
   renamePersistedSource,
   renameStoredChannel,
@@ -157,6 +167,7 @@ const DEFAULT_PARENTAL: ParentalControlConfig = {
 
 export function App() {
   const platformEnv = useMemo(() => detectPlatformEnvironment(), []);
+  const activeCloudUidRef = useRef<string | null>(null);
   const [designMode, setDesignModeState] = useState<PlatformDesignMode>(() => {
     try {
       const saved = localStorage.getItem('luma.design.v1') as PlatformDesignMode | null;
@@ -170,13 +181,18 @@ export function App() {
   });
 
   const handleChangeDesignMode = useCallback(
-    (requested: PlatformDesignMode) => {
+    (requested: PlatformDesignMode, fromSync = false) => {
       const allowed = resolveAllowedDesignMode(requested, platformEnv.isApple);
       setDesignModeState(allowed);
       try {
         localStorage.setItem('luma.design.v1', allowed);
       } catch {
         // Ignore
+      }
+      if (!fromSync && platformEnv.isApple) {
+        recordLocalSyncMutation(activeCloudUidRef.current, {
+          scalarFields: ['preferredDesign'],
+        });
       }
     },
     [platformEnv.isApple]
@@ -211,14 +227,22 @@ export function App() {
     };
   });
 
-  const handleUpdatePreferences = useCallback((next: LumaPreferences) => {
-    setPreferences(next);
-    try {
-      localStorage.setItem('luma.prefs.v3', JSON.stringify(next));
-    } catch {
-      // Ignore
-    }
-  }, []);
+  const handleUpdatePreferences = useCallback(
+    (next: LumaPreferences, fromSync = false) => {
+      setPreferences(next);
+      try {
+        localStorage.setItem('luma.prefs.v3', JSON.stringify(next));
+      } catch {
+        // Ignore
+      }
+      if (!fromSync) {
+        recordLocalSyncMutation(activeCloudUidRef.current, {
+          scalarFields: ['preferences'],
+        });
+      }
+    },
+    []
+  );
 
   const [sleepDeadlineMs, setSleepDeadlineMs] = useState<number | null>(null);
   const [shortcutsOpen, setShortcutsOpen] = useState<boolean>(false);
@@ -300,7 +324,30 @@ export function App() {
     useState<boolean>(false);
 
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
-  const [epgOffsetHours, setEpgOffsetHours] = useState<number>(0);
+  const [epgOffsetHours, setEpgOffsetHours] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('luma.epgOffset.v1');
+      if (saved !== null) {
+        const num = Number(saved);
+        if (Number.isFinite(num)) return num;
+      }
+    } catch {
+      // Ignore
+    }
+    return 0;
+  });
+
+  const handleChangeEpgOffset = useCallback((nextOffset: number) => {
+    setEpgOffsetHours(nextOffset);
+    try {
+      localStorage.setItem('luma.epgOffset.v1', String(nextOffset));
+    } catch {
+      // Ignore
+    }
+    recordLocalSyncMutation(activeCloudUidRef.current, {
+      scalarFields: ['epgOffsetHours'],
+    });
+  }, []);
   const [nativeProbe, setNativeProbe] = useState<NativeEngineProbe | null>(null);
   const [updateCheck, setUpdateCheck] = useState<LumaUpdateCheckResult | null>(null);
   const [dismissedUpdateVersion, setDismissedUpdateVersion] = useState<string | null>(
@@ -449,14 +496,42 @@ export function App() {
     name: string;
   } | null>(null);
 
-  const handleUpdateBouquets = useCallback((next: CustomBouquet[]) => {
-    setCustomBouquets(next);
-    try {
-      localStorage.setItem('luma.bouquets.v1', JSON.stringify(next));
-    } catch {
-      // Ignore
-    }
-  }, []);
+  const handleUpdateBouquets = useCallback(
+    (next: CustomBouquet[], fromSync = false) => {
+      setCustomBouquets((prev) => {
+        if (!fromSync && activeCloudUidRef.current) {
+          const nextIds = new Set(next.map((b) => b.id));
+          const prevById = new Map(prev.map((b) => [b.id, b]));
+          const tombstonedKeys: string[] = [];
+          const updatedKeys: string[] = [];
+          for (const oldB of prev) {
+            if (!nextIds.has(oldB.id)) {
+              tombstonedKeys.push(`bq:${oldB.id}`);
+            }
+          }
+          for (const newB of next) {
+            const oldB = prevById.get(newB.id);
+            if (!oldB || JSON.stringify(oldB) !== JSON.stringify(newB)) {
+              updatedKeys.push(`bq:${newB.id}`);
+            }
+          }
+          if (tombstonedKeys.length > 0 || updatedKeys.length > 0) {
+            recordLocalSyncMutation(activeCloudUidRef.current, {
+              updatedKeys,
+              tombstonedKeys,
+            });
+          }
+        }
+        return next;
+      });
+      try {
+        localStorage.setItem('luma.bouquets.v1', JSON.stringify(next));
+      } catch {
+        // Ignore
+      }
+    },
+    []
+  );
 
   const handleToggleTargetInCollection = useCallback(
     (collectionId: string, target: ChannelContextMenuTarget) => {
@@ -502,6 +577,9 @@ export function App() {
         } catch {
           // Ignore
         }
+        recordLocalSyncMutation(activeCloudUidRef.current, {
+          updatedKeys: [`bq:${collectionId}`],
+        });
         return next;
       });
     },
@@ -512,9 +590,10 @@ export function App() {
     (name: string, target: ChannelContextMenuTarget) => {
       const trimmed = name.trim();
       if (!trimmed) return;
+      const newId = `col-${Date.now()}`;
       setCustomBouquets((prev) => {
         const created: CustomBouquet = {
-          id: `col-${Date.now()}`,
+          id: newId,
           name: trimmed,
           channelIds: target.channel ? [target.channel.id] : [],
           vodIds: target.vod ? [target.vod.id] : [],
@@ -529,20 +608,31 @@ export function App() {
         }
         return next;
       });
+      recordLocalSyncMutation(activeCloudUidRef.current, {
+        updatedKeys: [`bq:${newId}`],
+      });
       setToastMessage(`Added to "${trimmed}"`);
       window.setTimeout(() => setToastMessage(null), 2600);
     },
     []
   );
 
-  const handleUpdateParental = useCallback((next: ParentalControlConfig) => {
-    setParentalConfig(next);
-    try {
-      localStorage.setItem('luma.parental.v1', JSON.stringify(next));
-    } catch {
-      // Ignore
-    }
-  }, []);
+  const handleUpdateParental = useCallback(
+    (next: ParentalControlConfig, fromSync = false) => {
+      setParentalConfig(next);
+      try {
+        localStorage.setItem('luma.parental.v1', JSON.stringify(next));
+      } catch {
+        // Ignore
+      }
+      if (!fromSync) {
+        recordLocalSyncMutation(activeCloudUidRef.current, {
+          scalarFields: ['parentalConfig'],
+        });
+      }
+    },
+    []
+  );
 
   const [demoSourceDeleted, setDemoSourceDeleted] = useState<boolean>(() => {
     try {
@@ -565,13 +655,18 @@ export function App() {
     }
   });
 
-  const handleSelectSourceId = useCallback((nextId: string) => {
+  const handleSelectSourceId = useCallback((nextId: string, fromSync = false) => {
     setActiveSourceIdState(nextId);
     setSelectedGroupId('all');
     try {
       localStorage.setItem('luma.activeSource.v1', nextId);
     } catch {
       // Ignore
+    }
+    if (!fromSync) {
+      recordLocalSyncMutation(activeCloudUidRef.current, {
+        scalarFields: ['activeSourceId'],
+      });
     }
   }, []);
 
@@ -622,13 +717,20 @@ export function App() {
   const toggleFavoriteVod = useCallback((vodId: string) => {
     setFavoriteVodIds((prev) => {
       const next = new Set(prev);
-      if (next.has(vodId)) next.delete(vodId);
+      const removing = next.has(vodId);
+      if (removing) next.delete(vodId);
       else next.add(vodId);
       try {
         localStorage.setItem('luma.favoriteVod.v1', JSON.stringify(Array.from(next)));
       } catch {
         // Ignore
       }
+      recordLocalSyncMutation(
+        activeCloudUidRef.current,
+        removing
+          ? { tombstonedKeys: [`vod:${vodId}`] }
+          : { updatedKeys: [`vod:${vodId}`] }
+      );
       return next;
     });
   }, []);
@@ -646,42 +748,140 @@ export function App() {
   const toggleFavoriteSeries = useCallback((seriesId: string) => {
     setFavoriteSeriesIds((prev) => {
       const next = new Set(prev);
-      if (next.has(seriesId)) next.delete(seriesId);
+      const removing = next.has(seriesId);
+      if (removing) next.delete(seriesId);
       else next.add(seriesId);
       try {
         localStorage.setItem('luma.favoriteSeries.v1', JSON.stringify(Array.from(next)));
       } catch {
         // Ignore
       }
+      recordLocalSyncMutation(
+        activeCloudUidRef.current,
+        removing
+          ? { tombstonedKeys: [`ser:${seriesId}`] }
+          : { updatedKeys: [`ser:${seriesId}`] }
+      );
       return next;
     });
   }, []);
 
   useEffect(() => {
-    lumaDb.sources
-      .orderBy('createdAt')
-      .reverse()
-      .toArray()
-      .then((list) => {
+    void (async () => {
+      try {
+        const startupRemap = await deduplicateStoredPlaylistSources();
+        if (startupRemap.size > 0) {
+          setFavoriteIds((prev) => {
+            const remapped = Array.from(
+              new Set(
+                Array.from(prev).map((id) =>
+                  remapEntityIdWithSourceMap(id, startupRemap)
+                )
+              )
+            );
+            try {
+              localStorage.setItem('luma.favorites.v1', JSON.stringify(remapped));
+            } catch {
+              // Ignore
+            }
+            return new Set(remapped);
+          });
+          setFavoriteVodIds((prev) => {
+            const remapped = Array.from(
+              new Set(
+                Array.from(prev).map((id) =>
+                  remapEntityIdWithSourceMap(id, startupRemap)
+                )
+              )
+            );
+            try {
+              localStorage.setItem('luma.favoriteVod.v1', JSON.stringify(remapped));
+            } catch {
+              // Ignore
+            }
+            return new Set(remapped);
+          });
+          setFavoriteSeriesIds((prev) => {
+            const remapped = Array.from(
+              new Set(
+                Array.from(prev).map((id) =>
+                  remapEntityIdWithSourceMap(id, startupRemap)
+                )
+              )
+            );
+            try {
+              localStorage.setItem(
+                'luma.favoriteSeries.v1',
+                JSON.stringify(remapped)
+              );
+            } catch {
+              // Ignore
+            }
+            return new Set(remapped);
+          });
+          setCustomBouquets((prev) => {
+            const remapped = prev.map((bq) => ({
+              ...bq,
+              channelIds: Array.from(
+                new Set(
+                  bq.channelIds.map((id) =>
+                    remapEntityIdWithSourceMap(id, startupRemap)
+                  )
+                )
+              ),
+              ...(bq.vodIds
+                ? {
+                    vodIds: Array.from(
+                      new Set(
+                        bq.vodIds.map((id) =>
+                          remapEntityIdWithSourceMap(id, startupRemap)
+                        )
+                      )
+                    ),
+                  }
+                : {}),
+              ...(bq.seriesIds
+                ? {
+                    seriesIds: Array.from(
+                      new Set(
+                        bq.seriesIds.map((id) =>
+                          remapEntityIdWithSourceMap(id, startupRemap)
+                        )
+                      )
+                    ),
+                  }
+                : {}),
+            }));
+            try {
+              localStorage.setItem('luma.bouquets.v1', JSON.stringify(remapped));
+            } catch {
+              // Ignore
+            }
+            return remapped;
+          });
+        }
+
+        const list = await lumaDb.sources.orderBy('createdAt').reverse().toArray();
         setPersistedSources(list);
         setActiveSourceIdState((cur) => {
-          if (list.some((s) => s.id === cur)) return cur;
-          // Auto-select user's real playlist if no explicit valid playlist was active
+          const mappedCur = remapEntityIdWithSourceMap(cur, startupRemap);
+          if (list.some((s) => s.id === mappedCur)) return mappedCur;
           if (list.length > 0) {
             const saved = localStorage.getItem('luma.activeSource.v1');
-            if (!saved || cur === 'none' || demoSourceDeleted) {
+            if (!saved || mappedCur === 'none' || demoSourceDeleted) {
               localStorage.setItem('luma.activeSource.v1', list[0].id);
               return list[0].id;
             }
           }
-          if (!demoSourceDeleted && cur !== 'none') return 'builtin-reference';
+          if (!demoSourceDeleted && mappedCur !== 'none') return 'builtin-reference';
           return list[0]?.id ?? 'none';
         });
-      })
-      .catch(() => undefined)
-      .finally(() => {
+      } catch {
+        // Ignore IndexedDB init errors
+      } finally {
         setSourcesDbLoaded(true);
-      });
+      }
+    })();
   }, [demoSourceDeleted]);
 
   const refreshActiveSourceBundle = useCallback(async (sourceId: string) => {
@@ -1048,13 +1248,20 @@ export function App() {
   const toggleFavorite = useCallback((channelId: string) => {
     setFavoriteIds((prev) => {
       const next = new Set(prev);
-      if (next.has(channelId)) next.delete(channelId);
+      const removing = next.has(channelId);
+      if (removing) next.delete(channelId);
       else next.add(channelId);
       try {
         localStorage.setItem('luma.favorites.v1', JSON.stringify(Array.from(next)));
       } catch {
         // Ignore
       }
+      recordLocalSyncMutation(
+        activeCloudUidRef.current,
+        removing
+          ? { tombstonedKeys: [`fav:${channelId}`] }
+          : { updatedKeys: [`fav:${channelId}`] }
+      );
       return next;
     });
   }, []);
@@ -1138,6 +1345,9 @@ export function App() {
         } catch {
           // Ignore
         }
+        recordLocalSyncMutation(activeCloudUidRef.current, {
+          scalarFields: ['dualSlotIds'],
+        });
         return next;
       });
     },
@@ -1559,6 +1769,9 @@ export function App() {
         proxyEndpoint: resolveIngestProxyEndpoint(),
         onProgress: (phase, percent) => setIngestState({ active: true, phase, percent }),
       });
+      recordLocalSyncMutation(activeCloudUidRef.current, {
+        updatedKeys: [`pl:${computePlaylistCanonicalKey(source)}`],
+      });
       await reloadSourcesList();
       handleSelectSourceId(source.id);
       await refreshActiveSourceBundle(source.id);
@@ -1591,6 +1804,9 @@ export function App() {
         ...params,
         proxyEndpoint: resolveIngestProxyEndpoint(),
         onProgress: (phase, percent) => setIngestState({ active: true, phase, percent }),
+      });
+      recordLocalSyncMutation(activeCloudUidRef.current, {
+        updatedKeys: [`pl:${computePlaylistCanonicalKey(source)}`],
       });
       await reloadSourcesList();
       handleSelectSourceId(source.id);
@@ -1638,6 +1854,12 @@ export function App() {
   };
 
   const handleDeleteSource = async (sourceId: string) => {
+    const existing = await lumaDb.sources.get(sourceId);
+    if (existing) {
+      recordLocalSyncMutation(activeCloudUidRef.current, {
+        tombstonedKeys: [`pl:${computePlaylistCanonicalKey(existing)}`],
+      });
+    }
     await deletePersistedSource(sourceId);
     const remaining = await lumaDb.sources.orderBy('createdAt').reverse().toArray();
     setPersistedSources(remaining);
@@ -1655,9 +1877,14 @@ export function App() {
     } catch {
       // Ignore
     }
+    const demoTombstones: string[] = ['bq:bq-weekend-sport'];
     // Remove built-in demo favorites & default demo bouquet so ghost demo items don't linger
     setFavoriteIds((prev) => {
-      const next = new Set(Array.from(prev).filter((id) => !id.startsWith('ch-')));
+      const arr = Array.from(prev);
+      for (const id of arr) {
+        if (id.startsWith('ch-')) demoTombstones.push(`fav:${id}`);
+      }
+      const next = new Set(arr.filter((id) => !id.startsWith('ch-')));
       try {
         localStorage.setItem('luma.favorites.v1', JSON.stringify(Array.from(next)));
       } catch {
@@ -1674,6 +1901,10 @@ export function App() {
       }
       return next;
     });
+    recordLocalSyncMutation(activeCloudUidRef.current, {
+      scalarFields: ['demoSourceDeleted'],
+      tombstonedKeys: demoTombstones,
+    });
     if (activeSourceId === 'builtin-reference') {
       handleSelectSourceId(persistedSources[0]?.id ?? 'none');
     }
@@ -1686,6 +1917,9 @@ export function App() {
     } catch {
       // Ignore
     }
+    recordLocalSyncMutation(activeCloudUidRef.current, {
+      scalarFields: ['demoSourceDeleted'],
+    });
     handleSelectSourceId('builtin-reference');
   }, [handleSelectSourceId]);
 
@@ -1715,11 +1949,23 @@ export function App() {
   const handleRenameSource = async (sourceId: string, nextName: string) => {
     if (!nextName.trim()) return;
     await renamePersistedSource(sourceId, nextName);
+    const updated = await lumaDb.sources.get(sourceId);
+    if (updated) {
+      recordLocalSyncMutation(activeCloudUidRef.current, {
+        updatedKeys: [`pl:${computePlaylistCanonicalKey(updated)}`],
+      });
+    }
     await reloadSourcesList();
   };
 
   const handleUpdateHiddenGroups = async (sourceId: string, hiddenGroupIds: string[]) => {
     await updateSourceHiddenGroups(sourceId, hiddenGroupIds);
+    const updated = await lumaDb.sources.get(sourceId);
+    if (updated) {
+      recordLocalSyncMutation(activeCloudUidRef.current, {
+        updatedKeys: [`pl:${computePlaylistCanonicalKey(updated)}`],
+      });
+    }
     await reloadSourcesList();
     if (selectedGroupId !== 'all' && hiddenGroupIds.includes(selectedGroupId)) {
       setSelectedGroupId('all');
@@ -1868,6 +2114,12 @@ export function App() {
       } catch {
         // Ignore
       }
+      recordLocalSyncMutation(
+        activeCloudUidRef.current,
+        exists
+          ? { tombstonedKeys: [`rem:${program.id}`] }
+          : { updatedKeys: [`rem:${program.id}`] }
+      );
       setToastMessage(
         exists
           ? `Erinnerung entfernt: ${program.title}`
@@ -1883,9 +2135,13 @@ export function App() {
   }, []);
 
   // =========================================================================
-  // Firebase Cloud Sync (Account-Keyed AES-256-GCM + Real-Time Firestore)
+  // Firebase Cloud Sync (Incremental 3-Way + Tombstone + Deduplicated Vault)
   // =========================================================================
   const [cloudSession, setCloudSession] = useState<LumaCloudSessionInfo | null>(null);
+  useEffect(() => {
+    activeCloudUidRef.current = cloudSession?.uid ?? null;
+  }, [cloudSession?.uid]);
+
   const [cloudAutoSyncEnabled, setCloudAutoSyncEnabled] = useState<boolean>(() => {
     try {
       return localStorage.getItem('luma.cloud.autoSync.v1') !== '0';
@@ -1914,16 +2170,65 @@ export function App() {
 
   const suppressCloudAutoPushUntilRef = useRef<number>(0);
   const lastRemoteVaultUpdatedAtRef = useRef<number>(0);
+  const lastSyncedContentDigestRef = useRef<string>('');
+  const cloudSyncInFlightRef = useRef<Promise<void> | null>(null);
   const didMountCloudWatcherRef = useRef<boolean>(false);
 
   const reconcileSyncedPlaylists = useCallback(
-    async (syncedPlaylists: SyncedPlaylistSource[], preferredActiveId?: string) => {
+    async (
+      syncedPlaylists: SyncedPlaylistSource[],
+      options?: {
+        preferredActiveId?: string;
+        deletedPlaylistIds?: readonly string[];
+      }
+    ) => {
+      const preferredActiveId = options?.preferredActiveId;
+      const deletedSet = new Set(options?.deletedPlaylistIds ?? []);
+
+      if (deletedSet.size > 0) {
+        for (const delId of deletedSet) {
+          await deletePersistedSource(delId);
+        }
+      }
+
+      // Clean up any local duplicates first, preferring the cloud canonical IDs
+      const preferredCanonicalIds = new Set(syncedPlaylists.map((p) => p.id));
+      await deduplicateStoredPlaylistSources(preferredCanonicalIds);
+
       const existing = await lumaDb.sources.toArray();
       const existingById = new Map(existing.map((s) => [s.id, s]));
+      const existingByCanon = new Map(
+        existing.map((s) => [computePlaylistCanonicalKey(s), s])
+      );
       const toHydrate: StoredPlaylistSource[] = [];
 
       for (const sp of syncedPlaylists) {
-        const prev = existingById.get(sp.id);
+        const canonKey = computePlaylistCanonicalKey(sp);
+        let prev = existingById.get(sp.id);
+        const canonMatch = existingByCanon.get(canonKey);
+
+        // If local DB already has this exact playlist URL/server under a different ID,
+        // migrate its IndexedDB channels/VOD/series/EPG in-place to `sp.id` (0 duplicates!).
+        if (!prev && canonMatch && canonMatch.id !== sp.id) {
+          const migrated = await migratePersistedSourceId(canonMatch.id, sp.id, {
+            name: sp.name,
+            endpoint: sp.endpoint,
+            rawUrlOrHost: sp.rawUrlOrHost,
+            username: sp.username,
+            password: sp.password,
+            outputFormat: sp.outputFormat,
+            xmltvUrl: sp.xmltvUrl,
+            hiddenGroupIds: sp.hiddenGroupIds ?? canonMatch.hiddenGroupIds,
+            epgOffsetHours: sp.epgOffsetHours ?? canonMatch.epgOffsetHours,
+            updatedAtMs: sp.updatedAt ?? Date.now(),
+          });
+          existingById.delete(canonMatch.id);
+          if (migrated) {
+            existingById.set(sp.id, migrated);
+            prev = migrated;
+          }
+        }
+
         if (!prev) {
           const created: StoredPlaylistSource = {
             id: sp.id,
@@ -1943,6 +2248,7 @@ export function App() {
             epgStatus: 'syncing',
             lastUpdated: 'Cloud Sync',
             createdAt: sp.createdAt ?? Date.now(),
+            updatedAtMs: sp.updatedAt ?? sp.createdAt ?? Date.now(),
           };
           await lumaDb.sources.put(created);
           if (
@@ -1956,11 +2262,10 @@ export function App() {
           }
         } else {
           const credsChanged =
-            prev.rawUrlOrHost !== sp.rawUrlOrHost ||
-            prev.username !== sp.username ||
-            prev.password !== sp.password ||
-            prev.outputFormat !== sp.outputFormat ||
-            prev.xmltvUrl !== sp.xmltvUrl;
+            computePlaylistCanonicalKey(prev) !== canonKey ||
+            (prev.password ?? '') !== (sp.password ?? '') ||
+            (prev.outputFormat ?? 'm3u8') !== (sp.outputFormat ?? 'm3u8') ||
+            (prev.xmltvUrl ?? '') !== (sp.xmltvUrl ?? '');
           const updated: StoredPlaylistSource = {
             ...prev,
             name: sp.name,
@@ -1972,10 +2277,11 @@ export function App() {
             xmltvUrl: sp.xmltvUrl,
             hiddenGroupIds: sp.hiddenGroupIds ?? prev.hiddenGroupIds,
             epgOffsetHours: sp.epgOffsetHours ?? prev.epgOffsetHours,
+            updatedAtMs: sp.updatedAt ?? prev.updatedAtMs ?? Date.now(),
           };
           await lumaDb.sources.put(updated);
           if (
-            (credsChanged || prev.channelCount === 0) &&
+            (credsChanged || updated.channelCount === 0) &&
             ((updated.type === 'xtream' &&
               updated.rawUrlOrHost &&
               updated.username &&
@@ -1996,9 +2302,21 @@ export function App() {
       if (
         preferredActiveId &&
         (preferredActiveId === 'builtin-reference' ||
+          preferredActiveId === 'none' ||
           refreshedSources.some((s) => s.id === preferredActiveId))
       ) {
-        handleSelectSourceId(preferredActiveId);
+        handleSelectSourceId(preferredActiveId, true);
+        if (preferredActiveId !== 'builtin-reference' && preferredActiveId !== 'none') {
+          await refreshActiveSourceBundle(preferredActiveId);
+        }
+      } else if (
+        activeSourceId !== 'builtin-reference' &&
+        activeSourceId !== 'none' &&
+        !refreshedSources.some((s) => s.id === activeSourceId)
+      ) {
+        const fallbackId =
+          refreshedSources[0]?.id ?? (demoSourceDeleted ? 'none' : 'builtin-reference');
+        handleSelectSourceId(fallbackId, true);
       }
 
       if (toHydrate.length > 0) {
@@ -2021,7 +2339,11 @@ export function App() {
             .toArray();
           setPersistedSources(afterHydrate);
           const targetActive = preferredActiveId || activeSourceId;
-          if (targetActive && targetActive !== 'builtin-reference') {
+          if (
+            targetActive &&
+            targetActive !== 'builtin-reference' &&
+            targetActive !== 'none'
+          ) {
             await refreshActiveSourceBundle(targetActive);
           }
         } finally {
@@ -2031,6 +2353,7 @@ export function App() {
     },
     [
       activeSourceId,
+      demoSourceDeleted,
       handleSelectSourceId,
       nativeProbe?.localProxyUrl,
       proxyConfig.enabled,
@@ -2040,8 +2363,11 @@ export function App() {
   );
 
   const handleRestoreFromSync = useCallback(
-    (payload: LumaSyncPlainPayload) => {
-      suppressCloudAutoPushUntilRef.current = Date.now() + 3000;
+    (
+      payload: LumaSyncPlainPayload,
+      options?: { deletedPlaylistIds?: readonly string[] }
+    ) => {
+      suppressCloudAutoPushUntilRef.current = Date.now() + 3200;
 
       const restoredFavs = new Set(payload.favorites ?? []);
       setFavoriteIds(restoredFavs);
@@ -2053,7 +2379,7 @@ export function App() {
         setFavoriteSeriesIds(new Set(payload.favoriteSeriesIds));
       }
       if (payload.customBouquets) {
-        handleUpdateBouquets(payload.customBouquets);
+        handleUpdateBouquets(payload.customBouquets, true);
       }
       if (payload.watchHistory) {
         setWatchHistory(payload.watchHistory);
@@ -2062,16 +2388,21 @@ export function App() {
         setReminders(payload.reminders);
       }
       if (payload.parentalConfig) {
-        handleUpdateParental(payload.parentalConfig);
+        handleUpdateParental(payload.parentalConfig, true);
       }
       if (payload.preferences) {
-        handleUpdatePreferences(payload.preferences);
+        handleUpdatePreferences(payload.preferences, true);
       }
       if (typeof payload.epgOffsetHours === 'number') {
         setEpgOffsetHours(payload.epgOffsetHours);
+        try {
+          localStorage.setItem('luma.epgOffset.v1', String(payload.epgOffsetHours));
+        } catch {
+          // Ignore
+        }
       }
-      if (payload.preferredDesign) {
-        handleChangeDesignMode(payload.preferredDesign);
+      if (payload.preferredDesign && platformEnv.isApple) {
+        handleChangeDesignMode(payload.preferredDesign, true);
       }
       if (
         payload.dualSlotIds &&
@@ -2134,10 +2465,16 @@ export function App() {
         // Ignore storage errors
       }
 
-      if (payload.playlists && payload.playlists.length > 0) {
-        void reconcileSyncedPlaylists(payload.playlists, payload.activeSourceId);
+      if (
+        payload.playlists !== undefined ||
+        (options?.deletedPlaylistIds?.length ?? 0) > 0
+      ) {
+        void reconcileSyncedPlaylists(payload.playlists ?? [], {
+          preferredActiveId: payload.activeSourceId,
+          deletedPlaylistIds: options?.deletedPlaylistIds,
+        });
       } else if (payload.activeSourceId === 'builtin-reference') {
-        handleSelectSourceId('builtin-reference');
+        handleSelectSourceId('builtin-reference', true);
       }
     },
     [
@@ -2146,61 +2483,190 @@ export function App() {
       handleUpdateBouquets,
       handleUpdateParental,
       handleUpdatePreferences,
+      platformEnv.isApple,
       reconcileSyncedPlaylists,
     ]
   );
 
-  const buildFullCloudSyncPayload = useCallback((): LumaSyncPlainPayload => {
-    return {
-      schemaVersion: 2,
-      exportedAt: Date.now(),
-      favorites: Array.from(favoriteIds),
-      favoriteVodIds: Array.from(favoriteVodIds),
-      favoriteSeriesIds: Array.from(favoriteSeriesIds),
-      customBouquets,
-      watchHistory,
-      reminders,
-      parentalConfig,
-      preferences,
-      epgOffsetHours,
-      preferredDesign: designMode,
-      dualSlotIds,
-      multiviewSlotIds,
+  const buildFullCloudSyncPayload = useCallback(
+    (overrideSources?: StoredPlaylistSource[]): LumaSyncPlainPayload => {
+      const effectiveSources = overrideSources ?? persistedSources;
+      return {
+        schemaVersion: 3,
+        exportedAt: Date.now(),
+        favorites: Array.from(favoriteIds),
+        favoriteVodIds: Array.from(favoriteVodIds),
+        favoriteSeriesIds: Array.from(favoriteSeriesIds),
+        customBouquets,
+        watchHistory,
+        reminders,
+        parentalConfig,
+        preferences,
+        epgOffsetHours,
+        preferredDesign: designMode,
+        dualSlotIds,
+        multiviewSlotIds,
+        activeSourceId,
+        demoSourceDeleted,
+        playlists: cloudSyncPlaylistsEnabled
+          ? effectiveSources.map(serializePlaylistForSync)
+          : undefined,
+      };
+    },
+    [
       activeSourceId,
+      cloudSyncPlaylistsEnabled,
+      customBouquets,
       demoSourceDeleted,
-      playlists: cloudSyncPlaylistsEnabled
-        ? persistedSources.map(serializePlaylistForSync)
-        : undefined,
-    };
-  }, [
-    activeSourceId,
-    cloudSyncPlaylistsEnabled,
-    customBouquets,
-    demoSourceDeleted,
-    designMode,
-    dualSlotIds,
-    epgOffsetHours,
-    favoriteIds,
-    favoriteSeriesIds,
-    favoriteVodIds,
-    multiviewSlotIds,
-    parentalConfig,
-    persistedSources,
-    preferences,
-    reminders,
-    watchHistory,
-  ]);
+      designMode,
+      dualSlotIds,
+      epgOffsetHours,
+      favoriteIds,
+      favoriteSeriesIds,
+      favoriteVodIds,
+      multiviewSlotIds,
+      parentalConfig,
+      persistedSources,
+      preferences,
+      reminders,
+      watchHistory,
+    ]
+  );
 
   const buildFullCloudSyncPayloadRef = useRef(buildFullCloudSyncPayload);
   useEffect(() => {
     buildFullCloudSyncPayloadRef.current = buildFullCloudSyncPayload;
   }, [buildFullCloudSyncPayload]);
 
+  const synchronizeWithCloudVault = useCallback(
+    async (params: {
+      uid: string;
+      trigger: 'sign-in' | 'unlock' | 'pull' | 'push' | 'auto-push' | 'snapshot';
+      incomingRemote?: {
+        envelope: EncryptedSyncEnvelope;
+        payload: LumaSyncPlainPayload;
+      };
+    }): Promise<string> => {
+      const runSync = async (): Promise<string> => {
+        const dbSources = await lumaDb.sources
+          .orderBy('createdAt')
+          .reverse()
+          .toArray();
+        const deviceState = loadDeviceCloudSyncState(params.uid);
+        const rawLocal = buildFullCloudSyncPayloadRef.current(dbSources);
+        const remote = params.incomingRemote ?? (await pullAccountCloudVault());
+
+        // If playlist syncing is toggled off locally, preserve existing cloud playlists
+        // rather than treating local `undefined` as deleting remote playlists.
+        const effectiveLocal: LumaSyncPlainPayload = !cloudSyncPlaylistsEnabled
+          ? {
+              ...rawLocal,
+              playlists:
+                remote?.payload.playlists ?? deviceState?.basePayload?.playlists ?? [],
+            }
+          : rawLocal;
+
+        let hasExplicitLocalPrefs = false;
+        try {
+          hasExplicitLocalPrefs = Boolean(localStorage.getItem('luma.prefs.v3'));
+        } catch {
+          hasExplicitLocalPrefs = false;
+        }
+
+        const reconciled = reconcileCloudSyncPayloads({
+          uid: params.uid,
+          local: effectiveLocal,
+          remote: remote?.payload ?? null,
+          deviceSyncState: deviceState,
+          remoteUpdatedAtMs: remote?.envelope.updatedAt,
+          isLocalAppleDevice: platformEnv.isApple,
+          hasExplicitLocalPrefs,
+        });
+
+        if (reconciled.shouldApplyLocally) {
+          handleRestoreFromSync(reconciled.mergedPayload, {
+            deletedPlaylistIds: reconciled.deletedPlaylistIds,
+          });
+        }
+
+        let syncedAtMs =
+          remote?.envelope.updatedAt ??
+          reconciled.nextDeviceSyncState.lastRemoteUpdatedAt;
+        let syncedDeviceLabel = remote?.envelope.deviceLabel ?? null;
+
+        if (reconciled.shouldPushToCloud && params.trigger !== 'pull') {
+          const pushedEnv = await pushAccountCloudVault({
+            payload: reconciled.mergedPayload,
+            deviceLabel: platformEnv.label,
+          });
+          syncedAtMs = pushedEnv.updatedAt;
+          syncedDeviceLabel = platformEnv.label;
+        }
+
+        const finalDeviceState = {
+          ...reconciled.nextDeviceSyncState,
+          lastRemoteUpdatedAt: Math.max(
+            reconciled.nextDeviceSyncState.lastRemoteUpdatedAt,
+            syncedAtMs
+          ),
+        };
+        saveDeviceCloudSyncState(params.uid, finalDeviceState);
+
+        lastRemoteVaultUpdatedAtRef.current = Math.max(
+          lastRemoteVaultUpdatedAtRef.current,
+          syncedAtMs
+        );
+        lastSyncedContentDigestRef.current = finalDeviceState.lastSyncedDigest;
+        setCloudLastSyncedAtMs(syncedAtMs);
+        if (syncedDeviceLabel) {
+          setCloudLastDeviceLabel(syncedDeviceLabel);
+        }
+        setCloudErrorMessage(null);
+        return reconciled.summary;
+      };
+
+      const prevFlight = cloudSyncInFlightRef.current;
+      const currentPromise = (prevFlight
+        ? prevFlight.catch(() => undefined)
+        : Promise.resolve()
+      ).then(runSync);
+
+      const tracked = currentPromise.then(
+        () => undefined,
+        () => undefined
+      );
+      cloudSyncInFlightRef.current = tracked;
+      try {
+        return await currentPromise;
+      } finally {
+        if (cloudSyncInFlightRef.current === tracked) {
+          cloudSyncInFlightRef.current = null;
+        }
+      }
+    },
+    [
+      cloudSyncPlaylistsEnabled,
+      handleRestoreFromSync,
+      platformEnv.isApple,
+      platformEnv.label,
+    ]
+  );
+
   // Observe Firebase Auth user session across app restarts
   useEffect(() => {
     try {
       return subscribeLumaAuthState((session) => {
         setCloudSession(session);
+        if (session?.uid) {
+          const saved = loadDeviceCloudSyncState(session.uid);
+          if (saved) {
+            lastSyncedContentDigestRef.current = saved.lastSyncedDigest;
+            lastRemoteVaultUpdatedAtRef.current = saved.lastRemoteUpdatedAt;
+            if (saved.lastRemoteUpdatedAt > 0) {
+              setCloudLastSyncedAtMs(saved.lastRemoteUpdatedAt);
+            }
+          }
+        }
       });
     } catch {
       return undefined;
@@ -2209,19 +2675,34 @@ export function App() {
 
   // Real-time Firestore onSnapshot listener when signed in & unlocked
   useEffect(() => {
-    if (!cloudSession?.uid || !cloudSession.hasVaultKey || !cloudAutoSyncEnabled) {
+    if (
+      !sourcesDbLoaded ||
+      !cloudSession?.uid ||
+      !cloudSession.hasVaultKey ||
+      !cloudAutoSyncEnabled
+    ) {
       return;
     }
+    const uid = cloudSession.uid;
     try {
       return subscribeAccountCloudVault({
-        uid: cloudSession.uid,
+        uid,
         onRemoteVault: ({ envelope, payload }) => {
-          if (envelope.updatedAt <= lastRemoteVaultUpdatedAtRef.current) return;
-          lastRemoteVaultUpdatedAtRef.current = envelope.updatedAt;
-          handleRestoreFromSync(payload);
-          setCloudLastSyncedAtMs(envelope.updatedAt);
-          setCloudLastDeviceLabel(envelope.deviceLabel ?? null);
-          setCloudErrorMessage(null);
+          const savedState = loadDeviceCloudSyncState(uid);
+          const alreadyProcessed =
+            Boolean(savedState?.hasCompletedInitialSync) &&
+            envelope.updatedAt <= lastRemoteVaultUpdatedAtRef.current;
+          if (alreadyProcessed) return;
+
+          void synchronizeWithCloudVault({
+            uid,
+            trigger: 'snapshot',
+            incomingRemote: { envelope, payload },
+          }).catch((err) => {
+            setCloudErrorMessage(
+              err instanceof Error ? err.message : 'Incremental sync failed.'
+            );
+          });
         },
         onError: (msg) => {
           setCloudErrorMessage(msg);
@@ -2234,42 +2715,51 @@ export function App() {
     cloudAutoSyncEnabled,
     cloudSession?.hasVaultKey,
     cloudSession?.uid,
-    handleRestoreFromSync,
+    sourcesDbLoaded,
+    synchronizeWithCloudVault,
   ]);
 
-  // Debounced auto-push whenever syncable user data changes while signed in
+  // Debounced incremental auto-sync whenever syncable user data changes while signed in
   useEffect(() => {
     if (!didMountCloudWatcherRef.current) {
       didMountCloudWatcherRef.current = true;
       return;
     }
-    if (!cloudSession?.uid || !cloudSession.hasVaultKey || !cloudAutoSyncEnabled) {
+    if (
+      !sourcesDbLoaded ||
+      !cloudSession?.uid ||
+      !cloudSession.hasVaultKey ||
+      !cloudAutoSyncEnabled
+    ) {
       return;
     }
     if (Date.now() < suppressCloudAutoPushUntilRef.current) {
       return;
     }
 
+    const uid = cloudSession.uid;
     const timer = window.setTimeout(() => {
       if (Date.now() < suppressCloudAutoPushUntilRef.current) return;
-      const payload = buildFullCloudSyncPayloadRef.current();
-      void pushAccountCloudVault({
-        payload,
-        deviceLabel: platformEnv.label,
-      })
-        .then((env) => {
-          lastRemoteVaultUpdatedAtRef.current = Math.max(
-            lastRemoteVaultUpdatedAtRef.current,
-            env.updatedAt
-          );
-          setCloudLastSyncedAtMs(env.updatedAt);
-          setCloudLastDeviceLabel(platformEnv.label);
-          setCloudErrorMessage(null);
-        })
-        .catch(() => {
-          // Transient offline state; Firestore retries or manual Sync Now handles it
-        });
-    }, 1800);
+      const savedState = loadDeviceCloudSyncState(uid);
+      const candidate = {
+        ...buildFullCloudSyncPayloadRef.current(),
+        syncMeta: savedState?.localMeta,
+      };
+      const currentDigest = computeSyncContentDigest(candidate);
+      if (
+        savedState?.hasCompletedInitialSync &&
+        currentDigest === lastSyncedContentDigestRef.current
+      ) {
+        return; // Zero-op: skip network call when canonical sync state is unchanged
+      }
+
+      void synchronizeWithCloudVault({
+        uid,
+        trigger: 'auto-push',
+      }).catch(() => {
+        // Transient offline state; Firestore retries or manual Sync Now handles it
+      });
+    }, 1500);
 
     return () => window.clearTimeout(timer);
   }, [
@@ -2289,9 +2779,10 @@ export function App() {
     multiviewSlotIds,
     parentalConfig,
     persistedSources,
-    platformEnv.label,
     preferences,
     reminders,
+    sourcesDbLoaded,
+    synchronizeWithCloudVault,
     watchHistory,
   ]);
 
@@ -2304,23 +2795,11 @@ export function App() {
         try {
           const session = await signInLumaCloudAccount(email, password);
           setCloudSession(session);
-          const remote = await pullAccountCloudVault();
-          if (remote) {
-            lastRemoteVaultUpdatedAtRef.current = remote.envelope.updatedAt;
-            handleRestoreFromSync(remote.payload);
-            setCloudLastSyncedAtMs(remote.envelope.updatedAt);
-            setCloudLastDeviceLabel(remote.envelope.deviceLabel ?? null);
-            setCloudStatusMessage('Signed in & synced your playlists and favorites.');
-          } else {
-            const env = await pushAccountCloudVault({
-              payload: buildFullCloudSyncPayloadRef.current(),
-              deviceLabel: platformEnv.label,
-            });
-            lastRemoteVaultUpdatedAtRef.current = env.updatedAt;
-            setCloudLastSyncedAtMs(env.updatedAt);
-            setCloudLastDeviceLabel(platformEnv.label);
-            setCloudStatusMessage('Signed in & created your encrypted cloud vault.');
-          }
+          const summary = await synchronizeWithCloudVault({
+            uid: session.uid,
+            trigger: 'sign-in',
+          });
+          setCloudStatusMessage(summary);
         } catch (err) {
           setCloudErrorMessage(
             err instanceof Error ? err.message : 'Sign-in failed.'
@@ -2336,16 +2815,11 @@ export function App() {
         try {
           const session = await signUpLumaCloudAccount(email, password);
           setCloudSession(session);
-          const env = await pushAccountCloudVault({
-            payload: buildFullCloudSyncPayloadRef.current(),
-            deviceLabel: platformEnv.label,
+          const summary = await synchronizeWithCloudVault({
+            uid: session.uid,
+            trigger: 'sign-in',
           });
-          lastRemoteVaultUpdatedAtRef.current = env.updatedAt;
-          setCloudLastSyncedAtMs(env.updatedAt);
-          setCloudLastDeviceLabel(platformEnv.label);
-          setCloudStatusMessage(
-            'Cloud account created & initial encrypted backup uploaded.'
-          );
+          setCloudStatusMessage(summary);
         } catch (err) {
           setCloudErrorMessage(
             err instanceof Error ? err.message : 'Account creation failed.'
@@ -2360,13 +2834,11 @@ export function App() {
         try {
           const session = await unlockExistingCloudSessionWithPassword(password);
           setCloudSession(session);
-          const remote = await pullAccountCloudVault();
-          if (remote) {
-            lastRemoteVaultUpdatedAtRef.current = remote.envelope.updatedAt;
-            handleRestoreFromSync(remote.payload);
-            setCloudLastSyncedAtMs(remote.envelope.updatedAt);
-          }
-          setCloudStatusMessage('Cloud sync unlocked on this device.');
+          const summary = await synchronizeWithCloudVault({
+            uid: session.uid,
+            trigger: 'unlock',
+          });
+          setCloudStatusMessage(summary);
         } catch (err) {
           setCloudErrorMessage(
             err instanceof Error ? err.message : 'Failed to unlock cloud vault.'
@@ -2405,39 +2877,33 @@ export function App() {
         }
       },
       onPushNow: async () => {
+        if (!cloudSession?.uid) return;
         setCloudBusy(true);
         setCloudErrorMessage(null);
         try {
-          const env = await pushAccountCloudVault({
-            payload: buildFullCloudSyncPayloadRef.current(),
-            deviceLabel: platformEnv.label,
+          const summary = await synchronizeWithCloudVault({
+            uid: cloudSession.uid,
+            trigger: 'push',
           });
-          lastRemoteVaultUpdatedAtRef.current = env.updatedAt;
-          setCloudLastSyncedAtMs(env.updatedAt);
-          setCloudLastDeviceLabel(platformEnv.label);
-          setCloudStatusMessage('All playlists, favorites & settings synced to cloud.');
+          setCloudStatusMessage(summary);
         } catch (err) {
           setCloudErrorMessage(
-            err instanceof Error ? err.message : 'Cloud sync push failed.'
+            err instanceof Error ? err.message : 'Cloud sync failed.'
           );
         } finally {
           setCloudBusy(false);
         }
       },
       onPullNow: async () => {
+        if (!cloudSession?.uid) return;
         setCloudBusy(true);
         setCloudErrorMessage(null);
         try {
-          const remote = await pullAccountCloudVault();
-          if (!remote) {
-            setCloudStatusMessage('No remote cloud backup found yet.');
-          } else {
-            lastRemoteVaultUpdatedAtRef.current = remote.envelope.updatedAt;
-            handleRestoreFromSync(remote.payload);
-            setCloudLastSyncedAtMs(remote.envelope.updatedAt);
-            setCloudLastDeviceLabel(remote.envelope.deviceLabel ?? null);
-            setCloudStatusMessage('Pulled latest playlists, favorites & settings.');
-          }
+          const summary = await synchronizeWithCloudVault({
+            uid: cloudSession.uid,
+            trigger: 'pull',
+          });
+          setCloudStatusMessage(summary);
         } catch (err) {
           setCloudErrorMessage(
             err instanceof Error ? err.message : 'Cloud sync pull failed.'
@@ -2463,7 +2929,7 @@ export function App() {
         }
       },
     }),
-    [handleRestoreFromSync, platformEnv.label]
+    [cloudSession?.uid, synchronizeWithCloudVault]
   );
 
   const cloudState: CloudSyncUiState = useMemo(
@@ -3309,7 +3775,7 @@ export function App() {
               onRenameChannel={handleRenameChannel}
               onToggleHideChannel={handleToggleHideChannel}
               epgOffsetHours={epgOffsetHours}
-              onChangeEpgOffset={setEpgOffsetHours}
+              onChangeEpgOffset={handleChangeEpgOffset}
               proxyConfig={proxyConfig}
               onChangeProxyConfig={setProxyConfig}
               favoriteIds={favoriteIds}

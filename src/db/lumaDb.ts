@@ -16,6 +16,7 @@ export interface StoredPlaylistSource extends PlaylistSource {
   hiddenGroupIds: string[];
   createdAt: number;
   lastSyncedAtMs?: number;
+  updatedAtMs?: number;
 }
 
 export interface StoredChannel extends Channel {
