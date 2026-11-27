@@ -160,6 +160,14 @@ describe('Luma TV End-to-End UI & Button Smoke Test', () => {
 
   beforeEach(async () => {
     localStorage.clear();
+    const { lumaDb } = await import('../db/lumaDb');
+    await Promise.all([
+      lumaDb.sources.clear(),
+      lumaDb.channels.clear(),
+      lumaDb.vodItems.clear(),
+      lumaDb.seriesItems.clear(),
+      lumaDb.epgPrograms.clear(),
+    ]);
     Object.defineProperty(navigator, 'userAgent', {
       configurable: true,
       value:
@@ -675,26 +683,46 @@ describe('Luma TV End-to-End UI & Button Smoke Test', () => {
       lumaDb.channels.clear(),
     ]);
 
-    // Seed IndexedDB with playlist `xtream-device2-777`, while synced Favorites & "Greek"
-    // collection initially carry orphaned prefix `xtream-device1-111-xt-*` + a snapshot channel!
-    await lumaDb.sources.put({
-      id: 'xtream-device2-777',
-      name: 'Home Xtream',
-      type: 'xtream',
-      endpoint: 'http://provider.example:8080',
-      rawUrlOrHost: 'http://provider.example:8080',
-      username: 'alice',
-      password: 'pw',
-      outputFormat: 'm3u8',
-      hiddenGroupIds: ['gr-general'], // Even when raw group is hidden!
-      epgOffsetHours: 0,
-      channelCount: 2,
-      vodCount: 0,
-      seriesCount: 0,
-      epgStatus: 'synced',
-      lastUpdated: 'Synced',
-      createdAt: 1795800000000,
-    });
+    // Seed TWO duplicate Xtream rows pointing to the same server + username (`http://provider.example:8080/` vs `http://PROVIDER.example:8080`)
+    // to verify boot-time deduplication leaves ONLY ONE playlist entry in Sources & Quick Switcher!
+    await lumaDb.sources.bulkPut([
+      {
+        id: 'xtream-device2-777',
+        name: 'Home Xtream',
+        type: 'xtream',
+        endpoint: 'http://provider.example:8080',
+        rawUrlOrHost: 'http://provider.example:8080',
+        username: 'alice',
+        password: 'pw',
+        outputFormat: 'm3u8',
+        hiddenGroupIds: ['gr-general'], // Even when raw group is hidden!
+        epgOffsetHours: 0,
+        channelCount: 2,
+        vodCount: 0,
+        seriesCount: 0,
+        epgStatus: 'synced',
+        lastUpdated: 'Synced',
+        createdAt: 1795800000000,
+      },
+      {
+        id: 'xtream-dup-888',
+        name: 'Xtream Codes Server',
+        type: 'xtream',
+        endpoint: 'http://PROVIDER.example:8080/',
+        rawUrlOrHost: 'http://PROVIDER.example:8080/',
+        username: ' ALICE ',
+        password: 'pw',
+        outputFormat: 'm3u8',
+        hiddenGroupIds: [],
+        epgOffsetHours: 0,
+        channelCount: 0,
+        vodCount: 0,
+        seriesCount: 0,
+        epgStatus: 'syncing',
+        lastUpdated: 'Cloud Sync',
+        createdAt: 1795850000000,
+      },
+    ]);
 
     await lumaDb.channels.bulkPut([
       {
@@ -817,5 +845,22 @@ describe('Luma TV End-to-End UI & Button Smoke Test', () => {
     expect(host.textContent).toContain('GR| ERT 1 HD');
     expect(host.textContent).toContain('GR| MEGA HD');
     expect(host.textContent).toContain('GR| SKAI HD');
+
+    // 4. Open Dual View -> Slot 2 Picker -> Greek collection scope MUST display all 3 Greek channels!
+    clickEl(host.querySelector('#nav-live'), '#nav-live');
+    clickEl(host.querySelector('#btn-open-dualview'), '#btn-open-dualview');
+    clickEl(host.querySelector('#btn-dual-pick-2'), '#btn-dual-pick-2');
+    const dualGreekScopeBtn = Array.from(host.querySelectorAll('button')).find((b) =>
+      b.textContent?.trim() === 'Greek'
+    );
+    clickEl(dualGreekScopeBtn ?? null, 'Select Greek collection in Dual View picker');
+    expect(host.textContent).toContain('GR| ERT 1 HD');
+    expect(host.textContent).toContain('GR| MEGA HD');
+    expect(host.textContent).toContain('GR| SKAI HD');
+
+    // 5. Verify duplicate Xtream playlist row was automatically consolidated to 1 single source!
+    const remainingDbSources = await lumaDb.sources.toArray();
+    expect(remainingDbSources).toHaveLength(1);
+    expect(remainingDbSources[0].name).toBe('Home Xtream');
   });
 });

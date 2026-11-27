@@ -54,7 +54,12 @@ jobs:
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
           export TAG
-          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --prerelease --title "Luma TV $TAG" --notes "Automated multi-platform release."
+          if [[ "$TAG" == *-* ]]; then
+            REL_FLAG="--prerelease"
+          else
+            REL_FLAG="--latest"
+          fi
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" $REL_FLAG --title "Luma TV $TAG" --notes "Automated multi-platform release."
           gh release upload "$TAG" src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg --clobber
 
           TAR_PATH="src-tauri/target/universal-apple-darwin/release/bundle/macos/Luma.app.tar.gz"
@@ -175,5 +180,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
-          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --prerelease --title "Luma TV $TAG" --notes "Automated multi-platform release."
+          if [[ "$TAG" == *-* ]]; then
+            REL_FLAG="--prerelease"
+          else
+            REL_FLAG="--latest"
+          fi
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" $REL_FLAG --title "Luma TV $TAG" --notes "Automated multi-platform release."
           gh release upload "$TAG" ./Luma-TV-Android-Universal.apk --clobber
