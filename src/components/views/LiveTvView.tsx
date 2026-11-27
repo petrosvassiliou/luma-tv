@@ -95,9 +95,12 @@ export const LiveTvView: React.FC<LiveTvViewProps> = ({
     });
   };
   const [filterQuery, setFilterQuery] = useState('');
+  const [tvFilterExpanded, setTvFilterExpanded] = useState(false);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(600);
   const listRef = useRef<HTMLDivElement | null>(null);
+  const tvFilterInputRef = useRef<HTMLInputElement | null>(null);
+  const rowHeight = isAndroidTv ? 38 : ROW_HEIGHT;
 
   const filteredChannels = useMemo(() => {
     if (!filterQuery.trim()) return channels;
@@ -127,12 +130,12 @@ export const LiveTvView: React.FC<LiveTvViewProps> = ({
     if (!el || filterQuery.trim()) return;
     const idx = filteredChannels.findIndex((c) => c.id === activeChannelId);
     if (idx < 0) return;
-    const targetTop = idx * ROW_HEIGHT;
+    const targetTop = idx * rowHeight;
     if (
       targetTop < el.scrollTop ||
-      targetTop + ROW_HEIGHT > el.scrollTop + el.clientHeight
+      targetTop + rowHeight > el.scrollTop + el.clientHeight
     ) {
-      el.scrollTop = Math.max(0, targetTop - el.clientHeight / 2 + ROW_HEIGHT);
+      el.scrollTop = Math.max(0, targetTop - el.clientHeight / 2 + rowHeight);
       setScrollTop(el.scrollTop);
     }
     if (isAndroidTv && effectiveDrawerOpen) {
@@ -147,22 +150,29 @@ export const LiveTvView: React.FC<LiveTvViewProps> = ({
       });
       return () => window.cancelAnimationFrame(raf);
     }
-  }, [activeChannelId, filteredChannels, filterQuery, effectiveDrawerOpen, isAndroidTv]);
+  }, [
+    activeChannelId,
+    filteredChannels,
+    filterQuery,
+    effectiveDrawerOpen,
+    isAndroidTv,
+    rowHeight,
+  ]);
 
   const isCollectionActive = collections.some((c) => c.id === selectedGroupId);
 
-  const totalHeight = filteredChannels.length * ROW_HEIGHT;
+  const totalHeight = filteredChannels.length * rowHeight;
   const clampedScrollTop = Math.min(
     scrollTop,
     Math.max(0, totalHeight - viewportHeight)
   );
   const startIndex = Math.max(
     0,
-    Math.floor(clampedScrollTop / ROW_HEIGHT) - OVERSCAN
+    Math.floor(clampedScrollTop / rowHeight) - OVERSCAN
   );
   const endIndex = Math.min(
     filteredChannels.length - 1,
-    Math.ceil((clampedScrollTop + viewportHeight) / ROW_HEIGHT) + OVERSCAN
+    Math.ceil((clampedScrollTop + viewportHeight) / rowHeight) + OVERSCAN
   );
 
   const visibleSlice =
@@ -254,7 +264,7 @@ export const LiveTvView: React.FC<LiveTvViewProps> = ({
       {/* Collapsible Virtualized 54,000+ Channel & Collection Zapper Drawer */}
       {isAndroidTv && effectiveDrawerOpen && (
         <div
-          className="fixed inset-0 z-30 bg-black/35"
+          className="fixed inset-0 z-30"
           onClick={() => onChangeTvChannelOverlayOpen?.(false)}
         />
       )}
@@ -264,7 +274,7 @@ export const LiveTvView: React.FC<LiveTvViewProps> = ({
           data-tv-modal={isAndroidTv ? 'true' : undefined}
           className={
             isAndroidTv
-              ? 'fixed inset-y-4 right-4 z-40 flex w-96 flex-col overflow-hidden rounded-[28px] bg-[#131722]/95 shadow-[0_24px_80px_rgba(0,0,0,0.88)] ring-1 ring-[#7FD4FF]/25 backdrop-blur-2xl'
+              ? 'fixed inset-y-5 right-5 z-40 flex w-[288px] flex-col overflow-hidden rounded-[24px] bg-[#0A0E17]/62 shadow-[0_20px_60px_rgba(0,0,0,0.75)] ring-1 ring-white/15 backdrop-blur-md'
               : `flex w-72 shrink-0 flex-col overflow-hidden xl:w-80 ${
                   isM3
                     ? 'rounded-[26px] bg-[#161B28] ring-1 ring-white/[0.06]'
@@ -277,9 +287,36 @@ export const LiveTvView: React.FC<LiveTvViewProps> = ({
               <span className="truncate text-xs font-semibold text-white">
                 {activeGroupLabel}
               </span>
-              <span className="shrink-0 text-[11px] text-slate-400 luma-tabular">
-                {filteredChannels.length.toLocaleString(bcp47)}
-              </span>
+              <div className="flex shrink-0 items-center gap-1.5">
+                <span className="text-[11px] text-slate-300/85 luma-tabular">
+                  {filteredChannels.length.toLocaleString(bcp47)}
+                </span>
+                {isAndroidTv && !tvFilterExpanded && !filterQuery && (
+                  <button
+                    id="btn-tv-channel-filter-toggle"
+                    type="button"
+                    onClick={() => {
+                      setTvFilterExpanded(true);
+                      window.requestAnimationFrame(() => {
+                        const inp = tvFilterInputRef.current;
+                        if (inp) {
+                          inp.focus({ preventScroll: true });
+                          inp.dataset.tvEditing = 'true';
+                          (
+                            window as unknown as {
+                              LumaAndroidWindow?: { showTvKeyboard?: () => void };
+                            }
+                          ).LumaAndroidWindow?.showTvKeyboard?.();
+                        }
+                      });
+                    }}
+                    className="flex h-7 w-7 items-center justify-center rounded-full bg-white/12 text-[#7FD4FF] ring-1 ring-white/15 hover:bg-white/20"
+                    title={t.epgFilter}
+                  >
+                    <Search className="h-3.5 w-3.5" />
+                  </button>
+                )}
+              </div>
             </div>
 
             {/* Quick Collection & Favorites Switcher Strip inside Live TV (Wraps cleanly so all collections stay visible without horizontal scrolling) */}
@@ -365,37 +402,95 @@ export const LiveTvView: React.FC<LiveTvViewProps> = ({
               </div>
             )}
 
-            <div className="relative flex items-center">
-              <Search className="pointer-events-none absolute left-3 h-3.5 w-3.5 text-slate-400" />
-              <input
-                type="text"
-                value={filterQuery}
-                onChange={(e) => {
-                  setFilterQuery(e.target.value);
-                  if (listRef.current) listRef.current.scrollTop = 0;
-                }}
-                placeholder={t.epgFilter}
-                className={
-                  isM3
-                    ? 'h-8 w-full rounded-full bg-[#232B3D] pl-8 pr-7 text-xs text-white placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-[#7FD4FF]/60'
-                    : 'lg-capsule h-8 w-full rounded-full pl-8 pr-7 text-xs text-white placeholder:text-white/45 focus:outline-none'
-                }
-              />
-              {filterQuery && (
-                <button
-                  type="button"
-                  onClick={() => setFilterQuery('')}
-                  className="absolute right-2.5 text-xs text-slate-400 hover:text-white"
-                >
-                  ✕
-                </button>
-              )}
-            </div>
+            {(!isAndroidTv || tvFilterExpanded || Boolean(filterQuery)) && (
+              <div className="relative flex items-center">
+                <Search className="pointer-events-none absolute left-3 h-3.5 w-3.5 text-slate-400" />
+                <input
+                  ref={tvFilterInputRef}
+                  type="text"
+                  value={filterQuery}
+                  onChange={(e) => {
+                    setFilterQuery(e.target.value);
+                    if (listRef.current) listRef.current.scrollTop = 0;
+                  }}
+                  onBlur={() => {
+                    if (isAndroidTv && !filterQuery.trim()) {
+                      setTvFilterExpanded(false);
+                    }
+                  }}
+                  placeholder={t.epgFilter}
+                  className={
+                    isM3
+                      ? 'h-8 w-full rounded-full bg-white/10 pl-8 pr-7 text-xs text-white placeholder:text-slate-300/75 focus:outline-none focus:ring-1 focus:ring-[#7FD4FF]/60'
+                      : 'lg-capsule h-8 w-full rounded-full pl-8 pr-7 text-xs text-white placeholder:text-white/45 focus:outline-none'
+                  }
+                />
+                {(filterQuery || (isAndroidTv && tvFilterExpanded)) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFilterQuery('');
+                      setTvFilterExpanded(false);
+                    }}
+                    className="absolute right-2.5 text-xs text-slate-300 hover:text-white"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+            )}
           </div>
 
           <div
             ref={listRef}
             onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
+            onKeyDownCapture={(e) => {
+              if (!isAndroidTv) return;
+              if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+              const target = e.target as HTMLElement | null;
+              const chId = target?.getAttribute('data-channel-id');
+              if (!chId || !listRef.current) return;
+              const curIdx = filteredChannels.findIndex((c) => c.id === chId);
+              if (curIdx < 0) return;
+
+              if (e.key === 'ArrowUp' && curIdx === 0) {
+                const pill = document.querySelector<HTMLElement>(
+                  '#luma-live-channel-drawer button[aria-pressed="true"], #luma-live-channel-drawer button'
+                );
+                if (pill) {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  pill.focus({ preventScroll: true });
+                }
+                return;
+              }
+
+              const nextIdx =
+                e.key === 'ArrowDown'
+                  ? Math.min(filteredChannels.length - 1, curIdx + 1)
+                  : Math.max(0, curIdx - 1);
+              if (nextIdx === curIdx) return;
+
+              e.preventDefault();
+              e.stopPropagation();
+              const el = listRef.current;
+              const nextTop = nextIdx * rowHeight;
+              if (nextTop < el.scrollTop) {
+                el.scrollTop = nextTop;
+                setScrollTop(nextTop);
+              } else if (nextTop + rowHeight > el.scrollTop + el.clientHeight) {
+                const updated = nextTop + rowHeight - el.clientHeight;
+                el.scrollTop = updated;
+                setScrollTop(updated);
+              }
+              const nextChannel = filteredChannels[nextIdx];
+              window.requestAnimationFrame(() => {
+                const nextRow = el.querySelector<HTMLElement>(
+                  `[data-channel-id="${CSS.escape(nextChannel.id)}"]`
+                );
+                nextRow?.focus({ preventScroll: true });
+              });
+            }}
             className="luma-scroll relative flex-1 overflow-y-auto"
           >
             {filteredChannels.length === 0 ? (
@@ -416,10 +511,10 @@ export const LiveTvView: React.FC<LiveTvViewProps> = ({
                       tabIndex={isAndroidTv ? 0 : undefined}
                       style={{
                         position: 'absolute',
-                        top: `${index * ROW_HEIGHT}px`,
+                        top: `${index * rowHeight}px`,
                         left: '6px',
                         right: '6px',
-                        height: `${ROW_HEIGHT - 4}px`,
+                        height: `${rowHeight - 4}px`,
                       }}
                       onClick={() => {
                         onSelectChannel(ch);

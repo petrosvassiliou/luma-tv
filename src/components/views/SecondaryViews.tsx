@@ -26,7 +26,6 @@ import {
   Trash2,
   UserCheck,
   Users,
-  X,
 } from 'lucide-react';
 import type {
   StoredChannel,
@@ -69,6 +68,7 @@ import type {
   CloudSyncActions,
   CloudSyncUiState,
 } from '../common/LumaCloudSyncCard';
+import { TvCollapsibleSearch } from '../common/TvCollapsibleSearch';
 import { Phase4PlatformSyncPanel } from './Phase4PlatformSyncPanel';
 
 const VOD_PAGE_SIZE = 48;
@@ -190,37 +190,17 @@ export const VodCatalogView: React.FC<VodViewProps> = ({
         </div>
 
         <div className="flex flex-wrap items-center gap-2.5">
-          {/* Search Input */}
-          <div className="relative w-64 sm:w-72">
-            <Search className="pointer-events-none absolute left-3.5 top-2.5 h-3.5 w-3.5 text-slate-400" />
-            <input
-              id="input-vod-search"
-              type="text"
-              value={query}
-              onChange={(e) => {
-                setQuery(e.target.value);
-                setPage(0);
-              }}
-              placeholder={t.searchPlaceholder}
-              className={
-                isM3
-                  ? 'h-9 w-full rounded-full bg-[#232B3D] pl-9 pr-8 text-xs text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[#7FD4FF]/60'
-                  : 'lg-capsule h-9 w-full rounded-full pl-9 pr-8 text-xs text-white placeholder:text-white/45 focus:outline-none'
-              }
-            />
-            {query && (
-              <button
-                type="button"
-                onClick={() => {
-                  setQuery('');
-                  setPage(0);
-                }}
-                className="absolute right-2.5 top-2 rounded-full p-0.5 text-slate-400 hover:text-white"
-              >
-                <X className="h-3.5 w-3.5" />
-              </button>
-            )}
-          </div>
+          {/* Search Input (Compact shortcut button on Android TV) */}
+          <TvCollapsibleSearch
+            id="input-vod-search"
+            value={query}
+            onChange={(val) => {
+              setQuery(val);
+              setPage(0);
+            }}
+            placeholder={t.searchPlaceholder}
+            designMode={designMode}
+          />
 
           {/* Genre / Category Dropdown */}
           <select

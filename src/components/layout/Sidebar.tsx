@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   CalendarClock,
   Clapperboard,
@@ -126,6 +126,17 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   const displayedGroups = filteredGroups.slice(0, 120);
 
+  useEffect(() => {
+    if (!isAndroidTv) return;
+    const raf = window.requestAnimationFrame(() => {
+      const activeBtn =
+        document.querySelector<HTMLElement>(`#luma-sidebar #nav-${activeSection}`) ??
+        document.querySelector<HTMLElement>('#luma-sidebar #nav-live');
+      activeBtn?.focus({ preventScroll: true });
+    });
+    return () => window.cancelAnimationFrame(raf);
+  }, [isAndroidTv, activeSection]);
+
   if (isAndroidTv) {
     const tvNavItems = navItems.filter((item) =>
       [
@@ -147,46 +158,39 @@ export const Sidebar: React.FC<SidebarProps> = ({
         : '';
 
     return (
-      <div
-        className="fixed inset-0 z-40 bg-black/55 backdrop-blur-[2px]"
-        onClick={onCloseTvMenu}
-      >
+      <div className="fixed inset-0 z-40" onClick={onCloseTvMenu}>
         <aside
           id="luma-sidebar"
           data-tv-modal="true"
           onClick={(e) => e.stopPropagation()}
-          className="fixed inset-y-4 left-4 z-50 flex w-[290px] flex-col overflow-hidden rounded-[28px] bg-[#131722]/96 p-4 shadow-[0_24px_80px_rgba(0,0,0,0.9)] ring-1 ring-[#7FD4FF]/25 backdrop-blur-2xl"
+          className="fixed inset-y-5 left-5 z-50 flex w-[228px] flex-col overflow-hidden rounded-[24px] bg-[#0A0E17]/62 p-3 shadow-[0_20px_60px_rgba(0,0,0,0.75)] ring-1 ring-white/15 backdrop-blur-md"
         >
-          <div className="mb-3 flex items-center justify-between px-2">
-            <div className="flex items-center gap-2.5">
-              <LumaLogo size={26} />
-              <span className="text-sm font-bold tracking-tight text-white">
-                Luma TV
-              </span>
+          <div className="mb-2 flex items-center justify-between gap-2 px-1.5">
+            <LumaLogo size={20} />
+            <div className="flex items-center gap-1.5">
+              {clockLabel && (
+                <span className="font-mono text-[11px] font-semibold text-sky-200/90 luma-tabular">
+                  {clockLabel}
+                </span>
+              )}
+              {onOpenCommandBar && (
+                <button
+                  id="tv-nav-search"
+                  type="button"
+                  onClick={() => {
+                    onCloseTvMenu?.();
+                    onOpenCommandBar();
+                  }}
+                  className="flex h-7.5 w-7.5 items-center justify-center rounded-full bg-white/12 text-[#7FD4FF] ring-1 ring-white/15 hover:bg-white/20"
+                  title={t.searchPlaceholder}
+                >
+                  <Search className="h-3.5 w-3.5" />
+                </button>
+              )}
             </div>
-            {clockLabel && (
-              <span className="font-mono text-xs font-semibold text-sky-200/90 luma-tabular">
-                {clockLabel}
-              </span>
-            )}
           </div>
 
-          {onOpenCommandBar && (
-            <button
-              id="tv-nav-search"
-              type="button"
-              onClick={() => {
-                onCloseTvMenu?.();
-                onOpenCommandBar();
-              }}
-              className="mb-2 flex h-10 w-full items-center gap-3 rounded-full bg-[#232B3D] px-4 text-xs font-semibold text-sky-200 transition hover:bg-[#2E384F]"
-            >
-              <Search className="h-4 w-4 shrink-0 text-[#7FD4FF]" />
-              <span className="truncate">{t.searchPlaceholder}</span>
-            </button>
-          )}
-
-          <div className="luma-scroll flex-1 space-y-1 overflow-y-auto pr-0.5">
+          <div className="luma-scroll flex-1 space-y-0.5 overflow-y-auto">
             {tvNavItems.map((item) => {
               const Icon = item.icon;
               const isActive = activeSection === item.id;
@@ -199,14 +203,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     onSelectSection(item.id);
                     onCloseTvMenu?.();
                   }}
-                  className={`m3-spring flex h-10 w-full items-center justify-between gap-2 rounded-full px-4 text-xs font-semibold ${
+                  className={`flex h-8.5 w-full items-center justify-between gap-2 rounded-full px-3 text-xs font-semibold ${
                     isActive
                       ? 'm3-tonal-active'
-                      : 'text-slate-200 hover:bg-[#1E2536] hover:text-white'
+                      : 'text-slate-100 hover:bg-white/10 hover:text-white'
                   }`}
                 >
-                  <span className="flex min-w-0 items-center gap-3">
-                    <Icon className="h-4 w-4 shrink-0" />
+                  <span className="flex min-w-0 items-center gap-2.5">
+                    <Icon className="h-3.5 w-3.5 shrink-0" />
                     <span className="truncate">{item.label}</span>
                   </span>
                   {item.badge !== undefined && (
@@ -218,26 +222,26 @@ export const Sidebar: React.FC<SidebarProps> = ({
               );
             })}
 
-            {groups.length > 0 && (
+            {groups.length > 0 && isLiveSection && (
               <>
-                <div className="my-2.5 border-t border-white/10" />
+                <div className="my-2 border-t border-white/12" />
                 <button
                   type="button"
                   onClick={() => {
                     onSelectGroup('all');
                     onCloseTvMenu?.();
                   }}
-                  className={`flex h-9 w-full items-center justify-between rounded-full px-3.5 text-xs ${
+                  className={`flex h-8 w-full items-center justify-between rounded-full px-3 text-xs ${
                     selectedGroupId === 'all' && isLiveSection
-                      ? 'bg-[#263148] font-semibold text-[#D6E3FF]'
-                      : 'text-slate-300 hover:bg-[#1E2536]'
+                      ? 'bg-[#263148]/85 font-semibold text-[#D6E3FF]'
+                      : 'text-slate-200 hover:bg-white/10'
                   }`}
                 >
-                  <span className="flex items-center gap-2.5">
+                  <span className="flex items-center gap-2">
                     <Layers className="h-3.5 w-3.5 text-[#7FD4FF]" />
                     <span>{t.allChannels}</span>
                   </span>
-                  <span className="text-[11px] opacity-70 luma-tabular">
+                  <span className="text-[10px] opacity-75 luma-tabular">
                     {totalChannelCount.toLocaleString(bcp47)}
                   </span>
                 </button>
@@ -251,14 +255,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         onSelectGroup(g.id);
                         onCloseTvMenu?.();
                       }}
-                      className={`flex h-9 w-full items-center justify-between gap-2 rounded-full px-3.5 text-xs ${
+                      className={`flex h-8 w-full items-center justify-between gap-2 rounded-full px-3 text-xs ${
                         active
-                          ? 'bg-[#263148] font-semibold text-[#D6E3FF]'
-                          : 'text-slate-300 hover:bg-[#1E2536]'
+                          ? 'bg-[#263148]/85 font-semibold text-[#D6E3FF]'
+                          : 'text-slate-200 hover:bg-white/10'
                       }`}
                     >
                       <span className="truncate">{g.name}</span>
-                      <span className="shrink-0 text-[11px] opacity-65 luma-tabular">
+                      <span className="shrink-0 text-[10px] opacity-70 luma-tabular">
                         {g.count}
                       </span>
                     </button>

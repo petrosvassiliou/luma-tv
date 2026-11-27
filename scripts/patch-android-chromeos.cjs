@@ -232,6 +232,7 @@ class MainActivity : TauriActivity() {
   @Volatile
   private var lumaImmersiveFullscreen: Boolean = false
   private var isTvDevice: Boolean = false
+  private var tvImeWasVisible: Boolean = false
   private var lumaWebView: WebView? = null
   private var fullscreenBackCallback: OnBackPressedCallback? = null
   private val mainHandler = Handler(Looper.getMainLooper())
@@ -344,6 +345,23 @@ class MainActivity : TauriActivity() {
     if (isTvDevice) {
       // Android TV is always full-screen content-first (edge-to-edge + keep screen awake)
       applyLumaFullscreen(true, notifyJs = false)
+      window.decorView.viewTreeObserver.addOnGlobalLayoutListener {
+        try {
+          val r = android.graphics.Rect()
+          window.decorView.getWindowVisibleDisplayFrame(r)
+          val screenHeight = window.decorView.rootView.height
+          val keypadHeight = screenHeight - r.bottom
+          val imeNowVisible = screenHeight > 0 && keypadHeight > screenHeight * 0.16
+          if (tvImeWasVisible && !imeNowVisible) {
+            lumaWebView?.requestFocus()
+            lumaWebView?.evaluateJavascript(
+              "window.dispatchEvent(new CustomEvent('luma-tv-ime-closed'));",
+              null
+            )
+          }
+          tvImeWasVisible = imeNowVisible
+        } catch (_: Throwable) {}
+      }
       val tvBackCallback = object : OnBackPressedCallback(true) {
         override fun handleOnBackPressed() {
           val wv = lumaWebView

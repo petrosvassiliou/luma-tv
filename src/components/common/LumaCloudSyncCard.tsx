@@ -70,8 +70,8 @@ export const LumaCloudSyncCard: React.FC<LumaCloudSyncCardProps> = ({
 
   const { session, isBusy, summaryCounts } = cloudState;
 
-  const handleSubmitAuth = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const performAuthSubmit = async () => {
+    if (isBusy) return;
     if (!email.trim()) {
       setLocalValidationError('Please enter your email address.');
       document.getElementById('input-cloud-email')?.focus();
@@ -91,8 +91,13 @@ export const LumaCloudSyncCard: React.FC<LumaCloudSyncCardProps> = ({
     setPassword('');
   };
 
-  const handleSubmitUnlock = async (e: React.FormEvent) => {
+  const handleSubmitAuth = async (e: React.FormEvent) => {
     e.preventDefault();
+    await performAuthSubmit();
+  };
+
+  const performUnlockSubmit = async () => {
+    if (isBusy) return;
     if (!password) {
       setLocalValidationError('Please enter your account password to unlock sync.');
       return;
@@ -100,6 +105,11 @@ export const LumaCloudSyncCard: React.FC<LumaCloudSyncCardProps> = ({
     setLocalValidationError(null);
     await cloudActions.onUnlockVault(password);
     setPassword('');
+  };
+
+  const handleSubmitUnlock = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await performUnlockSubmit();
   };
 
   const formattedLastSync = cloudState.lastSyncedAtMs
@@ -197,6 +207,7 @@ export const LumaCloudSyncCard: React.FC<LumaCloudSyncCardProps> = ({
                 id="input-cloud-email"
                 type="email"
                 autoComplete="email"
+                enterKeyHint="next"
                 required
                 value={email}
                 onChange={(e) => {
@@ -214,6 +225,7 @@ export const LumaCloudSyncCard: React.FC<LumaCloudSyncCardProps> = ({
                 id="input-cloud-password"
                 type="password"
                 autoComplete={authMode === 'signup' ? 'new-password' : 'current-password'}
+                enterKeyHint="done"
                 required
                 minLength={6}
                 value={password}
@@ -231,11 +243,12 @@ export const LumaCloudSyncCard: React.FC<LumaCloudSyncCardProps> = ({
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center justify-between gap-2 pt-0.5">
+          <div className="flex flex-wrap items-center gap-4 pt-0.5">
             <button
               id="btn-cloud-submit-auth"
-              type="submit"
+              type="button"
               disabled={isBusy}
+              onClick={() => void performAuthSubmit()}
               className={`inline-flex items-center gap-1.5 rounded-full px-4 py-2 text-xs font-bold transition disabled:opacity-45 ${
                 isM3 ? 'm3-primary-pill' : 'lg-pill-active'
               }`}
@@ -289,8 +302,9 @@ export const LumaCloudSyncCard: React.FC<LumaCloudSyncCardProps> = ({
               />
             </div>
             <button
-              type="submit"
+              type="button"
               disabled={isBusy}
+              onClick={() => void performUnlockSubmit()}
               className={`inline-flex items-center gap-1.5 rounded-full px-4 py-2 text-xs font-bold disabled:opacity-45 ${
                 isM3 ? 'm3-primary-pill' : 'lg-pill-active'
               }`}

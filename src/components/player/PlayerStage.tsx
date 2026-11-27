@@ -1411,9 +1411,11 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
               ? 'translate-y-0 opacity-100'
               : 'pointer-events-none translate-y-2 opacity-0'
           } ${
-            isM3
-              ? 'absolute inset-x-3 bottom-3 z-20 rounded-[24px] bg-[#161B28]/95 px-4 py-3 shadow-xl ring-1 ring-white/[0.06]'
-              : 'lg-pane absolute inset-x-3.5 bottom-3 z-20 rounded-[22px] px-4 py-2.5'
+            isAndroidTv
+              ? 'absolute inset-x-5 bottom-4 z-20 rounded-[22px] bg-[#0A0E17]/62 px-4 py-2.5 shadow-xl ring-1 ring-white/15 backdrop-blur-md'
+              : isM3
+                ? 'absolute inset-x-3 bottom-3 z-20 rounded-[24px] bg-[#161B28]/95 px-4 py-3 shadow-xl ring-1 ring-white/[0.06]'
+                : 'lg-pane absolute inset-x-3.5 bottom-3 z-20 rounded-[22px] px-4 py-2.5'
           }`}
         >
           {isSeekable ? (

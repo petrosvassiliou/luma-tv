@@ -25,8 +25,9 @@
     user-select: none;
   }
 
+  /* Android TV WebView already runs at 2x DPI (960x540 logical px); keep UI sleek and compact */
   html[data-tv="true"] {
-    font-size: 18px;
+    font-size: 13px;
   }
 }
 
@@ -289,7 +290,34 @@ button:not(:disabled) {
   box-shadow: 0 0 22px rgba(56, 189, 248, 0.45);
 }
 
-/* Android TV 10-Foot Remote Focus Rings (strictly scoped to [data-tv="true"]) */
+/* Android TV 10-Foot Remote Focus Rings, Smoked-Glass Transparency & Zero-Lag Transitions (strictly scoped to [data-tv="true"]) */
+[data-tv="true"] *,
+[data-tv="true"] .m3-spring,
+[data-tv="true"] .m3-primary-pill,
+[data-tv="true"] .m3-secondary-tonal,
+[data-tv="true"] .m3-tonal-active {
+  transition-duration: 50ms !important;
+}
+
+[data-tv="true"] main > .luma-scroll {
+  padding: 1.25rem 1.75rem !important;
+}
+
+[data-tv="true"] #luma-sidebar .luma-scroll::-webkit-scrollbar,
+[data-tv="true"] #luma-live-channel-drawer .luma-scroll::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+[data-tv="true"] main .bg-\[\#1A202E\] {
+  background-color: rgba(20, 26, 38, 0.72) !important;
+}
+
+[data-tv="true"] main .bg-\[\#232B3D\] {
+  background-color: rgba(32, 41, 60, 0.76) !important;
+}
+
 [data-tv="true"] button:focus,
 [data-tv="true"] input:focus,
 [data-tv="true"] select:focus,
@@ -299,14 +327,14 @@ button:not(:disabled) {
 [data-tv="true"] [role="button"]:focus,
 [data-tv="true"] [data-spatial="true"]:focus,
 [data-tv="true"] [tabindex="0"]:focus {
-  outline: 3px solid #7FD4FF !important;
-  outline-offset: 3px !important;
-  box-shadow: 0 0 0 6px rgba(127, 212, 255, 0.24) !important;
+  outline: 2px solid #7FD4FF !important;
+  outline-offset: 2px !important;
+  box-shadow: 0 0 0 3px rgba(127, 212, 255, 0.2) !important;
 }
 
 [data-tv="true"] input[data-tv-editing="true"]:focus,
 [data-tv="true"] textarea[data-tv-editing="true"]:focus {
-  outline: 3px solid #34D399 !important;
-  outline-offset: 3px !important;
-  box-shadow: 0 0 0 6px rgba(52, 211, 153, 0.28) !important;
+  outline: 2px solid #34D399 !important;
+  outline-offset: 2px !important;
+  box-shadow: 0 0 0 3px rgba(52, 211, 153, 0.24) !important;
 }

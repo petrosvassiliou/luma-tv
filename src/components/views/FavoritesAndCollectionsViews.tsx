@@ -50,6 +50,7 @@ import type {
   VodItem,
 } from '../../types/luma';
 import type { ChannelContextMenuTarget } from '../common/ChannelContextMenu';
+import { TvCollapsibleSearch } from '../common/TvCollapsibleSearch';
 
 interface FavoritesViewProps {
   designMode: PlatformDesignMode;
@@ -150,20 +151,14 @@ export const FavoritesView: React.FC<FavoritesViewProps> = ({
         </div>
 
         {totalFavorites > 0 && (
-          <div className="relative w-full max-w-xs">
-            <Search className="pointer-events-none absolute left-3.5 top-2.5 h-3.5 w-3.5 text-slate-400" />
-            <input
-              type="text"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder={t.searchPlaceholder}
-              className={
-                isM3
-                  ? 'h-8.5 w-full rounded-full bg-[#232B3D] pl-9 pr-4 text-xs text-white placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-[#7FD4FF]/60'
-                  : 'lg-capsule h-8.5 w-full rounded-full pl-9 pr-4 text-xs text-white placeholder:text-white/45 focus:outline-none'
-              }
-            />
-          </div>
+          <TvCollapsibleSearch
+            id="input-favorites-search"
+            value={query}
+            onChange={setQuery}
+            placeholder={t.searchPlaceholder}
+            designMode={designMode}
+            wrapperClassName="relative w-full max-w-xs"
+          />
         )}
       </div>
 

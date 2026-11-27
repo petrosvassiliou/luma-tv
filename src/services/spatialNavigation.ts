@@ -137,27 +137,26 @@ function getTvRegion(el: HTMLElement): TvRegion {
   return 'main';
 }
 
-function isTvCandidateRendered(el: HTMLElement, hasRealLayout: boolean): boolean {
-  if (el.closest('[hidden], [aria-hidden="true"]')) return false;
-  if (el.classList.contains('opacity-0') || el.closest('.pointer-events-none.opacity-0')) {
+function isTvCandidateRendered(
+  el: HTMLElement,
+  rect: DOMRect,
+  hasRealLayout: boolean
+): boolean {
+  if (el.hasAttribute('hidden') || el.getAttribute('aria-hidden') === 'true') {
     return false;
   }
-  const style = window.getComputedStyle(el);
-  if (style.display === 'none' || style.visibility === 'hidden') return false;
-  if (!hasRealLayout) return true;
-  const r = el.getBoundingClientRect();
-  if (r.width <= 0 || r.height <= 0) return false;
-
-  // Exclude items clipped far outside an ancestor scroll container so focus scrolls progressively
-  const scroller = el.closest<HTMLElement>('.overflow-y-auto, .luma-scroll');
-  if (scroller && scroller !== el) {
-    const sr = scroller.getBoundingClientRect();
-    if (sr.height > 0) {
-      if (r.bottom < sr.top - 48 || r.top > sr.bottom + 320) {
-        return false;
-      }
-    }
+  if (el.classList.contains('opacity-0')) {
+    return false;
   }
+  if (!hasRealLayout) {
+    if (el.closest('[hidden], [aria-hidden="true"], .pointer-events-none.opacity-0')) {
+      return false;
+    }
+    const style = window.getComputedStyle(el);
+    return style.display !== 'none' && style.visibility !== 'hidden';
+  }
+  if (rect.width <= 0 || rect.height <= 0) return false;
+  if (el.closest('.pointer-events-none.opacity-0')) return false;
   return true;
 }
 
@@ -166,7 +165,8 @@ function getActiveTvOverlayRoot(hasRealLayout: boolean): HTMLElement | null {
   for (const sel of TV_MODAL_SELECTORS) {
     const matches = document.querySelectorAll<HTMLElement>(sel);
     for (const m of matches) {
-      if (isTvCandidateRendered(m, hasRealLayout)) {
+      const r = m.getBoundingClientRect();
+      if (isTvCandidateRendered(m, r, hasRealLayout)) {
         chosen = m;
       }
     }
@@ -257,20 +257,24 @@ function pickBestTvCandidate(
     let score = 0;
     if (direction === 'right') {
       if (dx <= 6) continue;
-      score = dx + gapY * 2.4 + Math.abs(dy) * 0.35;
+      // Candidate must actually sit to the right (not stacked directly above/below in another row)
+      if (overlapY <= 2 && c.rect.x < origin.rect.x + origin.rect.width - 14) continue;
+      score = dx + (overlapY > 2 ? Math.abs(dy) * 0.4 : 500 + gapY * 6.0 + Math.abs(dy));
       if (c.region !== origin.region) score += 120;
     } else if (direction === 'left') {
       if (dx >= -6) continue;
-      score = -dx + gapY * 2.4 + Math.abs(dy) * 0.35;
+      // Candidate must actually sit to the left (prevents jumping up into wider inputs above)
+      if (overlapY <= 2 && c.rect.x + c.rect.width > origin.rect.x + 14) continue;
+      score = -dx + (overlapY > 2 ? Math.abs(dy) * 0.4 : 500 + gapY * 6.0 + Math.abs(dy));
       if (c.region !== origin.region) score += 120;
     } else if (direction === 'down') {
       if (dy <= 6) continue;
-      score = dy + gapX * 1.15 + Math.abs(dx) * 0.25;
-      if (origin.form && origin.form === c.form) score -= 140;
+      score = dy * 2.2 + gapX * 0.75 + Math.abs(dx) * 0.18;
+      if (origin.form && origin.form === c.form) score -= 180;
     } else {
       if (dy >= -6) continue;
-      score = -dy + gapX * 1.15 + Math.abs(dx) * 0.25;
-      if (origin.form && origin.form === c.form) score -= 140;
+      score = -dy * 2.2 + gapX * 0.75 + Math.abs(dx) * 0.18;
+      if (origin.form && origin.form === c.form) score -= 180;
       if (c.region !== origin.region) score += 260;
     }
 
@@ -367,15 +371,16 @@ export function useSpatialDpadFocus(
         sampleBtn && sampleBtn.getBoundingClientRect().width > 0
       );
       const overlayRoot = getActiveTvOverlayRoot(hasRealLayout);
-      const queryRoot: ParentNode = overlayRoot ?? document;
-      const raw = Array.from(queryRoot.querySelectorAll<HTMLElement>(TV_FOCUSABLE_SELECTOR));
+      const mainEl = document.querySelector<HTMLElement>('main');
+      const queryRoot: ParentNode = overlayRoot ?? mainEl ?? document;
+      const raw = queryRoot.querySelectorAll<HTMLElement>(TV_FOCUSABLE_SELECTOR);
       const items: TvCandidateMeta[] = [];
 
       for (let i = 0; i < raw.length; i++) {
         const el = raw[i];
-        if (!isTvCandidateRendered(el, hasRealLayout)) continue;
-        ensureTvTabbable(el);
         const r = el.getBoundingClientRect();
+        if (!isTvCandidateRendered(el, r, hasRealLayout)) continue;
+        ensureTvTabbable(el);
         items.push({
           el,
           id: el.id || `tv-sp-${i}`,
@@ -398,14 +403,45 @@ export function useSpatialDpadFocus(
         delete target.dataset.tvEditing;
       }
       target.focus({ preventScroll: true });
-      target.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'smooth' });
+      // Instant zero-lag scroll alignment (avoids 350ms smooth-scroll animation lag on Android TV)
+      target.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'auto' });
+    };
+
+    const pickPreferredInitialCandidate = (
+      items: TvCandidateMeta[],
+      overlayRoot: HTMLElement | null
+    ): TvCandidateMeta | undefined => {
+      if (overlayRoot?.id === 'luma-sidebar') {
+        const activeNav = overlayRoot.querySelector<HTMLElement>(
+          `#nav-${activeSection ?? 'live'}`
+        );
+        const matched = activeNav ? items.find((c) => c.el === activeNav) : undefined;
+        if (matched) return matched;
+      }
+      if (overlayRoot?.id === 'luma-live-channel-drawer') {
+        const activeCh = overlayRoot.querySelector<HTMLElement>('.m3-tonal-active[data-channel-id]');
+        const matched = activeCh ? items.find((c) => c.el === activeCh) : undefined;
+        if (matched) return matched;
+      }
+      // Never select search/text <input> boxes by default on screen open unless no other control exists
+      return (
+        items.find(
+          (c) =>
+            c.region === 'main' &&
+            !isTvTextEditableInput(c.el) &&
+            c.el.id !== 'btn-tv-open-menu'
+        ) ??
+        items.find((c) => !isTvTextEditableInput(c.el)) ??
+        items[0]
+      );
     };
 
     const ensureInitialTvFocus = () => {
       if (document.documentElement.dataset.tvLiveBare === 'true') {
         const { overlayRoot, items } = collectTvCandidates();
         if (overlayRoot && items.length > 0) {
-          focusTvElement(items[0].el);
+          const target = pickPreferredInitialCandidate(items, overlayRoot);
+          if (target) focusTvElement(target.el);
         }
         return;
       }
@@ -415,16 +451,14 @@ export function useSpatialDpadFocus(
 
       if (overlayRoot) {
         if (!active || !overlayRoot.contains(active)) {
-          focusTvElement(items[0].el);
+          const target = pickPreferredInitialCandidate(items, overlayRoot);
+          if (target) focusTvElement(target.el);
         }
         return;
       }
 
       if (!active || active === document.body || !document.body.contains(active)) {
-        const preferred =
-          items.find((c) => c.region === 'main') ??
-          items.find((c) => c.region === 'sidebar') ??
-          items[0];
+        const preferred = pickPreferredInitialCandidate(items, null);
         if (preferred) {
           focusTvElement(preferred.el);
         }
@@ -490,7 +524,7 @@ export function useSpatialDpadFocus(
       let winner = pickBestTvCandidate(origin, items, dir, allowUpToTitlebar);
 
       if (!winner && dir === 'up' && !allowUpToTitlebar && scroller) {
-        scroller.scrollBy({ top: -260, behavior: 'smooth' });
+        scroller.scrollTop = Math.max(0, scroller.scrollTop - 200);
         return true;
       }
 
@@ -498,7 +532,7 @@ export function useSpatialDpadFocus(
         const canScrollMore =
           scroller.scrollTop + scroller.clientHeight < scroller.scrollHeight - 6;
         if (canScrollMore) {
-          scroller.scrollBy({ top: 260, behavior: 'smooth' });
+          scroller.scrollTop = scroller.scrollTop + 200;
           return true;
         }
       }
@@ -634,15 +668,21 @@ export function useSpatialDpadFocus(
         return;
       }
 
-      // Native <select>: allow Enter/Space to open, Up/Down/Left/Right navigate between controls
-      if (isOkKey && active && active !== document.body) {
+      // Explicitly activate buttons, links, checkboxes, and cards on TV OK/DPAD_CENTER press
+      if (isOkKey && !e.repeat && active && active !== document.body) {
         const tag = active.tagName;
         if (tag === 'INPUT' && (active as HTMLInputElement).type === 'checkbox') {
           e.preventDefault();
           active.click();
           return;
         }
-        if (tag !== 'BUTTON' && tag !== 'A' && tag !== 'SELECT' && tag !== 'INPUT') {
+        if (tag === 'BUTTON' || tag === 'A') {
+          e.preventDefault();
+          e.stopPropagation();
+          active.click();
+          return;
+        }
+        if (tag !== 'SELECT' && tag !== 'INPUT') {
           e.preventDefault();
           active.click();
           return;
@@ -657,12 +697,28 @@ export function useSpatialDpadFocus(
       }
     };
 
+    const onTvImeClosed = () => {
+      const active = document.activeElement as HTMLElement | null;
+      if (isTvTextEditableInput(active)) {
+        delete active.dataset.tvEditing;
+        if (active.id === 'input-cloud-email' && active.value.trim()) {
+          const pw = document.getElementById('input-cloud-password');
+          if (pw) focusTvElement(pw);
+        } else if (active.id === 'input-cloud-password' && active.value.length > 0) {
+          const submitBtn = document.getElementById('btn-cloud-submit-auth');
+          if (submitBtn) focusTvElement(submitBtn);
+        }
+      }
+    };
+
     window.addEventListener('keydown', onTvKeyDown, true);
     window.addEventListener('focusout', onTvFocusOut, true);
+    window.addEventListener('luma-tv-ime-closed', onTvImeClosed);
     return () => {
       window.cancelAnimationFrame(rafFocus);
       window.removeEventListener('keydown', onTvKeyDown, true);
       window.removeEventListener('focusout', onTvFocusOut, true);
+      window.removeEventListener('luma-tv-ime-closed', onTvImeClosed);
     };
   }, [enabled, modalBlocked, tvMode, activeSection]);
 }

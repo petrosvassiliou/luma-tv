@@ -13,7 +13,6 @@ import {
   Play,
   Radio,
   RotateCcw,
-  Search,
   Sparkles,
   Star,
   Tv,
@@ -35,6 +34,7 @@ import type {
   VodItem,
 } from '../../types/luma';
 import type { ChannelContextMenuTarget } from '../common/ChannelContextMenu';
+import { TvCollapsibleSearch } from '../common/TvCollapsibleSearch';
 
 interface HomeHubViewProps {
   designMode: PlatformDesignMode;
@@ -712,35 +712,16 @@ export const SeriesBrowserView: React.FC<SeriesBrowserViewProps> = ({
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <div className="relative w-64 sm:w-72">
-            <Search className="pointer-events-none absolute left-3.5 top-2.5 h-3.5 w-3.5 text-slate-400" />
-            <input
-              type="text"
-              value={query}
-              onChange={(e) => {
-                setQuery(e.target.value);
-                setPage(0);
-              }}
-              placeholder={t.searchPlaceholder}
-              className={
-                isM3
-                  ? 'h-9 w-full rounded-full bg-[#232B3D] pl-9 pr-7 text-xs text-white placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-[#7FD4FF]/60'
-                  : 'lg-capsule h-9 w-full rounded-full pl-9 pr-7 text-xs text-white placeholder:text-white/45 focus:outline-none'
-              }
-            />
-            {query && (
-              <button
-                type="button"
-                onClick={() => {
-                  setQuery('');
-                  setPage(0);
-                }}
-                className="absolute right-3 top-2 text-xs text-slate-400 hover:text-white"
-              >
-                ✕
-              </button>
-            )}
-          </div>
+          <TvCollapsibleSearch
+            id="input-series-search"
+            value={query}
+            onChange={(val) => {
+              setQuery(val);
+              setPage(0);
+            }}
+            placeholder={t.searchPlaceholder}
+            designMode={designMode}
+          />
 
           {derivedGenres.length > 1 && (
             <select

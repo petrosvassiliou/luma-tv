@@ -920,9 +920,13 @@ describe('Luma TV End-to-End UI & Button Smoke Test', () => {
       expect(host.querySelector('#btn-cast-airplay')).toBeNull();
       expect(host.querySelector('#btn-inapp-pip')).toBeNull();
 
-      // 2. Pressing OK/Enter on full-screen Live TV opens the on-demand Channel Overlay; Back closes it without exiting
+      // 2. Pressing OK/Enter on full-screen Live TV opens the on-demand Channel Overlay with Search collapsed to a shortcut button
       pressTvKey('Enter');
       expect(host.querySelector('#luma-live-channel-drawer')).not.toBeNull();
+      expect(host.querySelector('#btn-tv-channel-filter-toggle')).not.toBeNull();
+      expect(
+        host.querySelector('#luma-live-channel-drawer input[type="text"]')
+      ).toBeNull();
       let backHandled = false;
       act(() => {
         backHandled = Boolean(tvWindow.__lumaHandleAndroidTvBack?.());
@@ -931,15 +935,21 @@ describe('Luma TV End-to-End UI & Button Smoke Test', () => {
       expect(host.querySelector('#luma-live-channel-drawer')).toBeNull();
       expect(exitApp).not.toHaveBeenCalled();
 
-      // 3. Pressing ArrowLeft on full-screen Live TV summons the floating TV Navigation Menu
+      // 3. Pressing ArrowLeft summons floating TV Menu; Movies view uses Search shortcut button instead of auto-focused input
       pressTvKey('ArrowLeft');
       expect(host.querySelector('#luma-sidebar')).not.toBeNull();
+      clickEl(host.querySelector('#nav-vod'), '#nav-vod');
+      expect(host.querySelector('#input-vod-search-trigger')).not.toBeNull();
+      expect(host.querySelector('#input-vod-search')).toBeNull();
 
-      // Select Settings -> TV Navigation Menu auto-hides so Settings fills the full screen
+      // Open TV Menu again and go to Settings
+      act(() => {
+        window.dispatchEvent(new CustomEvent('luma-tv-open-nav'));
+      });
       clickEl(host.querySelector('#nav-settings'), '#nav-settings');
       expect(host.querySelector('#luma-sidebar')).toBeNull();
 
-      // 4. D-Pad navigates directly onto Cloud Sync Email -> Password -> Submit button, and OK opens TV keyboard
+      // 4. D-Pad navigates onto Cloud Sync Email -> Password -> Submit button, IME Done hands off focus, and OK triggers Sign In!
       const signInTab = host.querySelector('#btn-cloud-tab-signin') as HTMLElement | null;
       const emailInput = host.querySelector('#input-cloud-email') as HTMLInputElement | null;
       const passwordInput = host.querySelector(
@@ -958,30 +968,34 @@ describe('Luma TV End-to-End UI & Button Smoke Test', () => {
       act(() => {
         signInTab!.focus();
       });
-      // Navigate Sign In -> Create Account -> Email Input -> Password Input -> Submit Button using D-Pad arrows!
       pressTvKey('ArrowDown');
       pressTvKey('ArrowDown');
       expect(document.activeElement).toBe(emailInput);
       expect(emailInput!.dataset.tvEditing).toBeUndefined();
 
-      // Pressing OK/Enter on Email input enters TV editing mode & opens Android TV keyboard (without submitting!)
+      // Pressing OK/Enter on Email input opens Android TV keyboard; typing + Gboard Done advances to Password!
       pressTvKey('Enter');
       expect(emailInput!.dataset.tvEditing).toBe('true');
       expect(showTvKeyboard).toHaveBeenCalledTimes(1);
-
-      // Pressing Back while typing exits TV editing mode & hides keyboard without leaving Settings!
+      setInputValue(emailInput!, 'petros@example.com');
       act(() => {
-        tvWindow.__lumaHandleAndroidTvBack?.();
+        window.dispatchEvent(new CustomEvent('luma-tv-ime-closed'));
       });
-      expect(emailInput!.dataset.tvEditing).toBeUndefined();
-      expect(hideTvKeyboard).toHaveBeenCalledTimes(1);
-      expect(host.querySelector('#input-cloud-email')).not.toBeNull();
-
-      // Continue navigating down to Password input and then Submit button
-      pressTvKey('ArrowDown');
       expect(document.activeElement).toBe(passwordInput);
-      pressTvKey('ArrowDown');
+
+      // Typing Password + Gboard Done advances directly to Sign In & Sync Devices button!
+      pressTvKey('Enter');
+      setInputValue(passwordInput!, 'secret123');
+      act(() => {
+        window.dispatchEvent(new CustomEvent('luma-tv-ime-closed'));
+      });
       expect(document.activeElement).toBe(submitAuthBtn);
+
+      // Pressing OK/Enter on Sign In & Sync Devices executes submission!
+      const submitClickSpy = vi.fn();
+      submitAuthBtn!.addEventListener('click', submitClickSpy);
+      pressTvKey('Enter');
+      expect(submitClickSpy).toHaveBeenCalledTimes(1);
 
       // 5. Pressing Back in Settings returns to Full-Screen Live TV (NEVER exits the app!)
       act(() => {

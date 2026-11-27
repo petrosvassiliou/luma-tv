@@ -8,7 +8,6 @@ import {
   MoreVertical,
   Play,
   Radio,
-  Search,
   Star,
   ZoomIn,
   ZoomOut,
@@ -23,6 +22,7 @@ import {
 import { searchChannelsRanked } from '../../services/channelSearch';
 import type { Channel, EpgProgram, PlatformDesignMode } from '../../types/luma';
 import type { ChannelContextMenuTarget } from '../common/ChannelContextMenu';
+import { TvCollapsibleSearch } from '../common/TvCollapsibleSearch';
 
 interface VirtualizedEpgGridProps {
   designMode: PlatformDesignMode;
@@ -226,21 +226,19 @@ export const VirtualizedEpgGrid: React.FC<VirtualizedEpgGridProps> = ({
         }`}
       >
         <div className="flex items-center gap-3">
-          <div className="relative flex items-center">
-            <Search className="pointer-events-none absolute left-3 h-3.5 w-3.5 text-slate-400" />
-            <input
-              id="input-epg-quick-filter"
-              type="text"
-              value={quickFilter}
-              onChange={(e) => setQuickFilter(e.target.value)}
-              placeholder={t.epgFilter}
-              className={
-                isM3
-                  ? 'h-8 w-48 rounded-full bg-[#232B3D] pl-8 pr-3 text-xs text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[#7FD4FF]/60 sm:w-56'
-                  : 'lg-capsule h-8 w-48 rounded-full pl-8 pr-3 text-xs text-white placeholder:text-white/45 focus:outline-none sm:w-56'
-              }
-            />
-          </div>
+          <TvCollapsibleSearch
+            id="input-epg-quick-filter"
+            value={quickFilter}
+            onChange={setQuickFilter}
+            placeholder={t.epgFilter}
+            designMode={designMode}
+            wrapperClassName="relative flex items-center"
+            inputClassName={
+              isM3
+                ? 'h-8 w-48 rounded-full bg-[#232B3D] pl-8 pr-7 text-xs text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[#7FD4FF]/60 sm:w-56'
+                : 'lg-capsule h-8 w-48 rounded-full pl-8 pr-7 text-xs text-white placeholder:text-white/45 focus:outline-none sm:w-56'
+            }
+          />
 
           <span className="hidden text-[11px] text-slate-300/80 md:inline luma-tabular">
             <strong className="font-semibold text-white">{visibleRows.length}</strong> /{' '}
