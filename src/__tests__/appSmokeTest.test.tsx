@@ -1113,4 +1113,61 @@ describe('Luma TV End-to-End UI & Button Smoke Test', () => {
       delete tvWindow.LumaAndroidWindow;
     }
   });
+
+  it('reserves macOS Tauri native traffic-light clearance in both Liquid Glass and Material 3 modes and ignores stale synced m3-expressive overrides', async () => {
+    await act(async () => {
+      root!.unmount();
+    });
+
+    Object.defineProperty(navigator, 'userAgent', {
+      configurable: true,
+      value:
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7) AppleWebKit/605.1.15 (KHTML, like Gecko)',
+    });
+    Object.defineProperty(navigator, 'platform', {
+      configurable: true,
+      value: 'MacIntel',
+    });
+
+    // Simulate a polluted legacy `luma.design.v1 = 'm3-expressive'` previously pushed from Android TV Cloud Sync
+    localStorage.setItem('luma.design.v1', 'm3-expressive');
+
+    const tauriWin = window as unknown as {
+      __TAURI_INTERNALS__?: {
+        invoke: (cmd: string) => Promise<unknown>;
+      };
+    };
+    tauriWin.__TAURI_INTERNALS__ = {
+      invoke: async (cmd: string) => {
+        if (cmd === 'plugin:window|is_fullscreen') return false;
+        return null;
+      },
+    };
+
+    try {
+      root = createRoot(host);
+      await act(async () => {
+        root!.render(<AppComponent />);
+      });
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 40));
+      });
+
+      // 1. Boots cleanly into native Apple Liquid Glass (`liquid-glass`) with traffic-light spacer!
+      expect(host.firstElementChild?.getAttribute('data-design')).toBe('liquid-glass');
+      expect(host.querySelector('#luma-macos-traffic-light-spacer')).not.toBeNull();
+
+      // 2. Even if user manually switches to Material 3 Expressive in Settings on macOS,
+      // the native traffic-light spacer MUST remain present so red/yellow/green buttons never overlap!
+      clickEl(host.querySelector('#nav-settings'), '#nav-settings');
+      const m3Btn = Array.from(host.querySelectorAll('main button')).find((b) =>
+        b.textContent?.includes('Material 3 Expressive')
+      );
+      clickEl(m3Btn ?? null, 'Switch macOS to Material 3 Expressive');
+      expect(host.firstElementChild?.getAttribute('data-design')).toBe('m3-expressive');
+      expect(host.querySelector('#luma-macos-traffic-light-spacer')).not.toBeNull();
+    } finally {
+      delete tauriWin.__TAURI_INTERNALS__;
+    }
+  });
 });

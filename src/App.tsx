@@ -176,7 +176,12 @@ export function App() {
   const activeCloudUidRef = useRef<string | null>(null);
   const [designMode, setDesignModeState] = useState<PlatformDesignMode>(() => {
     try {
-      const saved = localStorage.getItem('luma.design.v1') as PlatformDesignMode | null;
+      // Use Apple-scoped key `luma.design.apple.v2` so older `luma.design.v1` values
+      // previously overwritten by Android TV Cloud Sync ('m3-expressive') automatically
+      // reset to macOS's native Apple Liquid Glass (`liquid-glass`).
+      const saved = platformEnv.isApple
+        ? (localStorage.getItem('luma.design.apple.v2') as PlatformDesignMode | null)
+        : null;
       return resolveAllowedDesignMode(
         saved ?? platformEnv.defaultDesignMode,
         platformEnv.isApple
@@ -187,18 +192,15 @@ export function App() {
   });
 
   const handleChangeDesignMode = useCallback(
-    (requested: PlatformDesignMode, fromSync = false) => {
+    (requested: PlatformDesignMode, _fromSync = false) => {
       const allowed = resolveAllowedDesignMode(requested, platformEnv.isApple);
       setDesignModeState(allowed);
-      try {
-        localStorage.setItem('luma.design.v1', allowed);
-      } catch {
-        // Ignore
-      }
-      if (!fromSync && platformEnv.isApple) {
-        recordLocalSyncMutation(activeCloudUidRef.current, {
-          scalarFields: ['preferredDesign'],
-        });
+      if (platformEnv.isApple) {
+        try {
+          localStorage.setItem('luma.design.apple.v2', allowed);
+        } catch {
+          // Ignore
+        }
       }
     },
     [platformEnv.isApple]
@@ -2734,9 +2736,9 @@ export function App() {
           // Ignore
         }
       }
-      if (payload.preferredDesign && platformEnv.isApple) {
-        handleChangeDesignMode(payload.preferredDesign, true);
-      }
+      // Note: `preferredDesign` is intentionally NOT applied across devices from Cloud Sync
+      // so signing in on Android TV / ChromeOS (`m3-expressive`) never overwrites macOS's
+      // native Apple Liquid Glass (`liquid-glass`) theme.
       if (
         payload.dualSlotIds &&
         payload.dualSlotIds.length === 2 &&
@@ -2847,12 +2849,10 @@ export function App() {
       }
     },
     [
-      handleChangeDesignMode,
       handleSelectSourceId,
       handleUpdateBouquets,
       handleUpdateParental,
       handleUpdatePreferences,
-      platformEnv.isApple,
       reconcileSyncedPlaylists,
     ]
   );
@@ -2953,7 +2953,7 @@ export function App() {
         parentalConfig,
         preferences,
         epgOffsetHours,
-        preferredDesign: designMode,
+        preferredDesign: platformEnv.isApple ? designMode : 'liquid-glass',
         dualSlotIds,
         multiviewSlotIds,
         activeSourceId,
@@ -2983,6 +2983,7 @@ export function App() {
       multiviewSlotIds,
       parentalConfig,
       persistedSources,
+      platformEnv.isApple,
       preferences,
       reminders,
       watchHistory,
@@ -4195,6 +4196,7 @@ export function App() {
       {!stageFullscreen && !platformEnv.isAndroidTv && (
         <CustomTitlebar
           designMode={designMode}
+          isAppleDevice={platformEnv.isApple}
           locale={preferences.locale}
           onSelectLocale={(nextLocale) =>
             handleUpdatePreferences({

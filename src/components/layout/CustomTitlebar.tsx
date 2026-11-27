@@ -31,6 +31,7 @@ export interface QuickPlaylistOption {
 
 interface CustomTitlebarProps {
   designMode: PlatformDesignMode;
+  isAppleDevice?: boolean;
   locale: LumaLocale;
   onSelectLocale: (locale: LumaLocale) => void;
   sleepRemainingSec: number | null;
@@ -47,6 +48,7 @@ interface CustomTitlebarProps {
 
 const CustomTitlebarInner: React.FC<CustomTitlebarProps> = ({
   designMode,
+  isAppleDevice = false,
   locale,
   onSelectLocale,
   sleepRemainingSec,
@@ -67,22 +69,48 @@ const CustomTitlebarInner: React.FC<CustomTitlebarProps> = ({
   const [playlistMenuOpen, setPlaylistMenuOpen] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const menuContainerRef = useRef<HTMLDivElement | null>(null);
-  const reserveNativeTrafficLights = !isM3 && isTauriNativeRuntime() && !isFullscreen;
+  const isMacNativeWindow =
+    (isAppleDevice || !isM3) &&
+    (isTauriNativeRuntime() ||
+      (typeof window !== 'undefined' &&
+        (window.location?.protocol === 'tauri:' ||
+          window.location?.hostname === 'tauri.localhost')));
+  const reserveNativeTrafficLights = isMacNativeWindow && !isFullscreen;
 
   useEffect(() => {
+    let cancelled = false;
     const updateFs = () => {
       const htmlFs = Boolean(document.fullscreenElement);
-      const macNativeFs =
-        typeof window !== 'undefined' &&
-        typeof screen !== 'undefined' &&
-        Math.abs(window.innerHeight - screen.height) <= 2 &&
-        Math.abs(window.innerWidth - screen.width) <= 2;
-      setIsFullscreen(htmlFs || macNativeFs);
+      const tauriInvoke = (
+        window as unknown as {
+          __TAURI_INTERNALS__?: {
+            invoke?: <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
+          };
+        }
+      ).__TAURI_INTERNALS__?.invoke;
+
+      if (tauriInvoke) {
+        tauriInvoke<boolean>('plugin:window|is_fullscreen', { label: 'main' })
+          .then((winFs) => {
+            if (!cancelled) {
+              setIsFullscreen(Boolean(htmlFs || winFs));
+            }
+          })
+          .catch(() => {
+            if (!cancelled) {
+              setIsFullscreen(htmlFs);
+            }
+          });
+        return;
+      }
+
+      setIsFullscreen(htmlFs);
     };
     updateFs();
     window.addEventListener('resize', updateFs);
     document.addEventListener('fullscreenchange', updateFs);
     return () => {
+      cancelled = true;
       window.removeEventListener('resize', updateFs);
       document.removeEventListener('fullscreenchange', updateFs);
     };
@@ -122,14 +150,20 @@ const CustomTitlebarInner: React.FC<CustomTitlebarProps> = ({
       data-tauri-drag-region
       className={
         isM3
-          ? 'app-drag-region m3-surface-low relative z-30 flex h-13 shrink-0 items-center justify-between gap-4 px-4'
+          ? `app-drag-region m3-surface-low relative z-30 flex shrink-0 items-center justify-between gap-4 px-4 ${
+              reserveNativeTrafficLights ? 'h-[60px]' : 'h-13'
+            }`
           : 'app-drag-region lg-pane relative z-30 mx-2.5 mt-2 flex h-11 shrink-0 items-center justify-between gap-4 rounded-[18px] px-3.5'
       }
     >
       {/* Left Region: Native macOS Traffic Light Clearance + Sidebar + Brand */}
       <div className="app-no-drag flex items-center gap-2.5">
         {reserveNativeTrafficLights && (
-          <div className="w-[70px] shrink-0" aria-hidden="true" />
+          <div
+            id="luma-macos-traffic-light-spacer"
+            className={isM3 ? 'w-[76px] shrink-0' : 'w-[70px] shrink-0'}
+            aria-hidden="true"
+          />
         )}
 
         <button
