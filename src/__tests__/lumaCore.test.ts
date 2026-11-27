@@ -18,6 +18,7 @@ import {
   resolveBufferProfileSettings,
   rewriteHlsManifestUrls,
   shouldProactivelyProxyStream,
+  tryConvertXtreamTsToHlsUrl,
 } from '../engine/corsProxy';
 import { selectSupportedRecorderMimeType } from '../engine/dvrRecorder';
 import {
@@ -841,5 +842,21 @@ describe('Luma TV v0.1 beta — Zero-Knowledge AES-256-GCM Sync Vault & 20k EPG 
       runtimePlatform: 'macos',
     });
     expect(stableOnly.updateAvailable).toBe(false);
+  });
+
+  it('converts Xtream MPEG-TS live URLs to HLS .m3u8 for hardware HEVC fallback when MSE plays audio only', () => {
+    expect(
+      tryConvertXtreamTsToHlsUrl('http://provider.example:8080/live/alice/pw/9001.ts')
+    ).toBe('http://provider.example:8080/live/alice/pw/9001.m3u8');
+    expect(
+      tryConvertXtreamTsToHlsUrl(
+        'http://provider.example:8080/get.php?username=alice&password=pw&output=ts'
+      )
+    ).toBe(
+      'http://provider.example:8080/get.php?username=alice&password=pw&output=m3u8'
+    );
+    expect(
+      tryConvertXtreamTsToHlsUrl('http://provider.example:8080/live/alice/pw/9001.m3u8')
+    ).toBeNull();
   });
 });

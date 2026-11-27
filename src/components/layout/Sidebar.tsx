@@ -163,7 +163,16 @@ const SidebarInner: React.FC<SidebarProps> = ({
           id="luma-sidebar"
           data-tv-modal="true"
           onClick={(e) => e.stopPropagation()}
-          className="fixed inset-y-5 left-5 z-50 flex w-[228px] flex-col overflow-hidden rounded-[24px] bg-[#0A0E17]/62 p-3 shadow-[0_20px_60px_rgba(0,0,0,0.75)] ring-1 ring-white/15 backdrop-blur-md"
+          onKeyDown={(e) => {
+            // Pressing ◀ Left inside the left TV Menu (i.e. ◀◀ double-Left from Live TV) opens Global Search!
+            if (e.key === 'ArrowLeft' && !e.repeat && onOpenCommandBar) {
+              e.preventDefault();
+              e.stopPropagation();
+              onCloseTvMenu?.();
+              onOpenCommandBar();
+            }
+          }}
+          className="fixed inset-y-4 left-4 z-50 flex w-[228px] flex-col overflow-hidden rounded-[22px] bg-[#0B101B]/88 p-3 ring-1 ring-white/15"
         >
           <div className="mb-2 flex items-center justify-between gap-2 px-1.5">
             <LumaLogo size={20} />
@@ -176,15 +185,17 @@ const SidebarInner: React.FC<SidebarProps> = ({
               {onOpenCommandBar && (
                 <button
                   id="tv-nav-search"
+                  data-tv-skip-initial="true"
                   type="button"
                   onClick={() => {
                     onCloseTvMenu?.();
                     onOpenCommandBar();
                   }}
-                  className="flex h-7.5 w-7.5 items-center justify-center rounded-full bg-white/12 text-[#7FD4FF] ring-1 ring-white/15 hover:bg-white/20"
-                  title={t.searchPlaceholder}
+                  className="inline-flex h-6.5 items-center gap-1 rounded-full bg-white/12 px-2 text-[10px] font-semibold text-[#7FD4FF] ring-1 ring-white/15 hover:bg-white/20"
+                  title={`${t.searchPlaceholder} (◀)`}
                 >
-                  <Search className="h-3.5 w-3.5" />
+                  <span>◀</span>
+                  <Search className="h-3 w-3" />
                 </button>
               )}
             </div>

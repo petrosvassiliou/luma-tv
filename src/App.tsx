@@ -3655,9 +3655,12 @@ export function App() {
       } else if (action === 'info') {
         window.dispatchEvent(new CustomEvent('luma-tv-wake-hud'));
       } else if (action === 'search') {
-        setTvNavOpen(false);
-        setTvChannelOverlayOpen(false);
-        setCommandBarOpen(true);
+        if (tvChannelOverlayOpen) {
+          window.dispatchEvent(new CustomEvent('luma-tv-open-channel-search'));
+        } else {
+          setTvNavOpen(false);
+          setCommandBarOpen(true);
+        }
       } else if (action === 'play-pause') {
         const playBtn = document.getElementById('btn-play-pause');
         if (playBtn) {
@@ -3681,6 +3684,31 @@ export function App() {
       }
 
       const isOk = e.key === 'Enter' || e.key === 'Select' || e.keyCode === 23;
+
+      // Rapid ◀◀ (Left while TV Menu is open) immediately opens Global Search even before RAF focus settles
+      if (tvNavOpen && e.key === 'ArrowLeft' && !e.repeat) {
+        e.preventDefault();
+        e.stopPropagation();
+        setTvNavOpen(false);
+        setCommandBarOpen(true);
+        return;
+      }
+
+      // Rapid ▶▶ (Right while Channel Overlay is open & not editing text) immediately opens Channel Search
+      if (
+        tvChannelOverlayOpen &&
+        e.key === 'ArrowRight' &&
+        !e.repeat &&
+        !(
+          isTvTextEditableInput(document.activeElement) &&
+          (document.activeElement as HTMLElement).dataset.tvEditing === 'true'
+        )
+      ) {
+        e.preventDefault();
+        e.stopPropagation();
+        window.dispatchEvent(new CustomEvent('luma-tv-open-channel-search'));
+        return;
+      }
 
       // When watching seekable VOD/Series/Catch-Up in full screen with TV player bar hidden,
       // pressing OK / Up / Down reveals and focuses the interactive TV On-Screen Player Bar.
@@ -4286,9 +4314,11 @@ export function App() {
                 id="btn-tv-open-menu"
                 type="button"
                 onClick={() => setTvNavOpen(true)}
-                className="pointer-events-auto inline-flex items-center gap-2 rounded-full bg-[#1A202E]/90 px-3.5 py-1.5 text-[11px] font-semibold text-slate-200 shadow-lg ring-1 ring-white/15 backdrop-blur-md hover:bg-[#232B3D]"
+                className="pointer-events-auto inline-flex items-center gap-2 rounded-full bg-[#1A202E]/92 px-3.5 py-1.5 text-[11px] font-semibold text-slate-200 ring-1 ring-white/15 hover:bg-[#232B3D]"
               >
                 <span>◀ Menu</span>
+                <span className="opacity-45">·</span>
+                <span>◀◀ Search</span>
                 <span className="opacity-45">·</span>
                 <span>Back → Live TV</span>
               </button>

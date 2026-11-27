@@ -8,6 +8,7 @@ import {
   isNonNativeBrowserContainer,
   resolveBufferProfileSettings,
   shouldProactivelyProxyStream,
+  tryConvertXtreamTsToHlsUrl,
   type StreamDriverKind,
 } from './corsProxy';
 import {
@@ -30,6 +31,14 @@ declare global {
 
 export function isTauriNativeRuntime(): boolean {
   return typeof window !== 'undefined' && Boolean(window.__TAURI_INTERNALS__);
+}
+
+function isBuiltInDemoStreamUrl(rawUrl: string): boolean {
+  return (
+    rawUrl.includes('test-streams.mux.dev') ||
+    rawUrl.includes('akamaized.net') ||
+    rawUrl.includes('commondatastorage.googleapis.com')
+  );
 }
 
 const EXTERNAL_SUB_BASE_INDEX = 1000;
@@ -66,8 +75,11 @@ export class LumaPlayerEngine {
   private video: HTMLVideoElement | null = null;
   private statsTimer: number | null = null;
   private fallbackTimer: number | null = null;
+  private videoWatchdogTimer: number | null = null;
   private unlockAudioCleanup: (() => void) | null = null;
   private retriedWithProxy = false;
+  private retriedAudioOnlyRecovery = false;
+  private retriedNativeMediaFallback = false;
   private retriedTranscodeStage: 'none' | 'remux' | 'hw' = 'none';
   private userTranscodeMode: NativeTranscodeMode = 'auto';
   private lastLoadArgs: {
@@ -311,6 +323,8 @@ export class LumaPlayerEngine {
       explicitStreamType,
     };
     this.retriedWithProxy = false;
+    this.retriedAudioOnlyRecovery = false;
+    this.retriedNativeMediaFallback = false;
     this.retriedTranscodeStage = 'none';
     const initialForced =
       this.userTranscodeMode === 'auto' ? 'none' : this.userTranscodeMode;
@@ -322,7 +336,8 @@ export class LumaPlayerEngine {
       explicitStreamType,
       false,
       initialForced,
-      0
+      0,
+      false
     );
   }
 
@@ -366,6 +381,29 @@ export class LumaPlayerEngine {
     return false;
   }
 
+  private tryFallbackToNativeVideo(
+    video: HTMLVideoElement,
+    rawStreamUrl: string,
+    proxyConfig: EngineProxyConfig,
+    autoPlay: boolean
+  ): boolean {
+    if (this.retriedNativeMediaFallback) return false;
+    this.retriedNativeMediaFallback = true;
+    const hlsCandidate = tryConvertXtreamTsToHlsUrl(rawStreamUrl) ?? rawStreamUrl;
+    this.loadInternal(
+      video,
+      hlsCandidate,
+      proxyConfig,
+      autoPlay,
+      'hls',
+      this.retriedWithProxy,
+      'none',
+      0,
+      true
+    );
+    return true;
+  }
+
   private loadInternal(
     video: HTMLVideoElement,
     rawStreamUrl: string,
@@ -374,7 +412,8 @@ export class LumaPlayerEngine {
     explicitStreamType: 'hls' | 'mpegts' | undefined,
     forceProxy: boolean,
     transcodeStage: 'none' | 'remux' | 'hw',
-    startOffsetSec: number
+    startOffsetSec: number,
+    forceNativeVideo = false
   ) {
     const desiredMuted = video.muted;
     this.destroyDriversOnly();
@@ -468,10 +507,65 @@ export class LumaPlayerEngine {
       errorMessage: undefined,
     });
 
-    const fallbackDelayMs = activeTranscode !== 'none' ? 8500 : 3400;
+    const isDemoUrl = isBuiltInDemoStreamUrl(rawStreamUrl);
+    const fallbackDelayMs =
+      activeTranscode !== 'none' ? 12000 : isDemoUrl ? 3800 : 14000;
 
-    // Graceful Studio Synth Fallback if external media CDN is blocked by sandbox/firewall
+    const markPlaying = () => {
+      if (!video.muted && this.unlockAudioCleanup) {
+        this.unlockAudioCleanup();
+      }
+      if (this.fallbackTimer !== null) {
+        window.clearTimeout(this.fallbackTimer);
+        this.fallbackTimer = null;
+      }
+      this.emit({
+        engine: forceNativeVideo ? 'Native Safari HLS' : engineLabel,
+        state: 'playing',
+        width: video.videoWidth || this.telemetry.width,
+        height: video.videoHeight || this.telemetry.height,
+      });
+
+      // Audio-Only / HEVC MSE Watchdog: if MSE is playing audio (`currentTime > 0.3`)
+      // for >2.2s with `videoWidth === 0` (blank screen + sound only, e.g. HEVC on Android TV MSE),
+      // automatically switch to hardware transcode or native hardware HLS/MediaPlayer!
+      if (!forceNativeVideo && !this.retriedAudioOnlyRecovery && this.videoWatchdogTimer === null) {
+        this.videoWatchdogTimer = window.setTimeout(() => {
+          this.videoWatchdogTimer = null;
+          if (
+            this.video !== video ||
+            video.paused ||
+            video.currentTime < 0.3 ||
+            video.videoWidth > 0 ||
+            video.videoHeight > 0 ||
+            this.retriedAudioOnlyRecovery
+          ) {
+            return;
+          }
+          this.retriedAudioOnlyRecovery = true;
+          if (
+            this.tryEscalateToRustFfmpeg(
+              video,
+              rawStreamUrl,
+              proxyConfig,
+              autoPlay,
+              explicitStreamType,
+              canUseRustFfmpeg
+            )
+          ) {
+            return;
+          }
+          this.tryFallbackToNativeVideo(video, rawStreamUrl, proxyConfig, autoPlay);
+        }, 2200);
+      }
+    };
+
+    // Graceful Studio Synth Fallback ONLY if stream genuinely fails to start (never while audio/video is playing)
     this.fallbackTimer = window.setTimeout(() => {
+      if (!video.paused && (video.currentTime > 0 || video.readyState >= 2)) {
+        markPlaying();
+        return;
+      }
       if (this.telemetry.state !== 'playing') {
         if (
           this.tryEscalateToRustFfmpeg(
@@ -485,6 +579,13 @@ export class LumaPlayerEngine {
         ) {
           return;
         }
+        if (
+          !isDemoUrl &&
+          this.tryFallbackToNativeVideo(video, rawStreamUrl, proxyConfig, autoPlay)
+        ) {
+          return;
+        }
+        this.destroyDriversOnly();
         this.emit({
           engine: 'Luma Studio Synth',
           state: 'synth-fallback',
@@ -505,22 +606,6 @@ export class LumaPlayerEngine {
       }
     }, fallbackDelayMs);
 
-    const markPlaying = () => {
-      if (!video.muted && this.unlockAudioCleanup) {
-        this.unlockAudioCleanup();
-      }
-      if (this.fallbackTimer !== null) {
-        window.clearTimeout(this.fallbackTimer);
-        this.fallbackTimer = null;
-      }
-      this.emit({
-        engine: engineLabel,
-        state: 'playing',
-        width: video.videoWidth || this.telemetry.width,
-        height: video.videoHeight || this.telemetry.height,
-      });
-    };
-
     video.onplaying = markPlaying;
     video.onloadeddata = () => {
       if (autoPlay && video.paused) {
@@ -528,11 +613,37 @@ export class LumaPlayerEngine {
       }
       if (!video.paused) markPlaying();
     };
+    video.ontimeupdate = () => {
+      if (!video.paused && video.readyState >= 2 && this.telemetry.state !== 'playing') {
+        markPlaying();
+      }
+    };
     video.onwaiting = () => {
-      if (this.telemetry.state === 'playing') {
+      if (this.telemetry.state === 'playing' && video.readyState < 2) {
         this.emit({ state: 'buffering' });
       }
     };
+
+    // 0. Explicit Native Hardware Video Driver (used for Android TV / Apple hardware HEVC recovery)
+    if (forceNativeVideo) {
+      this.emit({
+        engine: 'Native Safari HLS',
+        audioTracks: [{ index: 0, name: 'Hardware Audio', lang: 'auto' }],
+      });
+      video.onerror = () => {
+        this.destroyDriversOnly();
+        this.emit({
+          engine: 'Luma Studio Synth',
+          state: 'synth-fallback',
+        });
+      };
+      video.src = finalUrl;
+      if (autoPlay) {
+        this.attemptPlayRespectingMute(video, desiredMuted);
+      }
+      this.startTelemetryLoop();
+      return;
+    }
 
     // 1. MPEG-TS Live / Remux Driver (mpegts.js + MSE Worker)
     if (driver === 'mpegts' && mpegts.isSupported()) {
@@ -618,6 +729,10 @@ export class LumaPlayerEngine {
         ) {
           return;
         }
+        if (this.tryFallbackToNativeVideo(video, rawStreamUrl, proxyConfig, autoPlay)) {
+          return;
+        }
+        this.destroyDriversOnly();
         this.emit({
           engine: 'Luma Studio Synth',
           state: 'synth-fallback',
@@ -844,6 +959,10 @@ export class LumaPlayerEngine {
             ) {
               return;
             }
+            if (this.tryFallbackToNativeVideo(video, rawStreamUrl, proxyConfig, autoPlay)) {
+              return;
+            }
+            this.destroyDriversOnly();
             this.emit({
               engine: 'Luma Studio Synth',
               state: 'synth-fallback',
@@ -1006,25 +1125,50 @@ export class LumaPlayerEngine {
       window.clearTimeout(this.fallbackTimer);
       this.fallbackTimer = null;
     }
+    if (this.videoWatchdogTimer !== null) {
+      window.clearTimeout(this.videoWatchdogTimer);
+      this.videoWatchdogTimer = null;
+    }
     if (this.statsTimer !== null) {
       window.clearInterval(this.statsTimer);
       this.statsTimer = null;
     }
     if (this.hls) {
+      try {
+        this.hls.stopLoad();
+        this.hls.detachMedia();
+      } catch {
+        // Ignore detach errors during rapid channel switches
+      }
       this.hls.destroy();
       this.hls = null;
     }
     if (this.mpegtsPlayer) {
-      this.mpegtsPlayer.unload();
-      this.mpegtsPlayer.detachMediaElement();
+      try {
+        this.mpegtsPlayer.pause();
+        this.mpegtsPlayer.unload();
+        this.mpegtsPlayer.detachMediaElement();
+      } catch {
+        // Ignore detach errors during rapid channel switches
+      }
       this.mpegtsPlayer.destroy();
       this.mpegtsPlayer = null;
     }
     if (this.video) {
       this.video.onplaying = null;
       this.video.onloadeddata = null;
+      this.video.ontimeupdate = null;
       this.video.onwaiting = null;
       this.video.onerror = null;
+      // Flush MediaSource / SurfaceTexture binding so Android TV MediaCodec hardware video
+      // decoders cleanly release the previous channel surface before attaching the next channel
+      try {
+        this.video.pause();
+        this.video.removeAttribute('src');
+        this.video.load();
+      } catch {
+        // Ignore in headless/JSDOM test environments
+      }
     }
   }
 

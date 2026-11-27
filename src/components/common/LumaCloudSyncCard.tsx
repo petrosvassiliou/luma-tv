@@ -70,6 +70,22 @@ export const LumaCloudSyncCard: React.FC<LumaCloudSyncCardProps> = ({
 
   const { session, isBusy, summaryCounts } = cloudState;
 
+  const hideTvSoftKeyboard = () => {
+    (
+      window as unknown as {
+        LumaAndroidWindow?: { hideTvKeyboard?: () => void };
+      }
+    ).LumaAndroidWindow?.hideTvKeyboard?.();
+  };
+
+  const focusCloudElementById = (targetId: string) => {
+    const el = document.getElementById(targetId) as HTMLElement | null;
+    if (!el) return;
+    delete el.dataset.tvEditing;
+    el.focus({ preventScroll: true });
+    el.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'auto' });
+  };
+
   const performAuthSubmit = async () => {
     if (isBusy) return;
     if (!email.trim()) {
@@ -214,6 +230,32 @@ export const LumaCloudSyncCard: React.FC<LumaCloudSyncCardProps> = ({
                   setEmail(e.target.value);
                   if (localValidationError) setLocalValidationError(null);
                 }}
+                onKeyDown={(e) => {
+                  const isTv = document.documentElement.dataset.tv === 'true';
+                  if (
+                    isTv &&
+                    e.currentTarget.dataset.tvEditing === 'true' &&
+                    (e.key === 'Enter' || e.keyCode === 13 || e.keyCode === 66)
+                  ) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    delete e.currentTarget.dataset.tvEditing;
+                    hideTvSoftKeyboard();
+                    focusCloudElementById('input-cloud-password');
+                  }
+                }}
+                onBlur={(e) => {
+                  if (
+                    document.documentElement.dataset.tv === 'true' &&
+                    e.currentTarget.value.trim().length > 0 &&
+                    !password &&
+                    (!e.relatedTarget || e.relatedTarget === document.body)
+                  ) {
+                    window.requestAnimationFrame(() =>
+                      focusCloudElementById('input-cloud-password')
+                    );
+                  }
+                }}
                 placeholder="Email address…"
                 className={inputClass}
               />
@@ -232,6 +274,31 @@ export const LumaCloudSyncCard: React.FC<LumaCloudSyncCardProps> = ({
                 onChange={(e) => {
                   setPassword(e.target.value);
                   if (localValidationError) setLocalValidationError(null);
+                }}
+                onKeyDown={(e) => {
+                  const isTv = document.documentElement.dataset.tv === 'true';
+                  const isEditing = e.currentTarget.dataset.tvEditing === 'true';
+                  const isEnter = e.key === 'Enter' || e.keyCode === 13 || e.keyCode === 66;
+                  if (isTv && (e.key === 'ArrowDown' || (isEditing && isEnter))) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    delete e.currentTarget.dataset.tvEditing;
+                    hideTvSoftKeyboard();
+                    focusCloudElementById('btn-cloud-submit-auth');
+                  }
+                }}
+                onBlur={(e) => {
+                  // When Gboard TV dismisses via Done / checkmark, focus drops to null/body:
+                  // immediately jump focus onto the Sign In & Sync Devices button!
+                  if (
+                    document.documentElement.dataset.tv === 'true' &&
+                    e.currentTarget.value.length > 0 &&
+                    (!e.relatedTarget || e.relatedTarget === document.body)
+                  ) {
+                    window.requestAnimationFrame(() =>
+                      focusCloudElementById('btn-cloud-submit-auth')
+                    );
+                  }
                 }}
                 placeholder={
                   authMode === 'signup'
@@ -290,18 +357,44 @@ export const LumaCloudSyncCard: React.FC<LumaCloudSyncCardProps> = ({
             <div className="relative flex flex-1 items-center">
               <KeyRound className="pointer-events-none absolute left-3.5 h-3.5 w-3.5 text-slate-400" />
               <input
+                id="input-cloud-unlock-password"
                 type="password"
+                enterKeyHint="done"
                 required
                 value={password}
                 onChange={(e) => {
                   setPassword(e.target.value);
                   if (localValidationError) setLocalValidationError(null);
                 }}
+                onKeyDown={(e) => {
+                  const isTv = document.documentElement.dataset.tv === 'true';
+                  const isEditing = e.currentTarget.dataset.tvEditing === 'true';
+                  const isEnter = e.key === 'Enter' || e.keyCode === 13 || e.keyCode === 66;
+                  if (isTv && (e.key === 'ArrowDown' || (isEditing && isEnter))) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    delete e.currentTarget.dataset.tvEditing;
+                    hideTvSoftKeyboard();
+                    focusCloudElementById('btn-cloud-unlock-submit');
+                  }
+                }}
+                onBlur={(e) => {
+                  if (
+                    document.documentElement.dataset.tv === 'true' &&
+                    e.currentTarget.value.length > 0 &&
+                    (!e.relatedTarget || e.relatedTarget === document.body)
+                  ) {
+                    window.requestAnimationFrame(() =>
+                      focusCloudElementById('btn-cloud-unlock-submit')
+                    );
+                  }
+                }}
                 placeholder="Account password…"
                 className={inputClass}
               />
             </div>
             <button
+              id="btn-cloud-unlock-submit"
               type="button"
               disabled={isBusy}
               onClick={() => void performUnlockSubmit()}

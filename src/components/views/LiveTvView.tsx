@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   CalendarClock,
   FolderHeart,
@@ -111,6 +111,73 @@ const LiveTvViewInner: React.FC<LiveTvViewProps> = ({
     ? tvChannelOverlayOpen
     : !isStageFullscreen && drawerOpen;
 
+  const openTvChannelFilter = useCallback(() => {
+    setTvFilterExpanded(true);
+    window.requestAnimationFrame(() => {
+      const inp = tvFilterInputRef.current;
+      if (inp) {
+        inp.focus({ preventScroll: true });
+        inp.dataset.tvEditing = 'true';
+        (
+          window as unknown as {
+            LumaAndroidWindow?: { showTvKeyboard?: () => void };
+          }
+        ).LumaAndroidWindow?.showTvKeyboard?.();
+      }
+    });
+  }, []);
+
+  const focusChannelListRow = useCallback(
+    (preferFirst = false) => {
+      const el = listRef.current;
+      if (!el || filteredChannels.length === 0) return;
+      const foundIdx =
+        !preferFirst && activeChannelId
+          ? filteredChannels.findIndex((c) => c.id === activeChannelId)
+          : -1;
+      const targetIdx = foundIdx >= 0 ? foundIdx : 0;
+      const targetChannel = filteredChannels[targetIdx];
+      if (!targetChannel) return;
+
+      const viewH = el.clientHeight || 540;
+      const targetTop = targetIdx * rowHeight;
+      let nextScroll = el.scrollTop;
+      if (preferFirst && targetIdx === 0) {
+        nextScroll = 0;
+      } else if (targetTop < nextScroll || targetTop + rowHeight > nextScroll + viewH) {
+        nextScroll = Math.max(0, targetTop - Math.floor(viewH / 2) + rowHeight);
+      }
+      if (el.scrollTop !== nextScroll) {
+        el.scrollTop = nextScroll;
+      }
+      setScrollTop(nextScroll);
+
+      const attemptFocus = () => {
+        const listNode = listRef.current;
+        if (!listNode) return false;
+        const row =
+          listNode.querySelector<HTMLElement>(
+            `[data-channel-id="${CSS.escape(targetChannel.id)}"]`
+          ) ?? listNode.querySelector<HTMLElement>('[data-channel-id]');
+        if (row) {
+          row.tabIndex = 0;
+          row.focus({ preventScroll: true });
+          return true;
+        }
+        return false;
+      };
+
+      if (!attemptFocus()) {
+        window.requestAnimationFrame(() => {
+          if (!attemptFocus()) {
+            window.requestAnimationFrame(attemptFocus);
+          }
+        });
+      }
+    },
+    [activeChannelId, filteredChannels, rowHeight]
+  );
+
   useEffect(() => {
     const el = listRef.current;
     if (!el) return;
@@ -124,10 +191,22 @@ const LiveTvViewInner: React.FC<LiveTvViewProps> = ({
     return () => ro.disconnect();
   }, [effectiveDrawerOpen]);
 
-  // Keep active channel scrolled into view when group/collection changes (and auto-focus on Android TV)
+  useEffect(() => {
+    if (!isAndroidTv || !effectiveDrawerOpen) return;
+    const onOpenChannelSearch = () => openTvChannelFilter();
+    window.addEventListener('luma-tv-open-channel-search', onOpenChannelSearch);
+    return () =>
+      window.removeEventListener('luma-tv-open-channel-search', onOpenChannelSearch);
+  }, [isAndroidTv, effectiveDrawerOpen, openTvChannelFilter]);
+
+  // Keep active channel scrolled into view and focus the channel list directly when opening on Android TV
   useEffect(() => {
     const el = listRef.current;
     if (!el || filterQuery.trim()) return;
+    if (isAndroidTv && effectiveDrawerOpen) {
+      focusChannelListRow(false);
+      return;
+    }
     const idx = filteredChannels.findIndex((c) => c.id === activeChannelId);
     if (idx < 0) return;
     const targetTop = idx * rowHeight;
@@ -138,18 +217,6 @@ const LiveTvViewInner: React.FC<LiveTvViewProps> = ({
       el.scrollTop = Math.max(0, targetTop - el.clientHeight / 2 + rowHeight);
       setScrollTop(el.scrollTop);
     }
-    if (isAndroidTv && effectiveDrawerOpen) {
-      const raf = window.requestAnimationFrame(() => {
-        const row = el.querySelector<HTMLElement>(
-          `[data-channel-id="${CSS.escape(activeChannelId)}"]`
-        );
-        if (row) {
-          row.tabIndex = 0;
-          row.focus({ preventScroll: true });
-        }
-      });
-      return () => window.cancelAnimationFrame(raf);
-    }
   }, [
     activeChannelId,
     filteredChannels,
@@ -157,6 +224,8 @@ const LiveTvViewInner: React.FC<LiveTvViewProps> = ({
     effectiveDrawerOpen,
     isAndroidTv,
     rowHeight,
+    selectedGroupId,
+    focusChannelListRow,
   ]);
 
   const isCollectionActive = collections.some((c) => c.id === selectedGroupId);
@@ -274,7 +343,7 @@ const LiveTvViewInner: React.FC<LiveTvViewProps> = ({
           data-tv-modal={isAndroidTv ? 'true' : undefined}
           className={
             isAndroidTv
-              ? 'fixed inset-y-5 right-5 z-40 flex w-[288px] flex-col overflow-hidden rounded-[24px] bg-[#0A0E17]/62 shadow-[0_20px_60px_rgba(0,0,0,0.75)] ring-1 ring-white/15 backdrop-blur-md'
+              ? 'fixed inset-y-4 right-4 z-40 flex w-[292px] flex-col overflow-hidden rounded-[22px] bg-[#0B101B]/88 ring-1 ring-white/15'
               : `flex w-72 shrink-0 flex-col overflow-hidden xl:w-80 ${
                   isM3
                     ? 'rounded-[26px] bg-[#161B28] ring-1 ring-white/[0.06]'
@@ -294,40 +363,43 @@ const LiveTvViewInner: React.FC<LiveTvViewProps> = ({
                 {isAndroidTv && !tvFilterExpanded && !filterQuery && (
                   <button
                     id="btn-tv-channel-filter-toggle"
+                    data-tv-skip-initial="true"
                     type="button"
-                    onClick={() => {
-                      setTvFilterExpanded(true);
-                      window.requestAnimationFrame(() => {
-                        const inp = tvFilterInputRef.current;
-                        if (inp) {
-                          inp.focus({ preventScroll: true });
-                          inp.dataset.tvEditing = 'true';
-                          (
-                            window as unknown as {
-                              LumaAndroidWindow?: { showTvKeyboard?: () => void };
-                            }
-                          ).LumaAndroidWindow?.showTvKeyboard?.();
-                        }
-                      });
-                    }}
-                    className="flex h-7 w-7 items-center justify-center rounded-full bg-white/12 text-[#7FD4FF] ring-1 ring-white/15 hover:bg-white/20"
-                    title={t.epgFilter}
+                    onClick={openTvChannelFilter}
+                    className="inline-flex h-6.5 items-center gap-1 rounded-full bg-white/12 px-2 text-[10px] font-semibold text-[#7FD4FF] ring-1 ring-white/15 hover:bg-white/20"
+                    title={`${t.epgFilter} (▶)`}
                   >
-                    <Search className="h-3.5 w-3.5" />
+                    <Search className="h-3 w-3" />
+                    <span>▶</span>
                   </button>
                 )}
               </div>
             </div>
 
-            {/* Quick Collection & Favorites Switcher Strip inside Live TV (Wraps cleanly so all collections stay visible without horizontal scrolling) */}
+            {/* Quick Collection & Favorites Switcher Strip inside Live TV */}
             {onSelectGroup && (
-              <div className="luma-scroll flex max-h-32 flex-wrap items-center gap-1.5 overflow-y-auto">
+              <div
+                onKeyDown={(e) => {
+                  if (!isAndroidTv || e.key !== 'ArrowDown') return;
+                  e.preventDefault();
+                  e.stopPropagation();
+                  focusChannelListRow(false);
+                }}
+                className="luma-scroll flex max-h-32 flex-wrap items-center gap-1.5 overflow-y-auto"
+              >
                 <button
                   type="button"
+                  data-tv-skip-initial="true"
                   aria-pressed={selectedGroupId === 'all'}
                   onClick={() => {
                     onSelectGroup('all');
-                    if (listRef.current) listRef.current.scrollTop = 0;
+                    if (listRef.current) {
+                      listRef.current.scrollTop = 0;
+                      setScrollTop(0);
+                    }
+                    if (isAndroidTv) {
+                      window.requestAnimationFrame(() => focusChannelListRow(true));
+                    }
                   }}
                   className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold transition ${
                     selectedGroupId === 'all'
@@ -343,10 +415,17 @@ const LiveTvViewInner: React.FC<LiveTvViewProps> = ({
 
                 <button
                   type="button"
+                  data-tv-skip-initial="true"
                   aria-pressed={selectedGroupId === 'favorites'}
                   onClick={() => {
                     onSelectGroup('favorites');
-                    if (listRef.current) listRef.current.scrollTop = 0;
+                    if (listRef.current) {
+                      listRef.current.scrollTop = 0;
+                      setScrollTop(0);
+                    }
+                    if (isAndroidTv) {
+                      window.requestAnimationFrame(() => focusChannelListRow(true));
+                    }
                   }}
                   className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold transition ${
                     selectedGroupId === 'favorites'
@@ -372,10 +451,17 @@ const LiveTvViewInner: React.FC<LiveTvViewProps> = ({
                     <button
                       key={col.id}
                       type="button"
+                      data-tv-skip-initial="true"
                       aria-pressed={active}
                       onClick={() => {
                         onSelectGroup(col.id);
-                        if (listRef.current) listRef.current.scrollTop = 0;
+                        if (listRef.current) {
+                          listRef.current.scrollTop = 0;
+                          setScrollTop(0);
+                        }
+                        if (isAndroidTv) {
+                          window.requestAnimationFrame(() => focusChannelListRow(true));
+                        }
                       }}
                       title={col.name}
                       className={`inline-flex max-w-full items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold transition ${
@@ -407,11 +493,29 @@ const LiveTvViewInner: React.FC<LiveTvViewProps> = ({
                 <Search className="pointer-events-none absolute left-3 h-3.5 w-3.5 text-slate-400" />
                 <input
                   ref={tvFilterInputRef}
+                  id="input-tv-channel-filter"
                   type="text"
                   value={filterQuery}
                   onChange={(e) => {
                     setFilterQuery(e.target.value);
-                    if (listRef.current) listRef.current.scrollTop = 0;
+                    if (listRef.current) {
+                      listRef.current.scrollTop = 0;
+                      setScrollTop(0);
+                    }
+                  }}
+                  onKeyDown={(e) => {
+                    if (!isAndroidTv) return;
+                    if (e.key === 'ArrowDown' || e.key === 'Enter') {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      delete e.currentTarget.dataset.tvEditing;
+                      (
+                        window as unknown as {
+                          LumaAndroidWindow?: { hideTvKeyboard?: () => void };
+                        }
+                      ).LumaAndroidWindow?.hideTvKeyboard?.();
+                      focusChannelListRow(true);
+                    }
                   }}
                   onBlur={() => {
                     if (isAndroidTv && !filterQuery.trim()) {
@@ -431,6 +535,9 @@ const LiveTvViewInner: React.FC<LiveTvViewProps> = ({
                     onClick={() => {
                       setFilterQuery('');
                       setTvFilterExpanded(false);
+                      if (isAndroidTv) {
+                        window.requestAnimationFrame(() => focusChannelListRow(false));
+                      }
                     }}
                     className="absolute right-2.5 text-xs text-slate-300 hover:text-white"
                   >
@@ -444,18 +551,40 @@ const LiveTvViewInner: React.FC<LiveTvViewProps> = ({
           <div
             ref={listRef}
             onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
-            onKeyDownCapture={(e) => {
+            onKeyDown={(e) => {
               if (!isAndroidTv) return;
-              if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
               const target = e.target as HTMLElement | null;
               const chId = target?.getAttribute('data-channel-id');
               if (!chId || !listRef.current) return;
               const curIdx = filteredChannels.findIndex((c) => c.id === chId);
               if (curIdx < 0) return;
 
+              // Pressing ▶ Right on any channel row immediately opens Channel Search + TV Keyboard!
+              if (e.key === 'ArrowRight') {
+                e.preventDefault();
+                e.stopPropagation();
+                openTvChannelFilter();
+                return;
+              }
+
+              // Pressing OK / Enter selects the highlighted channel immediately
+              const isOk = e.key === 'Enter' || e.key === 'Select' || e.keyCode === 23;
+              if (isOk && !e.repeat) {
+                const chosen = filteredChannels[curIdx];
+                if (chosen) {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onSelectChannel(chosen);
+                  onChangeTvChannelOverlayOpen?.(false);
+                }
+                return;
+              }
+
+              if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+
               if (e.key === 'ArrowUp' && curIdx === 0) {
                 const pill = document.querySelector<HTMLElement>(
-                  '#luma-live-channel-drawer button[aria-pressed="true"], #luma-live-channel-drawer button'
+                  '#luma-live-channel-drawer button[aria-pressed="true"]'
                 );
                 if (pill) {
                   e.preventDefault();
@@ -469,10 +598,10 @@ const LiveTvViewInner: React.FC<LiveTvViewProps> = ({
                 e.key === 'ArrowDown'
                   ? Math.min(filteredChannels.length - 1, curIdx + 1)
                   : Math.max(0, curIdx - 1);
-              if (nextIdx === curIdx) return;
-
               e.preventDefault();
               e.stopPropagation();
+              if (nextIdx === curIdx) return;
+
               const el = listRef.current;
               const nextTop = nextIdx * rowHeight;
               if (nextTop < el.scrollTop) {

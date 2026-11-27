@@ -508,17 +508,23 @@ export function useSpatialDpadFocus(
         if (matched) return matched;
       }
       if (overlayRoot?.id === 'luma-live-channel-drawer') {
-        const activeCh = overlayRoot.querySelector<HTMLElement>('.m3-tonal-active[data-channel-id]');
+        const activeCh =
+          overlayRoot.querySelector<HTMLElement>('.m3-tonal-active[data-channel-id]') ??
+          overlayRoot.querySelector<HTMLElement>('[data-channel-id]');
         const matched = activeCh ? items.find((c) => c.el === activeCh) : undefined;
         if (matched) return matched;
       }
-      // Never select search/text <input> boxes by default on screen open unless no other control exists
+      // Never select search/text <input> boxes or header shortcut triggers by default on screen open
       return (
         items.find(
           (c) =>
             c.region === 'main' &&
             !isTvTextEditableInput(c.el) &&
+            c.el.dataset.tvSkipInitial !== 'true' &&
             c.el.id !== 'btn-tv-open-menu'
+        ) ??
+        items.find(
+          (c) => !isTvTextEditableInput(c.el) && c.el.dataset.tvSkipInitial !== 'true'
         ) ??
         items.find((c) => !isTvTextEditableInput(c.el)) ??
         items[0]
@@ -671,8 +677,10 @@ export function useSpatialDpadFocus(
       return false;
     };
 
+    let lastTopBoundaryUpMs = 0;
+
     const onTvKeyDown = (e: KeyboardEvent) => {
-      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey) return;
 
       const bridge = (window as unknown as AndroidTvKeyboardBridge).LumaAndroidWindow;
       const active = document.activeElement as HTMLElement | null;
@@ -706,6 +714,20 @@ export function useSpatialDpadFocus(
       // Phase 2 (editing): Left/Right move cursor; Up/Down/OK exit editing, hide TV IME, and advance focus.
       if (isTvTextEditableInput(active)) {
         const isEditing = active.dataset.tvEditing === 'true';
+
+        // Deterministic Cloud Sync password -> Sign In button jump (never diagonal to "Forgot password?")
+        if (active.id === 'input-cloud-password' && dir === 'down') {
+          e.preventDefault();
+          e.stopPropagation();
+          delete active.dataset.tvEditing;
+          bridge?.hideTvKeyboard?.();
+          const submitBtn = document.getElementById('btn-cloud-submit-auth');
+          if (submitBtn) {
+            focusTvElement(submitBtn);
+            return;
+          }
+        }
+
         if (!isEditing) {
           if (isOkKey) {
             e.preventDefault();
@@ -740,6 +762,27 @@ export function useSpatialDpadFocus(
             e.stopPropagation();
             delete active.dataset.tvEditing;
             bridge?.hideTvKeyboard?.();
+            if (active.id === 'input-cloud-email') {
+              const pw = document.getElementById('input-cloud-password');
+              if (pw) {
+                focusTvElement(pw);
+                return;
+              }
+            }
+            if (active.id === 'input-cloud-password') {
+              const submitBtn = document.getElementById('btn-cloud-submit-auth');
+              if (submitBtn) {
+                focusTvElement(submitBtn);
+                return;
+              }
+            }
+            if (active.id === 'input-cloud-unlock-password') {
+              const unlockBtn = document.getElementById('btn-cloud-unlock-submit');
+              if (unlockBtn) {
+                focusTvElement(unlockBtn);
+                return;
+              }
+            }
             if (!moveTvFocus('down', active)) {
               moveTvFocus('right', active);
             }
@@ -785,9 +828,22 @@ export function useSpatialDpadFocus(
 
       if (!dir) return;
 
-      if (moveTvFocus(dir, active)) {
-        e.preventDefault();
-        e.stopPropagation();
+      // Always preventDefault on D-Pad arrows so Android WebView's built-in C++ spatial
+      // navigation NEVER hijacks focus at row/column boundaries to jump randomly across screen!
+      e.preventDefault();
+      e.stopPropagation();
+
+      const moved = moveTvFocus(dir, active);
+      if (!moved && dir === 'up' && !e.repeat) {
+        const now = performance.now();
+        if (now - lastTopBoundaryUpMs < 600) {
+          lastTopBoundaryUpMs = 0;
+          window.dispatchEvent(new CustomEvent('luma-tv-open-view-search'));
+        } else {
+          lastTopBoundaryUpMs = now;
+        }
+      } else if (moved) {
+        lastTopBoundaryUpMs = 0;
       }
     };
 
@@ -801,17 +857,20 @@ export function useSpatialDpadFocus(
         } else if (active.id === 'input-cloud-password' && active.value.length > 0) {
           const submitBtn = document.getElementById('btn-cloud-submit-auth');
           if (submitBtn) focusTvElement(submitBtn);
+        } else if (active.id === 'input-cloud-unlock-password' && active.value.length > 0) {
+          const unlockBtn = document.getElementById('btn-cloud-unlock-submit');
+          if (unlockBtn) focusTvElement(unlockBtn);
         }
       }
     };
 
-    window.addEventListener('keydown', onTvKeyDown, true);
+    window.addEventListener('keydown', onTvKeyDown, false);
     window.addEventListener('focusout', onTvFocusOut, true);
     window.addEventListener('scroll', invalidateTvCache, true);
     window.addEventListener('luma-tv-ime-closed', onTvImeClosed);
     return () => {
       window.cancelAnimationFrame(rafFocus);
-      window.removeEventListener('keydown', onTvKeyDown, true);
+      window.removeEventListener('keydown', onTvKeyDown, false);
       window.removeEventListener('focusout', onTvFocusOut, true);
       window.removeEventListener('scroll', invalidateTvCache, true);
       window.removeEventListener('luma-tv-ime-closed', onTvImeClosed);

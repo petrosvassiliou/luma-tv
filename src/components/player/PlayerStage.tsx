@@ -1034,7 +1034,9 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
           ? `${telemetry.height}p`
           : channel.resolution;
 
-  const showSynthVisual = telemetry.state !== 'playing';
+  const showSynthVisual = telemetry.state === 'synth-fallback';
+  const showTuningIndicator =
+    isPlaying && (telemetry.state === 'connecting' || telemetry.state === 'buffering');
   const showChrome =
     !autoHideHudMode ||
     tvControlsOpen ||
@@ -1228,7 +1230,7 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
             : 'rounded-[22px] bg-[#06080E] shadow-[0_20px_50px_-15px_rgba(0,0,0,0.85)] ring-1 ring-white/15'
       }`}
     >
-      {ambilightEnabled && (
+      {ambilightEnabled && !isAndroidTv && (
         <div
           className="pointer-events-none absolute inset-0 transition-all duration-1000"
           style={{
@@ -1248,18 +1250,32 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
           }
           void handleFullscreen();
         }}
-        className="relative flex h-full w-full items-center justify-center"
+        className="relative flex h-full w-full items-center justify-center bg-black"
       >
         {showSynthVisual && (
-          <BroadcastSynthCanvas
-            channel={channel}
-            programTitle={displayTitle}
-            badgeCodeOverride={
-              isOnDemandVod ? (onDemandMeta?.badgeCode ?? 'VOD') : undefined
-            }
-            paused={!isPlaying}
-            externalCanvasRef={synthCanvasRef}
-          />
+          <div className="pointer-events-none absolute inset-0 z-[15]">
+            <BroadcastSynthCanvas
+              channel={channel}
+              programTitle={displayTitle}
+              badgeCodeOverride={
+                isOnDemandVod ? (onDemandMeta?.badgeCode ?? 'VOD') : undefined
+              }
+              paused={!isPlaying}
+              externalCanvasRef={synthCanvasRef}
+            />
+          </div>
+        )}
+
+        {showTuningIndicator && (
+          <div
+            id="luma-channel-tuning-pill"
+            className="pointer-events-none absolute z-20 inline-flex items-center gap-2 rounded-full bg-[#0B101B]/85 px-4 py-1.5 text-xs font-medium text-slate-200 ring-1 ring-white/12"
+          >
+            <span className="h-3.5 w-3.5 rounded-full border-2 border-[#7FD4FF]/35 border-t-[#7FD4FF] animate-spin" />
+            <span className="max-w-[260px] truncate">
+              {isOnDemandVod ? displayTitle : channel.name}
+            </span>
+          </div>
         )}
 
         <video
@@ -1290,9 +1306,7 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
               revealHud();
             }
           }}
-          className={`relative z-10 h-full w-full cursor-pointer transition-opacity duration-300 ${
-            showSynthVisual ? 'opacity-0' : 'opacity-100'
-          } ${
+          className={`relative z-10 h-full w-full cursor-pointer opacity-100 ${
             aspectMode === 'cover'
               ? 'object-cover'
               : aspectMode === '21:9'
@@ -1467,7 +1481,7 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
               : 'pointer-events-none translate-y-2 opacity-0'
           } ${
             isAndroidTv
-              ? 'absolute inset-x-5 bottom-4 z-20 rounded-[22px] bg-[#0A0E17]/62 px-4 py-2.5 shadow-xl ring-1 ring-white/15 backdrop-blur-md'
+              ? 'absolute inset-x-5 bottom-4 z-20 rounded-[22px] bg-[#0B101B]/86 px-4 py-2.5 ring-1 ring-white/15'
               : isM3
                 ? 'absolute inset-x-3 bottom-3 z-20 rounded-[24px] bg-[#161B28]/95 px-4 py-3 shadow-xl ring-1 ring-white/[0.06]'
                 : 'lg-pane absolute inset-x-3.5 bottom-3 z-20 rounded-[22px] px-4 py-2.5'
@@ -1595,7 +1609,7 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
             <div className="flex shrink-0 flex-wrap items-center gap-1.5">
               {isAndroidTv && !isSeekable && !tvControlsOpen && (
                 <span className="mr-1 hidden rounded-full bg-white/[0.08] px-3 py-1 text-[11px] font-medium text-slate-200 sm:inline-flex">
-                  OK Player · ▶ Channels · ◀ Menu · ▲▼ Ch+/−
+                  OK Player · ▶ Channels · ▶▶/◀◀ Search · ▲▼ Ch+/−
                 </span>
               )}
 

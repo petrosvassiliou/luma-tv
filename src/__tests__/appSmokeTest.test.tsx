@@ -920,6 +920,16 @@ describe('Luma TV End-to-End UI & Button Smoke Test', () => {
       expect(host.querySelector('#btn-cast-airplay')).toBeNull();
       expect(host.querySelector('#btn-inapp-pip')).toBeNull();
 
+      // Main <video> element must NEVER be hidden (`opacity-0`) during channel switching / connecting!
+      const mainVideo = host.querySelector(
+        '#luma-player-stage video:not(#luma-airplay-bridge-video)'
+      ) as HTMLVideoElement | null;
+      expect(mainVideo).not.toBeNull();
+      expect(mainVideo!.className).toContain('opacity-100');
+      expect(mainVideo!.className).not.toContain('opacity-0');
+      pressTvKey('ArrowDown'); // Zap to next channel -> video stays opacity-100!
+      expect(mainVideo!.className).toContain('opacity-100');
+
       // 2a. Pressing OK/Enter on full-screen Live TV opens the selectable On-Screen Player Bar (Channels, EPG, Play/Pause, Aspect, DSP & Subtitles)
       pressTvKey('Enter');
       await act(async () => {
@@ -948,13 +958,41 @@ describe('Luma TV End-to-End UI & Button Smoke Test', () => {
       });
       expect(host.querySelector('#btn-tv-hud-channels')).toBeNull();
 
-      // 2b. Pressing ArrowRight on full-screen Live TV opens the on-demand Channel Overlay with Search collapsed to a shortcut button
+      // 2b. Pressing ArrowRight on full-screen Live TV opens the Channel Overlay AND focuses DIRECTLY onto the channel list!
       pressTvKey('ArrowRight');
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 25));
+      });
       expect(host.querySelector('#luma-live-channel-drawer')).not.toBeNull();
-      expect(host.querySelector('#btn-tv-channel-filter-toggle')).not.toBeNull();
+      expect(document.activeElement?.getAttribute('data-channel-id')).toBeTruthy();
       expect(
         host.querySelector('#luma-live-channel-drawer input[type="text"]')
       ).toBeNull();
+
+      // Clicking "All Channels" pill inside the drawer immediately returns focus directly to the channel list!
+      const allChPill = Array.from(
+        host.querySelectorAll('#luma-live-channel-drawer button')
+      ).find((b) => b.getAttribute('aria-pressed') === 'true') as HTMLElement | undefined;
+      expect(allChPill).toBeDefined();
+      clickEl(allChPill ?? null, 'Click All Channels pill in TV drawer');
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 25));
+      });
+      expect(document.activeElement?.getAttribute('data-channel-id')).toBeTruthy();
+
+      // Pressing ▶ Right on a channel row is the 1-tap hotkey to open Channel Search + TV Keyboard!
+      showTvKeyboard.mockClear();
+      pressTvKey('ArrowRight');
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 25));
+      });
+      expect(host.querySelector('#input-tv-channel-filter')).not.toBeNull();
+      expect(showTvKeyboard).toHaveBeenCalledTimes(1);
+
+      // First Back dismisses TV Keyboard editing mode; second Back closes the Channel Overlay!
+      act(() => {
+        tvWindow.__lumaHandleAndroidTvBack?.();
+      });
       let backHandled = false;
       act(() => {
         backHandled = Boolean(tvWindow.__lumaHandleAndroidTvBack?.());
@@ -963,12 +1001,36 @@ describe('Luma TV End-to-End UI & Button Smoke Test', () => {
       expect(host.querySelector('#luma-live-channel-drawer')).toBeNull();
       expect(exitApp).not.toHaveBeenCalled();
 
-      // 3. Pressing ArrowLeft summons floating TV Menu; Movies view uses Search shortcut button instead of auto-focused input
+      // 3a. Pressing ◀◀ (double-Left from Live TV) opens Global Search + TV Keyboard!
+      pressTvKey('ArrowLeft');
+      expect(host.querySelector('#luma-sidebar')).not.toBeNull();
+      pressTvKey('ArrowLeft');
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 25));
+      });
+      expect(host.querySelector('#luma-command-modal')).not.toBeNull();
+      // First Back exits CommandBar input editing; second Back closes CommandBar
+      act(() => {
+        tvWindow.__lumaHandleAndroidTvBack?.();
+        tvWindow.__lumaHandleAndroidTvBack?.();
+      });
+      expect(host.querySelector('#luma-command-modal')).toBeNull();
+
+      // 3b. Open TV Menu -> Movies view: search box is NOT focused; pressing ▲▲ at top opens Movies Search!
       pressTvKey('ArrowLeft');
       expect(host.querySelector('#luma-sidebar')).not.toBeNull();
       clickEl(host.querySelector('#nav-vod'), '#nav-vod');
       expect(host.querySelector('#input-vod-search-trigger')).not.toBeNull();
       expect(host.querySelector('#input-vod-search')).toBeNull();
+      const firstVodBtn = host.querySelector('main .cursor-pointer') as HTMLElement | null;
+      if (firstVodBtn) {
+        act(() => {
+          firstVodBtn.focus();
+        });
+      }
+      // Navigate to very top boundary, then ▲▲ opens view search
+      for (let i = 0; i < 6; i++) pressTvKey('ArrowUp');
+      expect(host.querySelector('#input-vod-search')).not.toBeNull();
 
       // Open TV Menu again and go to Settings
       act(() => {
@@ -977,7 +1039,7 @@ describe('Luma TV End-to-End UI & Button Smoke Test', () => {
       clickEl(host.querySelector('#nav-settings'), '#nav-settings');
       expect(host.querySelector('#luma-sidebar')).toBeNull();
 
-      // 4. D-Pad navigates onto Cloud Sync Email -> Password -> Submit button, IME Done hands off focus, and OK triggers Sign In!
+      // 4. D-Pad navigates onto Cloud Sync Email -> Password -> immediately jumps to Sign In & Sync Devices!
       const signInTab = host.querySelector('#btn-cloud-tab-signin') as HTMLElement | null;
       const emailInput = host.querySelector('#input-cloud-email') as HTMLInputElement | null;
       const passwordInput = host.querySelector(
@@ -993,6 +1055,7 @@ describe('Luma TV End-to-End UI & Button Smoke Test', () => {
       expect(submitAuthBtn).not.toBeNull();
       expect(submitAuthBtn!.disabled).toBe(false);
 
+      showTvKeyboard.mockClear();
       act(() => {
         signInTab!.focus();
       });
@@ -1011,11 +1074,14 @@ describe('Luma TV End-to-End UI & Button Smoke Test', () => {
       });
       expect(document.activeElement).toBe(passwordInput);
 
-      // Typing Password + Gboard Done advances directly to Sign In & Sync Devices button!
+      // Typing Password + Gboard Done (blur to body OR Enter OR ArrowDown) jumps IMMEDIATELY to Sign In & Sync Devices (NEVER Forgot password?)!
       pressTvKey('Enter');
       setInputValue(passwordInput!, 'secret123');
       act(() => {
-        window.dispatchEvent(new CustomEvent('luma-tv-ime-closed'));
+        passwordInput!.blur();
+      });
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 25));
       });
       expect(document.activeElement).toBe(submitAuthBtn);
 

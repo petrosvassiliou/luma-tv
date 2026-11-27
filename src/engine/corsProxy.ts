@@ -127,6 +127,35 @@ export function isNonNativeBrowserContainer(rawUrl: string): boolean {
   }
 }
 
+/**
+ * Converts an Xtream Codes or M3U live MPEG-TS URL (`.../12345.ts` or `?output=ts`)
+ * into its HLS `.m3u8` equivalent so hardware native HLS/Stagefright decoders on
+ * Android TV & Apple devices can decode HEVC/H.265 video when MSE only plays audio.
+ */
+export function tryConvertXtreamTsToHlsUrl(rawUrl: string): string | null {
+  const trimmed = rawUrl.trim();
+  if (!trimmed) return null;
+  try {
+    const parsed = new URL(trimmed);
+    let changed = false;
+    if (/\.ts$/i.test(parsed.pathname)) {
+      parsed.pathname = parsed.pathname.replace(/\.ts$/i, '.m3u8');
+      changed = true;
+    }
+    const out = parsed.searchParams.get('output')?.toLowerCase();
+    if (out === 'ts' || out === 'mpegts') {
+      parsed.searchParams.set('output', 'm3u8');
+      changed = true;
+    }
+    return changed ? parsed.toString() : null;
+  } catch {
+    if (/\.ts($|\?)/i.test(trimmed)) {
+      return trimmed.replace(/\.ts($|\?)/i, '.m3u8$1');
+    }
+    return null;
+  }
+}
+
 export function buildRustTranscodeStreamUrl(
   rawUrl: string,
   proxy: EngineProxyConfig,

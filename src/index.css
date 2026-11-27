@@ -290,13 +290,21 @@ button:not(:disabled) {
   box-shadow: 0 0 22px rgba(56, 189, 248, 0.45);
 }
 
-/* Android TV 10-Foot Non-Clipping Inset Focus Highlights, Smoked-Glass & Zero-Lag Transitions (strictly scoped to [data-tv="true"]) */
+/* Android TV 10-Foot Non-Clipping Inset Focus Highlights, Zero-Blur 60fps Smoked-Glass & Instant D-Pad (strictly scoped to [data-tv="true"]) */
 [data-tv="true"] *,
+[data-tv="true"] *::before,
+[data-tv="true"] *::after,
 [data-tv="true"] .m3-spring,
 [data-tv="true"] .m3-primary-pill,
 [data-tv="true"] .m3-secondary-tonal,
 [data-tv="true"] .m3-tonal-active {
-  transition-duration: 35ms !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  transition: none !important;
+}
+
+[data-tv="true"] .animate-luma-live {
+  animation: none !important;
 }
 
 [data-tv="true"] button:hover,
@@ -319,14 +327,14 @@ button:not(:disabled) {
 }
 
 [data-tv="true"] main .bg-\[\#1A202E\] {
-  background-color: rgba(20, 26, 38, 0.72) !important;
+  background-color: rgba(20, 26, 38, 0.86) !important;
 }
 
 [data-tv="true"] main .bg-\[\#232B3D\] {
-  background-color: rgba(32, 41, 60, 0.76) !important;
+  background-color: rgba(32, 41, 60, 0.88) !important;
 }
 
-/* Inset focus ring sits 100% inside each element's border-radius so corners are NEVER clipped by overflow:hidden */
+/* Inset focus ring sits 100% inside each element's border-radius with zero GPU filter/blur shader passes */
 [data-tv="true"] button:focus,
 [data-tv="true"] input:focus,
 [data-tv="true"] select:focus,
@@ -337,10 +345,13 @@ button:not(:disabled) {
 [data-tv="true"] [data-spatial="true"]:focus,
 [data-tv="true"] [tabindex="0"]:focus {
   outline: none !important;
-  box-shadow:
-    inset 0 0 0 2px #7FD4FF,
-    inset 0 0 16px rgba(127, 212, 255, 0.24) !important;
-  filter: brightness(1.12);
+  box-shadow: inset 0 0 0 2px #7FD4FF !important;
+}
+
+[data-tv="true"] [data-channel-id]:focus,
+[data-tv="true"] #luma-sidebar button:focus:not(.m3-tonal-active) {
+  background-color: rgba(56, 189, 248, 0.22) !important;
+  color: #FFFFFF !important;
 }
 
 [data-tv="true"] input[type="checkbox"]:focus,
@@ -353,7 +364,5 @@ button:not(:disabled) {
 [data-tv="true"] input[data-tv-editing="true"]:focus,
 [data-tv="true"] textarea[data-tv-editing="true"]:focus {
   outline: none !important;
-  box-shadow:
-    inset 0 0 0 2px #34D399,
-    inset 0 0 16px rgba(52, 211, 153, 0.28) !important;
+  box-shadow: inset 0 0 0 2px #34D399 !important;
 }

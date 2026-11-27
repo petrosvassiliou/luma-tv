@@ -76,7 +76,19 @@ export const CommandBar: React.FC<CommandBarProps> = ({
   const [selectedIndex, setSelectedIndex] = useState(0);
 
   useEffect(() => {
-    const id = requestAnimationFrame(() => inputRef.current?.focus());
+    const id = requestAnimationFrame(() => {
+      const inp = inputRef.current;
+      if (!inp) return;
+      inp.focus();
+      if (document.documentElement.dataset.tv === 'true') {
+        inp.dataset.tvEditing = 'true';
+        (
+          window as unknown as {
+            LumaAndroidWindow?: { showTvKeyboard?: () => void };
+          }
+        ).LumaAndroidWindow?.showTvKeyboard?.();
+      }
+    });
     return () => cancelAnimationFrame(id);
   }, []);
 
@@ -224,15 +236,27 @@ export const CommandBar: React.FC<CommandBarProps> = ({
     if (e.defaultPrevented) return;
     if (e.key === 'Escape') {
       e.preventDefault();
+      e.stopPropagation();
       onClose();
     } else if (e.key === 'ArrowDown') {
       e.preventDefault();
+      e.stopPropagation();
+      if (document.documentElement.dataset.tv === 'true' && inputRef.current) {
+        delete inputRef.current.dataset.tvEditing;
+        (
+          window as unknown as {
+            LumaAndroidWindow?: { hideTvKeyboard?: () => void };
+          }
+        ).LumaAndroidWindow?.hideTvKeyboard?.();
+      }
       setSelectedIndex((prev) => (hits.length ? (prev + 1) % hits.length : 0));
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
+      e.stopPropagation();
       setSelectedIndex((prev) => (hits.length ? (prev - 1 + hits.length) % hits.length : 0));
     } else if (e.key === 'Enter' && hits[safeSelected]) {
       e.preventDefault();
+      e.stopPropagation();
       hits[safeSelected].onExecute();
     }
   };

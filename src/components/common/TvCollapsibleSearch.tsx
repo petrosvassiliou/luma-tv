@@ -48,6 +48,15 @@ export const TvCollapsibleSearch: React.FC<TvCollapsibleSearchProps> = ({
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
+    if (!isTv) return;
+    const onHotkeySearch = () => {
+      setTvExpanded(true);
+    };
+    window.addEventListener('luma-tv-open-view-search', onHotkeySearch);
+    return () => window.removeEventListener('luma-tv-open-view-search', onHotkeySearch);
+  }, [isTv]);
+
+  useEffect(() => {
     if (!isTv || !tvExpanded) return;
     const raf = window.requestAnimationFrame(() => {
       const el = inputRef.current;
@@ -63,13 +72,15 @@ export const TvCollapsibleSearch: React.FC<TvCollapsibleSearchProps> = ({
     return (
       <button
         id={id ? `${id}-trigger` : undefined}
+        data-tv-skip-initial="true"
         type="button"
         onClick={() => setTvExpanded(true)}
-        className="inline-flex h-8.5 shrink-0 items-center gap-1.5 rounded-full bg-white/10 px-3.5 text-xs font-semibold text-slate-100 ring-1 ring-white/15 hover:bg-white/20"
-        title={placeholder}
+        className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full bg-white/10 px-3 text-xs font-semibold text-slate-100 ring-1 ring-white/15 hover:bg-white/20"
+        title={`${placeholder} (▲▲)`}
       >
         <Search className="h-3.5 w-3.5 text-[#7FD4FF]" />
         <span>{buttonLabel}</span>
+        <span className="text-[10px] text-[#7FD4FF]/85">▲▲</span>
       </button>
     );
   }

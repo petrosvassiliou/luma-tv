@@ -204,6 +204,8 @@ import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import androidx.activity.OnBackPressedCallback
 import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.mediarouter.media.MediaRouteSelector
 import androidx.mediarouter.media.MediaRouter
 import com.google.android.gms.cast.CastMediaControlIntent
@@ -345,13 +347,11 @@ class MainActivity : TauriActivity() {
     if (isTvDevice) {
       // Android TV is always full-screen content-first (edge-to-edge + keep screen awake)
       applyLumaFullscreen(true, notifyJs = false)
-      window.decorView.viewTreeObserver.addOnGlobalLayoutListener {
+      // Reliably detect Gboard TV opening & closing via WindowInsetsCompat.Type.ime()
+      // (works even under immersive fullscreen where decorView height does not resize)
+      ViewCompat.setOnApplyWindowInsetsListener(window.decorView) { view, insets ->
         try {
-          val r = android.graphics.Rect()
-          window.decorView.getWindowVisibleDisplayFrame(r)
-          val screenHeight = window.decorView.rootView.height
-          val keypadHeight = screenHeight - r.bottom
-          val imeNowVisible = screenHeight > 0 && keypadHeight > screenHeight * 0.16
+          val imeNowVisible = insets.isVisible(WindowInsetsCompat.Type.ime())
           if (tvImeWasVisible && !imeNowVisible) {
             lumaWebView?.requestFocus()
             lumaWebView?.evaluateJavascript(
@@ -361,6 +361,7 @@ class MainActivity : TauriActivity() {
           }
           tvImeWasVisible = imeNowVisible
         } catch (_: Throwable) {}
+        ViewCompat.onApplyWindowInsets(view, insets)
       }
       val tvBackCallback = object : OnBackPressedCallback(true) {
         override fun handleOnBackPressed() {
@@ -407,7 +408,10 @@ class MainActivity : TauriActivity() {
         KeyEvent.KEYCODE_CHANNEL_DOWN -> "channel-down"
         KeyEvent.KEYCODE_GUIDE, KeyEvent.KEYCODE_TV_DATA_SERVICE -> "guide"
         KeyEvent.KEYCODE_INFO -> "info"
-        KeyEvent.KEYCODE_SEARCH -> "search"
+        KeyEvent.KEYCODE_SEARCH,
+        KeyEvent.KEYCODE_MENU,
+        KeyEvent.KEYCODE_PROG_YELLOW,
+        KeyEvent.KEYCODE_BOOKMARK -> "search"
         KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
         KeyEvent.KEYCODE_MEDIA_PLAY,
         KeyEvent.KEYCODE_MEDIA_PAUSE -> "play-pause"
