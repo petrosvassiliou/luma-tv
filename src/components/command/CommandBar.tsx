@@ -221,6 +221,7 @@ export const CommandBar: React.FC<CommandBarProps> = ({
   const safeSelected = hits.length > 0 ? Math.min(selectedIndex, hits.length - 1) : 0;
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.defaultPrevented) return;
     if (e.key === 'Escape') {
       e.preventDefault();
       onClose();

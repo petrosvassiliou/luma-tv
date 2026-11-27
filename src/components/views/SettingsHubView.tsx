@@ -51,6 +51,7 @@ import {
 interface SettingsHubViewProps {
   designMode: PlatformDesignMode;
   isAppleDevice: boolean;
+  isAndroidTv?: boolean;
   detectedPlatformLabel: string;
   onChangeDesignMode: (mode: PlatformDesignMode) => void;
   preferences: LumaPreferences;
@@ -83,6 +84,7 @@ interface SettingsHubViewProps {
 export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
   designMode,
   isAppleDevice,
+  isAndroidTv = false,
   detectedPlatformLabel,
   onChangeDesignMode,
   preferences,
@@ -205,7 +207,7 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
           }`}
         >
           <Keyboard className="h-4 w-4 text-sky-300" />
-          <span>{t.shortcutsGuideBtn}</span>
+          <span>{isAndroidTv ? 'TV Remote Guide' : t.shortcutsGuideBtn}</span>
         </button>
       </div>
 
@@ -617,39 +619,41 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
             ))}
           </div>
 
-          <div className="border-t border-white/10 pt-3 space-y-2.5">
-            <label className="flex items-center gap-2.5 text-xs text-slate-200">
-              <input
-                type="checkbox"
-                checked={Boolean(preferences.autoMiniPlayerOnSwitch)}
-                onChange={(e) =>
-                  onChangePreferences({
-                    ...preferences,
-                    autoMiniPlayerOnSwitch: e.target.checked,
-                  })
-                }
-                className="h-4 w-4 accent-sky-400"
-              />
-              <PictureInPicture2 className="h-4 w-4 shrink-0 text-sky-300" />
-              <span>{t.autoMiniPlayerToggleLabel}</span>
-            </label>
+          {!isAndroidTv && (
+            <div className="border-t border-white/10 pt-3 space-y-2.5">
+              <label className="flex items-center gap-2.5 text-xs text-slate-200">
+                <input
+                  type="checkbox"
+                  checked={Boolean(preferences.autoMiniPlayerOnSwitch)}
+                  onChange={(e) =>
+                    onChangePreferences({
+                      ...preferences,
+                      autoMiniPlayerOnSwitch: e.target.checked,
+                    })
+                  }
+                  className="h-4 w-4 accent-sky-400"
+                />
+                <PictureInPicture2 className="h-4 w-4 shrink-0 text-sky-300" />
+                <span>{t.autoMiniPlayerToggleLabel}</span>
+              </label>
 
-            <label className="flex items-center gap-2.5 text-xs text-slate-200">
-              <input
-                type="checkbox"
-                checked={preferences.spatialDpadEnabled}
-                onChange={(e) =>
-                  onChangePreferences({
-                    ...preferences,
-                    spatialDpadEnabled: e.target.checked,
-                  })
-                }
-                className="h-4 w-4 accent-sky-400"
-              />
-              <Gamepad2 className="h-4 w-4 shrink-0 text-sky-300" />
-              <span>{t.dpadToggleLabel}</span>
-            </label>
-          </div>
+              <label className="flex items-center gap-2.5 text-xs text-slate-200">
+                <input
+                  type="checkbox"
+                  checked={preferences.spatialDpadEnabled}
+                  onChange={(e) =>
+                    onChangePreferences({
+                      ...preferences,
+                      spatialDpadEnabled: e.target.checked,
+                    })
+                  }
+                  className="h-4 w-4 accent-sky-400"
+                />
+                <Gamepad2 className="h-4 w-4 shrink-0 text-sky-300" />
+                <span>{t.dpadToggleLabel}</span>
+              </label>
+            </div>
+          )}
         </div>
 
         {/* Stream Buffer & Decoder Tuning */}
@@ -748,39 +752,41 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
           </div>
         </div>
 
-        {/* Cross-Platform JSON Backup Export & Restore */}
-        <div className={`${panelClass} space-y-3`}>
-          <div className="text-xs font-semibold text-white">{t.backupTitle}</div>
-          <p className="text-[11px] text-slate-400">{t.backupSubtitle}</p>
+        {/* Cross-Platform JSON Backup Export & Restore (Desktop / Mobile / Googlebook file-picker) */}
+        {!isAndroidTv && (
+          <div className={`${panelClass} space-y-3`}>
+            <div className="text-xs font-semibold text-white">{t.backupTitle}</div>
+            <p className="text-[11px] text-slate-400">{t.backupSubtitle}</p>
 
-          <div className="flex flex-wrap items-center gap-2.5 pt-1">
-            <button
-              type="button"
-              onClick={exportBackupJson}
-              className={`inline-flex items-center gap-2 rounded-full px-4 py-2 text-xs font-bold ${
-                isM3 ? 'm3-primary-pill' : 'lg-pill-active'
-              }`}
-            >
-              <Download className="h-3.5 w-3.5" />
-              <span>{t.exportBackupBtn}</span>
-            </button>
+            <div className="flex flex-wrap items-center gap-2.5 pt-1">
+              <button
+                type="button"
+                onClick={exportBackupJson}
+                className={`inline-flex items-center gap-2 rounded-full px-4 py-2 text-xs font-bold ${
+                  isM3 ? 'm3-primary-pill' : 'lg-pill-active'
+                }`}
+              >
+                <Download className="h-3.5 w-3.5" />
+                <span>{t.exportBackupBtn}</span>
+              </button>
 
-            <label
-              className={`inline-flex cursor-pointer items-center gap-2 rounded-full px-4 py-2 text-xs font-semibold ${
-                isM3 ? 'm3-secondary-tonal' : 'lg-capsule text-white'
-              }`}
-            >
-              <FileUp className="h-3.5 w-3.5" />
-              <span>{t.importBackupBtn}</span>
-              <input
-                type="file"
-                accept=".json"
-                onChange={handleBackupImportFile}
-                className="hidden"
-              />
-            </label>
+              <label
+                className={`inline-flex cursor-pointer items-center gap-2 rounded-full px-4 py-2 text-xs font-semibold ${
+                  isM3 ? 'm3-secondary-tonal' : 'lg-capsule text-white'
+                }`}
+              >
+                <FileUp className="h-3.5 w-3.5" />
+                <span>{t.importBackupBtn}</span>
+                <input
+                  type="file"
+                  accept=".json"
+                  onChange={handleBackupImportFile}
+                  className="hidden"
+                />
+              </label>
+            </div>
           </div>
-        </div>
+        )}
       </div>
 
       {/* Parental Control 4-Digit PIN Lock */}

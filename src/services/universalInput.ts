@@ -45,13 +45,20 @@ export async function invokeNativeWindowControl(
  * Polls connected Gamepads / Android TV Bluetooth Remotes for 10-foot D-Pad zapping,
  * section switching (L1 / R1 bumpers), and Command Bar activation (Y button).
  */
-export function useUniversalGamepadControls(handlers: {
-  onChannelPrev: () => void;
-  onChannelNext: () => void;
-  onCycleSectionPrev: () => void;
-  onCycleSectionNext: () => void;
-  onToggleSearch: () => void;
-}): void {
+export function useUniversalGamepadControls(
+  handlers: {
+    onChannelPrev: () => void;
+    onChannelNext: () => void;
+    onCycleSectionPrev: () => void;
+    onCycleSectionNext: () => void;
+    onToggleSearch: () => void;
+  },
+  options?: {
+    isAndroidTv?: boolean;
+  }
+): void {
+  const isAndroidTv = Boolean(options?.isAndroidTv);
+
   useEffect(() => {
     if (typeof navigator === 'undefined' || !('getGamepads' in navigator)) return;
 
@@ -62,13 +69,17 @@ export function useUniversalGamepadControls(handlers: {
       const pads = navigator.getGamepads ? navigator.getGamepads() : [];
       const pad = pads[0];
       if (pad && now - lastActionMs > 210) {
-        // Standard Gamepad Mapping: 12=Up, 13=Down, 4=L1, 5=R1, 3=Y
-        if (pad.buttons[12]?.pressed || (pad.axes[1] !== undefined && pad.axes[1] < -0.65)) {
+        // On Android TV, Bluetooth TV remotes expose D-Pad Up/Down as Gamepad buttons 12/13;
+        // never hijack D-Pad Up/Down for channel zapping on Android TV so spatial UI focus works cleanly.
+        if (
+          !isAndroidTv &&
+          (pad.buttons[12]?.pressed || (pad.axes[1] !== undefined && pad.axes[1] < -0.65))
+        ) {
           handlers.onChannelPrev();
           lastActionMs = now;
         } else if (
-          pad.buttons[13]?.pressed ||
-          (pad.axes[1] !== undefined && pad.axes[1] > 0.65)
+          !isAndroidTv &&
+          (pad.buttons[13]?.pressed || (pad.axes[1] !== undefined && pad.axes[1] > 0.65))
         ) {
           handlers.onChannelNext();
           lastActionMs = now;
@@ -88,7 +99,7 @@ export function useUniversalGamepadControls(handlers: {
 
     rafId = requestAnimationFrame(poll);
     return () => cancelAnimationFrame(rafId);
-  }, [handlers]);
+  }, [handlers, isAndroidTv]);
 }
 
 /**

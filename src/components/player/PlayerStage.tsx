@@ -132,6 +132,7 @@ interface PlayerStageProps {
   nowMs: number;
   locale?: LumaLocale;
   mpvAvailable?: boolean;
+  isAndroidTv?: boolean;
   onToast?: (message: string) => void;
   onAmbientRgbChange?: (rgb: string) => void;
 }
@@ -172,6 +173,7 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
   nowMs,
   locale = 'de',
   mpvAvailable = false,
+  isAndroidTv = false,
   onToast,
   onAmbientRgbChange,
 }) => {
@@ -216,7 +218,7 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
     setLocalFullscreenState(next);
     onChangeStageFullscreen?.(next);
   };
-  const autoHideHudMode = layoutVariant === 'cinema' || effectiveFullscreen;
+  const autoHideHudMode = layoutVariant === 'cinema' || effectiveFullscreen || isAndroidTv;
 
   const isMuted = controlledMuted ?? fallbackMutedState;
   const volume = controlledVolume ?? fallbackVolumeState;
@@ -463,17 +465,34 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
     if (autoHideHudMode) {
       hudHideTimerRef.current = window.setTimeout(() => {
         setHudVisible(false);
-      }, 3200);
+      }, 3400);
     }
   };
 
   useEffect(() => {
+    if (!autoHideHudMode) return;
+    setHudVisible(true);
+    if (hudHideTimerRef.current !== null) {
+      window.clearTimeout(hudHideTimerRef.current);
+    }
+    hudHideTimerRef.current = window.setTimeout(() => {
+      setHudVisible(false);
+    }, 3400);
+  }, [activeSessionId, autoHideHudMode]);
+
+  useEffect(() => {
+    const onTvWakeHud = () => {
+      revealHud();
+    };
+    window.addEventListener('luma-tv-wake-hud', onTvWakeHud);
     return () => {
+      window.removeEventListener('luma-tv-wake-hud', onTvWakeHud);
       if (hudHideTimerRef.current !== null) {
         window.clearTimeout(hudHideTimerRef.current);
       }
     };
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoHideHudMode]);
 
   // Dismiss DSP/Tracks or Cast/AirPlay popovers immediately when clicking anywhere outside or pressing Escape
   useEffect(() => {
@@ -1147,7 +1166,7 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
               ? 'mx-3 mt-1 mb-2 h-[60vh] min-h-[350px] shrink-0'
               : 'mx-2.5 mt-2 h-[37vh] min-h-[250px] max-h-[385px] shrink-0'
       } ${
-        effectiveFullscreen
+      effectiveFullscreen || (isAndroidTv && layoutVariant === 'cinema')
           ? ''
           : isM3
             ? 'rounded-[26px] bg-[#0B0E14] ring-1 ring-white/[0.06]'
@@ -1254,8 +1273,12 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
           </div>
         ) : null}
 
-        <div className="pointer-events-none absolute inset-x-0 top-0 z-10 h-20 bg-gradient-to-b from-black/70 to-transparent" />
-        <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 h-36 bg-gradient-to-t from-black/90 via-black/40 to-transparent" />
+        {showChrome && (
+          <>
+            <div className="pointer-events-none absolute inset-x-0 top-0 z-10 h-20 bg-gradient-to-b from-black/70 to-transparent" />
+            <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 h-36 bg-gradient-to-t from-black/90 via-black/40 to-transparent" />
+          </>
+        )}
 
         {/* Decluttered Top-Left Stream Status */}
         <div
@@ -1511,9 +1534,15 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
               </div>
             </div>
 
-            {/* Transport, DVR, Audio DSP & Spatial Controls (Container-responsive, never overlaps Identity) */}
+            {/* Transport, DVR, Audio DSP & Spatial Controls (Decluttered automatically on Android TV) */}
             <div className="flex shrink-0 flex-wrap items-center gap-1.5">
-              {!isOnDemandVod && (
+              {isAndroidTv && !isSeekable && (
+                <span className="mr-2 hidden rounded-full bg-white/[0.06] px-3 py-1.5 text-[11px] font-medium text-slate-300 sm:inline-flex">
+                  OK Channels · ◀ Menu · ▲▼ Ch+/−
+                </span>
+              )}
+
+              {!isAndroidTv && !isOnDemandVod && (
                 <div
                   className={
                     isM3
@@ -1560,21 +1589,23 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
                 </button>
               )}
 
-              <button
-                id="btn-play-pause"
-                type="button"
-                onClick={togglePlay}
-                className={
-                  isM3
-                    ? `m3-primary-pill flex h-10 w-12 shrink-0 items-center justify-center ${
-                        isPlaying ? 'rounded-[14px]' : 'rounded-full'
-                      }`
-                    : 'lg-pill-active flex h-9 w-9 shrink-0 items-center justify-center rounded-full'
-                }
-                title={isPlaying ? 'Pause' : t.playNow}
-              >
-                {isPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
-              </button>
+              {(!isAndroidTv || isSeekable) && (
+                <button
+                  id="btn-play-pause"
+                  type="button"
+                  onClick={togglePlay}
+                  className={
+                    isM3
+                      ? `m3-primary-pill flex h-10 w-12 shrink-0 items-center justify-center ${
+                          isPlaying ? 'rounded-[14px]' : 'rounded-full'
+                        }`
+                      : 'lg-pill-active flex h-9 w-9 shrink-0 items-center justify-center rounded-full'
+                  }
+                  title={isPlaying ? 'Pause' : t.playNow}
+                >
+                  {isPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
+                </button>
+              )}
 
               {isSeekable && (
                 <button
@@ -1610,82 +1641,88 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
                 </button>
               )}
 
-              {/* Live DVR Record Button */}
-              <button
-                id="btn-dvr-record"
-                type="button"
-                onClick={toggleDvrRecording}
-                className={`flex shrink-0 items-center justify-center rounded-full transition ${
-                  isM3 ? 'h-10 w-10' : 'h-9 w-9'
-                } ${
-                  isRecording
-                    ? 'bg-rose-500 text-white shadow-[0_0_16px_rgba(244,63,94,0.65)]'
-                    : isM3
-                      ? 'm3-secondary-tonal'
-                      : 'lg-capsule text-rose-300'
-                }`}
-                title={
-                  isRecording
-                    ? 'Stop & save recording'
-                    : 'Start live recording'
-                }
-              >
-                {isRecording ? (
-                  <Square className="h-3.5 w-3.5 fill-current" />
-                ) : (
-                  <Circle className="h-3.5 w-3.5 fill-rose-400 text-rose-400" />
-                )}
-              </button>
-
-              {/* Volume */}
-              <div
-                className={
-                  isM3
-                    ? 'flex h-10 shrink-0 items-center gap-2 rounded-full bg-[#232B3D] px-3'
-                    : 'lg-capsule flex h-9 shrink-0 items-center gap-1.5 rounded-full px-2.5'
-                }
-              >
+              {/* Live DVR Record Button (Desktop / Mobile / Googlebook only) */}
+              {!isAndroidTv && (
                 <button
-                  id="btn-mute-toggle"
+                  id="btn-dvr-record"
                   type="button"
-                  onClick={toggleMute}
-                  className="shrink-0 text-slate-100 hover:text-white"
-                  title="Mute / Unmute"
+                  onClick={toggleDvrRecording}
+                  className={`flex shrink-0 items-center justify-center rounded-full transition ${
+                    isM3 ? 'h-10 w-10' : 'h-9 w-9'
+                  } ${
+                    isRecording
+                      ? 'bg-rose-500 text-white shadow-[0_0_16px_rgba(244,63,94,0.65)]'
+                      : isM3
+                        ? 'm3-secondary-tonal'
+                        : 'lg-capsule text-rose-300'
+                  }`}
+                  title={
+                    isRecording
+                      ? 'Stop & save recording'
+                      : 'Start live recording'
+                  }
                 >
-                  {effectiveMuted ? (
-                    <VolumeX className="h-4 w-4 text-[#7FD4FF]" />
+                  {isRecording ? (
+                    <Square className="h-3.5 w-3.5 fill-current" />
                   ) : (
-                    <Volume2 className="h-4 w-4" />
+                    <Circle className="h-3.5 w-3.5 fill-rose-400 text-rose-400" />
                   )}
                 </button>
-                <input
-                  id="slider-volume"
-                  type="range"
-                  min={0}
-                  max={1}
-                  step={0.05}
-                  value={effectiveMuted ? 0 : volume}
-                  onChange={(e) => handleVolumeChange(Number(e.target.value))}
-                  className="hidden h-1 w-14 cursor-pointer accent-sky-400 @lg:block"
-                  aria-label="Volume"
-                />
-              </div>
+              )}
+
+              {/* Volume (Hardware TV Remote handles volume natively on Android TV) */}
+              {!isAndroidTv && (
+                <div
+                  className={
+                    isM3
+                      ? 'flex h-10 shrink-0 items-center gap-2 rounded-full bg-[#232B3D] px-3'
+                      : 'lg-capsule flex h-9 shrink-0 items-center gap-1.5 rounded-full px-2.5'
+                  }
+                >
+                  <button
+                    id="btn-mute-toggle"
+                    type="button"
+                    onClick={toggleMute}
+                    className="shrink-0 text-slate-100 hover:text-white"
+                    title="Mute / Unmute"
+                  >
+                    {effectiveMuted ? (
+                      <VolumeX className="h-4 w-4 text-[#7FD4FF]" />
+                    ) : (
+                      <Volume2 className="h-4 w-4" />
+                    )}
+                  </button>
+                  <input
+                    id="slider-volume"
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={effectiveMuted ? 0 : volume}
+                    onChange={(e) => handleVolumeChange(Number(e.target.value))}
+                    className="hidden h-1 w-14 cursor-pointer accent-sky-400 @lg:block"
+                    aria-label="Volume"
+                  />
+                </div>
+              )}
 
               {/* Aspect Ratio */}
-              <button
-                id="btn-aspect-ratio"
-                type="button"
-                onClick={cycleAspect}
-                className={
-                  isM3
-                    ? 'm3-secondary-tonal hidden h-10 shrink-0 items-center gap-1.5 rounded-full px-3 text-[11px] font-semibold @3xl:inline-flex luma-tabular'
-                    : 'lg-capsule hidden h-9 shrink-0 items-center gap-1 rounded-full px-2.5 text-[11px] font-medium text-white/90 @3xl:inline-flex luma-tabular'
-                }
-                title="Aspect Ratio"
-              >
-                <Expand className="h-3.5 w-3.5" />
-                <span>{aspectMode.toUpperCase()}</span>
-              </button>
+              {(!isAndroidTv || isSeekable) && (
+                <button
+                  id="btn-aspect-ratio"
+                  type="button"
+                  onClick={cycleAspect}
+                  className={
+                    isM3
+                      ? 'm3-secondary-tonal hidden h-10 shrink-0 items-center gap-1.5 rounded-full px-3 text-[11px] font-semibold @3xl:inline-flex luma-tabular'
+                      : 'lg-capsule hidden h-9 shrink-0 items-center gap-1 rounded-full px-2.5 text-[11px] font-medium text-white/90 @3xl:inline-flex luma-tabular'
+                  }
+                  title="Aspect Ratio"
+                >
+                  <Expand className="h-3.5 w-3.5" />
+                  <span>{aspectMode.toUpperCase()}</span>
+                </button>
+              )}
 
               {/* Quality, Audio DSP, Audio Tracks & Subtitles Menu */}
               <div ref={qualityMenuRef} className="relative shrink-0">
@@ -1717,6 +1754,7 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
 
                 {showQualityMenu && (
                   <div
+                    id="luma-dsp-popover"
                     className={`luma-scroll absolute right-0 bottom-12 z-30 max-h-[420px] w-80 overflow-y-auto p-3.5 text-xs ${
                       isM3
                         ? 'rounded-[24px] bg-[#232B3D] shadow-2xl ring-1 ring-white/10'
@@ -2017,7 +2055,8 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
                 )}
               </div>
 
-              {/* Stream to Chromecast & Apple TV (Automatic Wi-Fi Network Discovery) */}
+              {/* Stream to Chromecast & Apple TV (Hidden on Android TV since Luma is already running on the TV) */}
+              {!isAndroidTv && (
               <div ref={castMenuRef} className="relative shrink-0">
                 <button
                   id="btn-cast-airplay"
@@ -2232,117 +2271,123 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
                   </div>
                 )}
               </div>
-
-              {/* Native MPV Hardware Handoff (macOS / Desktop Tauri) */}
-              {mpvAvailable && (
-                <button
-                  id="btn-launch-mpv"
-                  type="button"
-                  onClick={handleLaunchMpv}
-                  className={
-                    isM3
-                      ? 'm3-secondary-tonal hidden h-10 shrink-0 items-center gap-1.5 rounded-full px-3 text-[11px] font-semibold text-[#C4E8FF] @md:inline-flex'
-                      : 'lg-capsule hidden h-9 shrink-0 items-center gap-1.5 rounded-full px-2.5 text-[11px] font-semibold text-sky-200 @md:inline-flex'
-                  }
-                  title={t.mpvLaunchTitle}
-                >
-                  <ExternalLink className="h-3.5 w-3.5 shrink-0" />
-                  <span className="hidden @2xl:inline">{t.mpvLaunchBtn}</span>
-                </button>
               )}
 
-              {/* Dual View 2x Quick Split */}
-              {!isOnDemandVod && onOpenDualView && (
-                <button
-                  id="btn-open-dualview"
-                  type="button"
-                  onClick={onOpenDualView}
-                  className={
-                    isM3
-                      ? 'm3-secondary-tonal flex h-10 w-10 shrink-0 items-center justify-center rounded-full'
-                      : 'lg-capsule flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-white/90'
-                  }
-                  title={t.navDualview}
-                >
-                  <Columns2 className="h-3.5 w-3.5" />
-                </button>
-              )}
-
-              {/* In-App Floating PiP */}
-              <button
-                id="btn-inapp-pip"
-                type="button"
-                onClick={onDetachInAppPip}
-                className={
-                  isM3
-                    ? 'm3-secondary-tonal hidden h-10 w-10 shrink-0 items-center justify-center rounded-full @md:flex'
-                    : 'lg-capsule hidden h-9 w-9 shrink-0 items-center justify-center rounded-full text-white/90 @md:flex'
-                }
-                title="Open Mini Player"
-              >
-                <AppWindow className="h-3.5 w-3.5" />
-              </button>
-
-              {/* OS-Wide PiP */}
-              <button
-                id="btn-os-pip"
-                type="button"
-                onClick={handleOsPip}
-                className={
-                  isM3
-                    ? 'm3-secondary-tonal hidden h-10 w-10 shrink-0 items-center justify-center rounded-full @3xl:flex'
-                    : 'lg-capsule hidden h-9 w-9 shrink-0 items-center justify-center rounded-full text-white/90 @3xl:flex'
-                }
-                title="System Picture-in-Picture"
-              >
-                <PictureInPicture2 className="h-3.5 w-3.5" />
-              </button>
-
-              {/* Theater Toggle (only in EPG split view when not in Fullscreen) */}
-              {layoutVariant === 'split' && !effectiveFullscreen && (
-                <button
-                  id="btn-theater-height"
-                  type="button"
-                  onClick={onToggleTheaterExpanded}
-                  className={
-                    isM3
-                      ? 'm3-secondary-tonal flex h-10 w-10 shrink-0 items-center justify-center rounded-full'
-                      : 'lg-capsule flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-white/90'
-                  }
-                  title={theaterExpanded ? 'Compact EPG split' : 'Expand stage'}
-                >
-                  {theaterExpanded ? (
-                    <Minimize2 className="h-3.5 w-3.5" />
-                  ) : (
-                    <Maximize2 className="h-3.5 w-3.5" />
+              {/* Desktop / Tablet Window Controls (Hidden on Android TV where full-screen is always standard) */}
+              {!isAndroidTv && (
+                <>
+                  {/* Native MPV Hardware Handoff (macOS / Desktop Tauri) */}
+                  {mpvAvailable && (
+                    <button
+                      id="btn-launch-mpv"
+                      type="button"
+                      onClick={handleLaunchMpv}
+                      className={
+                        isM3
+                          ? 'm3-secondary-tonal hidden h-10 shrink-0 items-center gap-1.5 rounded-full px-3 text-[11px] font-semibold text-[#C4E8FF] @md:inline-flex'
+                          : 'lg-capsule hidden h-9 shrink-0 items-center gap-1.5 rounded-full px-2.5 text-[11px] font-semibold text-sky-200 @md:inline-flex'
+                      }
+                      title={t.mpvLaunchTitle}
+                    >
+                      <ExternalLink className="h-3.5 w-3.5 shrink-0" />
+                      <span className="hidden @2xl:inline">{t.mpvLaunchBtn}</span>
+                    </button>
                   )}
-                </button>
-              )}
 
-              {/* Fullscreen */}
-              <button
-                id="btn-fullscreen"
-                type="button"
-                onClick={() => void handleFullscreen()}
-                aria-pressed={effectiveFullscreen}
-                className={
-                  isM3
-                    ? `${
-                        effectiveFullscreen ? 'm3-tonal-active' : 'm3-secondary-tonal'
-                      } inline-flex h-10 shrink-0 items-center justify-center gap-1.5 rounded-full px-3 text-[11px] font-semibold`
-                    : `${
-                        effectiveFullscreen ? 'lg-pill-active' : 'lg-capsule text-white/90'
-                      } inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-full px-2.5 text-[11px] font-medium`
-                }
-                title={t.fullscreen}
-              >
-                {effectiveFullscreen ? (
-                  <Minimize2 className="h-3.5 w-3.5 shrink-0" />
-                ) : (
-                  <Maximize2 className="h-3.5 w-3.5 shrink-0" />
-                )}
-                <span className="hidden whitespace-nowrap @4xl:inline">{t.fullscreen}</span>
-              </button>
+                  {/* Dual View 2x Quick Split */}
+                  {!isOnDemandVod && onOpenDualView && (
+                    <button
+                      id="btn-open-dualview"
+                      type="button"
+                      onClick={onOpenDualView}
+                      className={
+                        isM3
+                          ? 'm3-secondary-tonal flex h-10 w-10 shrink-0 items-center justify-center rounded-full'
+                          : 'lg-capsule flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-white/90'
+                      }
+                      title={t.navDualview}
+                    >
+                      <Columns2 className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+
+                  {/* In-App Floating PiP */}
+                  <button
+                    id="btn-inapp-pip"
+                    type="button"
+                    onClick={onDetachInAppPip}
+                    className={
+                      isM3
+                        ? 'm3-secondary-tonal hidden h-10 w-10 shrink-0 items-center justify-center rounded-full @md:flex'
+                        : 'lg-capsule hidden h-9 w-9 shrink-0 items-center justify-center rounded-full text-white/90 @md:flex'
+                    }
+                    title="Open Mini Player"
+                  >
+                    <AppWindow className="h-3.5 w-3.5" />
+                  </button>
+
+                  {/* OS-Wide PiP */}
+                  <button
+                    id="btn-os-pip"
+                    type="button"
+                    onClick={handleOsPip}
+                    className={
+                      isM3
+                        ? 'm3-secondary-tonal hidden h-10 w-10 shrink-0 items-center justify-center rounded-full @3xl:flex'
+                        : 'lg-capsule hidden h-9 w-9 shrink-0 items-center justify-center rounded-full text-white/90 @3xl:flex'
+                    }
+                    title="System Picture-in-Picture"
+                  >
+                    <PictureInPicture2 className="h-3.5 w-3.5" />
+                  </button>
+
+                  {/* Theater Toggle (only in EPG split view when not in Fullscreen) */}
+                  {layoutVariant === 'split' && !effectiveFullscreen && (
+                    <button
+                      id="btn-theater-height"
+                      type="button"
+                      onClick={onToggleTheaterExpanded}
+                      className={
+                        isM3
+                          ? 'm3-secondary-tonal flex h-10 w-10 shrink-0 items-center justify-center rounded-full'
+                          : 'lg-capsule flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-white/90'
+                      }
+                      title={theaterExpanded ? 'Compact EPG split' : 'Expand stage'}
+                    >
+                      {theaterExpanded ? (
+                        <Minimize2 className="h-3.5 w-3.5" />
+                      ) : (
+                        <Maximize2 className="h-3.5 w-3.5" />
+                      )}
+                    </button>
+                  )}
+
+                  {/* Fullscreen */}
+                  <button
+                    id="btn-fullscreen"
+                    type="button"
+                    onClick={() => void handleFullscreen()}
+                    aria-pressed={effectiveFullscreen}
+                    className={
+                      isM3
+                        ? `${
+                            effectiveFullscreen ? 'm3-tonal-active' : 'm3-secondary-tonal'
+                          } inline-flex h-10 shrink-0 items-center justify-center gap-1.5 rounded-full px-3 text-[11px] font-semibold`
+                        : `${
+                            effectiveFullscreen ? 'lg-pill-active' : 'lg-capsule text-white/90'
+                          } inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-full px-2.5 text-[11px] font-medium`
+                    }
+                    title={t.fullscreen}
+                  >
+                    {effectiveFullscreen ? (
+                      <Minimize2 className="h-3.5 w-3.5 shrink-0" />
+                    ) : (
+                      <Maximize2 className="h-3.5 w-3.5 shrink-0" />
+                    )}
+                    <span className="hidden whitespace-nowrap @4xl:inline">{t.fullscreen}</span>
+                  </button>
+                </>
+              )}
             </div>
           </div>
         </div>

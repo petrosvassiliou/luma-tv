@@ -54,7 +54,10 @@ import {
   type WatchHistoryEntry,
 } from './services/lumaCloudSync';
 import { syncOsMediaSession } from './services/mediaSession';
-import { useSpatialDpadFocus } from './services/spatialNavigation';
+import {
+  isTvTextEditableInput,
+  useSpatialDpadFocus,
+} from './services/spatialNavigation';
 import {
   useCrossPlatformFileDropAndLaunch,
   useUniversalGamepadControls,
@@ -253,6 +256,9 @@ export function App() {
     useState<ChannelContextMenuTarget | null>(null);
 
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [tvNavOpen, setTvNavOpen] = useState(false);
+  const [tvChannelOverlayOpen, setTvChannelOverlayOpen] = useState(false);
+  const lastTvBackExitAttemptRef = useRef<number>(0);
   const [activeSection, setActiveSection] = useState<NavigationSection>('live');
   const [selectedGroupId, setSelectedGroupId] = useState<string>('all');
   const [focusedSeriesId, setFocusedSeriesId] = useState<string | null>(null);
@@ -3393,13 +3399,248 @@ export function App() {
     }),
     [sectionOrder, zapRelative]
   );
-  useUniversalGamepadControls(gamepadHandlers);
+  useUniversalGamepadControls(gamepadHandlers, {
+    isAndroidTv: platformEnv.isAndroidTv,
+  });
 
-  // 10-Foot Spatial Arrow Focus Engine
+  // 10-Foot Spatial Arrow Focus Engine (Always active on Android TV; Shift+Arrow on Desktop/Googlebook)
   useSpatialDpadFocus(
-    preferences.spatialDpadEnabled,
-    Boolean(commandBarOpen || pendingPinGroup || shortcutsOpen || inspectMedia)
+    preferences.spatialDpadEnabled || platformEnv.isAndroidTv,
+    Boolean(commandBarOpen || pendingPinGroup || shortcutsOpen || inspectMedia),
+    {
+      tvMode: platformEnv.isAndroidTv,
+      activeSection,
+    }
   );
+
+  const isTvBareLive =
+    platformEnv.isAndroidTv &&
+    activeSection === 'live' &&
+    !activeOnDemand &&
+    !timeshiftProgram &&
+    !tvNavOpen &&
+    !tvChannelOverlayOpen &&
+    !commandBarOpen &&
+    !pendingPinGroup &&
+    !shortcutsOpen &&
+    !inspectMedia &&
+    !channelMenuTarget;
+
+  useEffect(() => {
+    if (platformEnv.isAndroidTv) {
+      document.documentElement.dataset.tv = 'true';
+    } else {
+      delete document.documentElement.dataset.tv;
+    }
+    return () => {
+      delete document.documentElement.dataset.tv;
+      delete document.documentElement.dataset.tvLiveBare;
+    };
+  }, [platformEnv.isAndroidTv]);
+
+  useEffect(() => {
+    if (isTvBareLive) {
+      document.documentElement.dataset.tvLiveBare = 'true';
+    } else {
+      delete document.documentElement.dataset.tvLiveBare;
+    }
+  }, [isTvBareLive]);
+
+  const handleAndroidTvBack = useCallback((): boolean => {
+    const bridge = (
+      window as unknown as {
+        LumaAndroidWindow?: {
+          hideTvKeyboard?: () => void;
+          exitApp?: () => void;
+        };
+      }
+    ).LumaAndroidWindow;
+
+    const active = document.activeElement as HTMLElement | null;
+    if (isTvTextEditableInput(active) && active.dataset.tvEditing === 'true') {
+      delete active.dataset.tvEditing;
+      bridge?.hideTvKeyboard?.();
+      return true;
+    }
+
+    if (channelMenuTarget) {
+      setChannelMenuTarget(null);
+      return true;
+    }
+    if (commandBarOpen) {
+      setCommandBarOpen(false);
+      return true;
+    }
+    if (pendingPinGroup) {
+      setPendingPinGroup(null);
+      return true;
+    }
+    if (inspectMedia) {
+      setInspectMedia(null);
+      return true;
+    }
+    if (shortcutsOpen) {
+      setShortcutsOpen(false);
+      return true;
+    }
+    if (
+      document.querySelector('#luma-dsp-popover, #luma-cast-popover, [role="listbox"]')
+    ) {
+      window.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })
+      );
+      return true;
+    }
+    if (tvNavOpen) {
+      setTvNavOpen(false);
+      return true;
+    }
+    if (tvChannelOverlayOpen) {
+      setTvChannelOverlayOpen(false);
+      return true;
+    }
+    if (activeSection === 'live' && activeOnDemand) {
+      if (activeOnDemand.returnSection === 'series') {
+        setFocusedSeriesId(activeOnDemand.favoriteTargetId);
+      }
+      const dest = activeOnDemand.returnSection;
+      setActiveOnDemand(null);
+      setActiveSection(dest);
+      return true;
+    }
+    if (activeSection === 'live' && timeshiftProgram) {
+      setTimeshiftProgram(null);
+      setTimeshiftStreamUrl(null);
+      setTimeshiftResumeSec(0);
+      return true;
+    }
+    if (activeSection === 'series') {
+      const seriesBackBtn = document.getElementById('btn-series-back-catalog');
+      if (seriesBackBtn) {
+        seriesBackBtn.click();
+        return true;
+      }
+    }
+    if (activeSection !== 'live') {
+      setActiveSection('live');
+      return true;
+    }
+
+    const now = Date.now();
+    if (now - lastTvBackExitAttemptRef.current < 2800) {
+      lastTvBackExitAttemptRef.current = 0;
+      bridge?.exitApp?.();
+      return true;
+    }
+    lastTvBackExitAttemptRef.current = now;
+    setToastMessage('Press Back again to exit Luma TV');
+    window.setTimeout(() => setToastMessage(null), 2800);
+    return true;
+  }, [
+    channelMenuTarget,
+    commandBarOpen,
+    pendingPinGroup,
+    inspectMedia,
+    shortcutsOpen,
+    tvNavOpen,
+    tvChannelOverlayOpen,
+    activeSection,
+    activeOnDemand,
+    timeshiftProgram,
+  ]);
+
+  useEffect(() => {
+    if (!platformEnv.isAndroidTv) return;
+
+    const tvWindow = window as unknown as {
+      __lumaHandleAndroidTvBack?: () => boolean;
+    };
+    tvWindow.__lumaHandleAndroidTvBack = handleAndroidTvBack;
+
+    const onOpenNav = () => {
+      setTvChannelOverlayOpen(false);
+      setTvNavOpen(true);
+    };
+    const onCloseOverlays = () => {
+      setTvNavOpen(false);
+      setTvChannelOverlayOpen(false);
+    };
+    const onRemoteKey = (evt: Event) => {
+      const action = (evt as CustomEvent<{ action?: string }>).detail?.action;
+      if (action === 'channel-up') {
+        zapRelative(-1);
+        window.dispatchEvent(new CustomEvent('luma-tv-wake-hud'));
+      } else if (action === 'channel-down') {
+        zapRelative(1);
+        window.dispatchEvent(new CustomEvent('luma-tv-wake-hud'));
+      } else if (action === 'guide') {
+        setTvNavOpen(false);
+        setTvChannelOverlayOpen(false);
+        setActiveSection((cur) => (cur === 'live-epg' ? 'live' : 'live-epg'));
+      } else if (action === 'info') {
+        window.dispatchEvent(new CustomEvent('luma-tv-wake-hud'));
+      } else if (action === 'search') {
+        setTvNavOpen(false);
+        setTvChannelOverlayOpen(false);
+        setCommandBarOpen(true);
+      } else if (action === 'play-pause') {
+        const playBtn = document.getElementById('btn-play-pause');
+        if (playBtn) {
+          playBtn.click();
+        } else {
+          const v = document.querySelector('video');
+          if (v) {
+            if (v.paused) void v.play();
+            else v.pause();
+          }
+        }
+      }
+    };
+
+    const onTvBareLiveAndBackKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'BrowserBack' || e.key === 'GoBack') {
+        e.preventDefault();
+        e.stopPropagation();
+        handleAndroidTvBack();
+        return;
+      }
+
+      if (!isTvBareLive) return;
+      if (document.querySelector('#luma-dsp-popover, #luma-cast-popover, [role="listbox"]')) {
+        return;
+      }
+
+      const isOk = e.key === 'Enter' || e.key === 'Select' || e.keyCode === 23;
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        zapRelative(-1);
+        window.dispatchEvent(new CustomEvent('luma-tv-wake-hud'));
+      } else if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        zapRelative(1);
+        window.dispatchEvent(new CustomEvent('luma-tv-wake-hud'));
+      } else if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        setTvNavOpen(true);
+      } else if (e.key === 'ArrowRight' || isOk) {
+        e.preventDefault();
+        setTvChannelOverlayOpen(true);
+      }
+    };
+
+    window.addEventListener('luma-tv-open-nav', onOpenNav);
+    window.addEventListener('luma-tv-close-overlays', onCloseOverlays);
+    window.addEventListener('luma-tv-remote-key', onRemoteKey);
+    window.addEventListener('keydown', onTvBareLiveAndBackKeyDown);
+
+    return () => {
+      delete tvWindow.__lumaHandleAndroidTvBack;
+      window.removeEventListener('luma-tv-open-nav', onOpenNav);
+      window.removeEventListener('luma-tv-close-overlays', onCloseOverlays);
+      window.removeEventListener('luma-tv-remote-key', onRemoteKey);
+      window.removeEventListener('keydown', onTvBareLiveAndBackKeyDown);
+    };
+  }, [platformEnv.isAndroidTv, handleAndroidTvBack, isTvBareLive, zapRelative]);
 
   const fileDropHandlers = useMemo(
     () => ({
@@ -3772,6 +4013,7 @@ export function App() {
       nowMs={nowMs}
       locale={preferences.locale}
       mpvAvailable={Boolean(nativeProbe?.mpvAvailable)}
+      isAndroidTv={platformEnv.isAndroidTv}
       onToast={(msg) => {
         setToastMessage(msg);
         window.setTimeout(() => setToastMessage(null), 3200);
@@ -3783,8 +4025,9 @@ export function App() {
   return (
     <div
       data-design={designMode}
+      data-tv={platformEnv.isAndroidTv ? 'true' : undefined}
       className={`relative flex h-dvh w-screen flex-col overflow-hidden text-slate-100 transition-colors duration-300 ${
-        stageFullscreen
+        stageFullscreen || (platformEnv.isAndroidTv && activeSection === 'live')
           ? 'bg-black'
           : isM3
             ? 'bg-[#131722]'
@@ -3803,7 +4046,7 @@ export function App() {
         />
       )}
 
-      {!stageFullscreen && (
+      {!stageFullscreen && !platformEnv.isAndroidTv && (
         <CustomTitlebar
           designMode={designMode}
           locale={preferences.locale}
@@ -3855,7 +4098,43 @@ export function App() {
         )}
 
       <div className="relative z-10 flex min-h-0 flex-1 overflow-hidden">
-        {!stageFullscreen &&
+        {platformEnv.isAndroidTv ? (
+          tvNavOpen && (
+            <Sidebar
+              designMode={designMode}
+              locale={preferences.locale}
+              collapsed={false}
+              activeSection={activeSection}
+              onSelectSection={(sec) => {
+                setTvNavOpen(false);
+                setTvChannelOverlayOpen(false);
+                if (sec === 'dualview') {
+                  openDualView();
+                  return;
+                }
+                setActiveSection(sec);
+                setPipDismissedWhileBrowsing(false);
+              }}
+              selectedGroupId={selectedGroupId}
+              onSelectGroup={(gid) => {
+                handleSelectSidebarGroup(gid);
+                setTvNavOpen(false);
+                setTvChannelOverlayOpen(true);
+              }}
+              groups={groups}
+              totalChannelCount={channels.length}
+              favoritesCount={
+                favoriteIds.size + favoriteVodIds.size + favoriteSeriesIds.size
+              }
+              collectionsCount={customBouquets.length}
+              isAndroidTv
+              nowMs={nowMs}
+              onOpenCommandBar={() => setCommandBarOpen(true)}
+              onCloseTvMenu={() => setTvNavOpen(false)}
+            />
+          )
+        ) : (
+          !stageFullscreen &&
           (activeSection !== 'dualview' || dualSidebarOpen) && (
             <Sidebar
               designMode={designMode}
@@ -3879,9 +4158,24 @@ export function App() {
               }
               collectionsCount={customBouquets.length}
             />
-          )}
+          )
+        )}
 
         <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
+          {platformEnv.isAndroidTv && activeSection !== 'live' && !tvNavOpen && (
+            <div className="pointer-events-none fixed right-5 bottom-4 z-30 flex items-center gap-2">
+              <button
+                id="btn-tv-open-menu"
+                type="button"
+                onClick={() => setTvNavOpen(true)}
+                className="pointer-events-auto inline-flex items-center gap-2 rounded-full bg-[#1A202E]/90 px-3.5 py-1.5 text-[11px] font-semibold text-slate-200 shadow-lg ring-1 ring-white/15 backdrop-blur-md hover:bg-[#232B3D]"
+              >
+                <span>◀ Menu</span>
+                <span className="opacity-45">·</span>
+                <span>Back → Live TV</span>
+              </button>
+            </div>
+          )}
           {numericBuffer && (
             <div
               className={`pointer-events-none absolute top-5 right-6 z-50 px-5 py-3.5 ${
@@ -3940,6 +4234,9 @@ export function App() {
               onOpenEpgView={() => setActiveSection('live-epg')}
               isStageFullscreen={stageFullscreen}
               revealDrawerSignal={liveDrawerRevealSignal}
+              isAndroidTv={platformEnv.isAndroidTv}
+              tvChannelOverlayOpen={tvChannelOverlayOpen}
+              onChangeTvChannelOverlayOpen={setTvChannelOverlayOpen}
             >
               {!detachedPipInEpg && renderMainPlayerStage('cinema')}
             </LiveTvView>
@@ -4178,6 +4475,7 @@ export function App() {
             <SettingsHubView
               designMode={designMode}
               isAppleDevice={platformEnv.isApple}
+              isAndroidTv={platformEnv.isAndroidTv}
               detectedPlatformLabel={platformEnv.label}
               onChangeDesignMode={handleChangeDesignMode}
               preferences={preferences}
@@ -4212,7 +4510,7 @@ export function App() {
         </main>
       </div>
 
-      {!stageFullscreen && showFloatingInAppPip && (
+      {!stageFullscreen && !platformEnv.isAndroidTv && showFloatingInAppPip && (
         <InAppPipWindow
           designMode={designMode}
           channel={activeChannel}
@@ -4385,6 +4683,7 @@ export function App() {
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 p-4 backdrop-blur-md"
         >
           <div
+            data-tv-modal="true"
             onClick={(e) => e.stopPropagation()}
             className={`w-full max-w-lg p-6 text-xs ${
               isM3
@@ -4393,7 +4692,9 @@ export function App() {
             }`}
           >
             <div className="mb-4 flex items-center justify-between">
-              <h3 className="text-sm font-semibold text-white">{t.shortcutsHelpTitle}</h3>
+              <h3 className="text-sm font-semibold text-white">
+                {platformEnv.isAndroidTv ? 'Android TV Remote Controls' : t.shortcutsHelpTitle}
+              </h3>
               <button
                 type="button"
                 onClick={() => setShortcutsOpen(false)}
@@ -4403,32 +4704,57 @@ export function App() {
               </button>
             </div>
 
-            <div className="space-y-2.5 text-slate-200">
-              <div className="flex justify-between border-b border-white/10 pb-2">
-                <span>Globale Suche (Kanäle, EPG, VOD, Serien)</span>
-                <kbd className="rounded bg-white/10 px-2 py-0.5 font-mono">⌘K / Ctrl+K</kbd>
+            {platformEnv.isAndroidTv ? (
+              <div className="space-y-2.5 text-slate-200">
+                <div className="flex justify-between border-b border-white/10 pb-2">
+                  <span>Open Channel &amp; Collection List (Full-Screen TV)</span>
+                  <kbd className="rounded bg-white/10 px-2.5 py-0.5 font-mono">OK / ▶</kbd>
+                </div>
+                <div className="flex justify-between border-b border-white/10 pb-2">
+                  <span>Open Navigation Menu (Live TV, EPG, Movies, Settings)</span>
+                  <kbd className="rounded bg-white/10 px-2.5 py-0.5 font-mono">◀ Left</kbd>
+                </div>
+                <div className="flex justify-between border-b border-white/10 pb-2">
+                  <span>Instant Channel Zapping in Full-Screen TV</span>
+                  <kbd className="rounded bg-white/10 px-2.5 py-0.5 font-mono">▲ / ▼ or CH+/−</kbd>
+                </div>
+                <div className="flex justify-between border-b border-white/10 pb-2">
+                  <span>Edit Text Field / Open TV On-Screen Keyboard</span>
+                  <kbd className="rounded bg-white/10 px-2.5 py-0.5 font-mono">OK on Input</kbd>
+                </div>
+                <div className="flex justify-between">
+                  <span>Close Menu / Return to Full-Screen Live TV</span>
+                  <kbd className="rounded bg-white/10 px-2.5 py-0.5 font-mono">Back</kbd>
+                </div>
               </div>
-              <div className="flex justify-between border-b border-white/10 pb-2">
-                <span>Sofort-Zapping (Vorheriger / Nächster Kanal)</span>
-                <kbd className="rounded bg-white/10 px-2 py-0.5 font-mono">Alt + ↑ / ↓</kbd>
+            ) : (
+              <div className="space-y-2.5 text-slate-200">
+                <div className="flex justify-between border-b border-white/10 pb-2">
+                  <span>Globale Suche (Kanäle, EPG, VOD, Serien)</span>
+                  <kbd className="rounded bg-white/10 px-2 py-0.5 font-mono">⌘K / Ctrl+K</kbd>
+                </div>
+                <div className="flex justify-between border-b border-white/10 pb-2">
+                  <span>Sofort-Zapping (Vorheriger / Nächster Kanal)</span>
+                  <kbd className="rounded bg-white/10 px-2 py-0.5 font-mono">Alt + ↑ / ↓</kbd>
+                </div>
+                <div className="flex justify-between border-b border-white/10 pb-2">
+                  <span>10-Foot Spatial TV / Remote Fokus starten</span>
+                  <kbd className="rounded bg-white/10 px-2 py-0.5 font-mono">Shift + Pfeiltasten</kbd>
+                </div>
+                <div className="flex justify-between border-b border-white/10 pb-2">
+                  <span>Direkte Kanalnummernwahl im Live-TV</span>
+                  <kbd className="rounded bg-white/10 px-2 py-0.5 font-mono">0 – 9</kbd>
+                </div>
+                <div className="flex justify-between border-b border-white/10 pb-2">
+                  <span>Multiview Tonfokus wechseln</span>
+                  <kbd className="rounded bg-white/10 px-2 py-0.5 font-mono">1 – 4</kbd>
+                </div>
+                <div className="flex justify-between">
+                  <span>Android / Tablet Touch-Zapping</span>
+                  <span className="text-sky-300">Vertikal auf Player wischen</span>
+                </div>
               </div>
-              <div className="flex justify-between border-b border-white/10 pb-2">
-                <span>10-Foot Spatial TV / Remote Fokus starten</span>
-                <kbd className="rounded bg-white/10 px-2 py-0.5 font-mono">Shift + Pfeiltasten</kbd>
-              </div>
-              <div className="flex justify-between border-b border-white/10 pb-2">
-                <span>Direkte Kanalnummernwahl im Live-TV</span>
-                <kbd className="rounded bg-white/10 px-2 py-0.5 font-mono">0 – 9</kbd>
-              </div>
-              <div className="flex justify-between border-b border-white/10 pb-2">
-                <span>Multiview Tonfokus wechseln</span>
-                <kbd className="rounded bg-white/10 px-2 py-0.5 font-mono">1 – 4</kbd>
-              </div>
-              <div className="flex justify-between">
-                <span>Android / Tablet Touch-Zapping</span>
-                <span className="text-sky-300">Vertikal auf Player wischen</span>
-              </div>
-            </div>
+            )}
           </div>
         </div>
       )}

@@ -863,4 +863,146 @@ describe('Luma TV End-to-End UI & Button Smoke Test', () => {
     expect(remainingDbSources).toHaveLength(1);
     expect(remainingDbSources[0].name).toBe('Home Xtream');
   });
+
+  it('optimizes Android TV for full-screen content-first viewing, on-demand remote menus, Cloud Sync input editing, and hierarchical Back', async () => {
+    // Unmount default macOS instance and mount under an Android TV environment + native bridge mock
+    await act(async () => {
+      root!.unmount();
+    });
+
+    const showTvKeyboard = vi.fn();
+    const hideTvKeyboard = vi.fn();
+    const exitApp = vi.fn();
+    const tvWindow = window as unknown as {
+      LumaAndroidWindow?: {
+        isTelevision: () => boolean;
+        showTvKeyboard: () => void;
+        hideTvKeyboard: () => void;
+        exitApp: () => void;
+      };
+      __lumaHandleAndroidTvBack?: () => boolean;
+    };
+    tvWindow.LumaAndroidWindow = {
+      isTelevision: () => true,
+      showTvKeyboard,
+      hideTvKeyboard,
+      exitApp,
+    };
+    Object.defineProperty(navigator, 'userAgent', {
+      configurable: true,
+      value:
+        'Mozilla/5.0 (Linux; Android 12; SHIELD Android TV Build/SN1; wv) AppleWebKit/537.36',
+    });
+
+    const pressTvKey = (key: string) => {
+      act(() => {
+        const target = (document.activeElement as HTMLElement | null) ?? document.body;
+        target.dispatchEvent(
+          new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true })
+        );
+      });
+    };
+
+    try {
+      root = createRoot(host);
+      await act(async () => {
+        root!.render(<AppComponent />);
+      });
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 40));
+      });
+
+      // 1. Content-first Full-Screen Live TV: zero desktop titlebar, zero permanent sidebar, zero permanent channel drawer, zero Cast/PiP clutter
+      expect(host.querySelector('[data-tv="true"]')).not.toBeNull();
+      expect(host.querySelector('#luma-custom-titlebar')).toBeNull();
+      expect(host.querySelector('#luma-sidebar')).toBeNull();
+      expect(host.querySelector('#luma-live-channel-drawer')).toBeNull();
+      expect(host.querySelector('#btn-cast-airplay')).toBeNull();
+      expect(host.querySelector('#btn-inapp-pip')).toBeNull();
+
+      // 2. Pressing OK/Enter on full-screen Live TV opens the on-demand Channel Overlay; Back closes it without exiting
+      pressTvKey('Enter');
+      expect(host.querySelector('#luma-live-channel-drawer')).not.toBeNull();
+      let backHandled = false;
+      act(() => {
+        backHandled = Boolean(tvWindow.__lumaHandleAndroidTvBack?.());
+      });
+      expect(backHandled).toBe(true);
+      expect(host.querySelector('#luma-live-channel-drawer')).toBeNull();
+      expect(exitApp).not.toHaveBeenCalled();
+
+      // 3. Pressing ArrowLeft on full-screen Live TV summons the floating TV Navigation Menu
+      pressTvKey('ArrowLeft');
+      expect(host.querySelector('#luma-sidebar')).not.toBeNull();
+
+      // Select Settings -> TV Navigation Menu auto-hides so Settings fills the full screen
+      clickEl(host.querySelector('#nav-settings'), '#nav-settings');
+      expect(host.querySelector('#luma-sidebar')).toBeNull();
+
+      // 4. D-Pad navigates directly onto Cloud Sync Email -> Password -> Submit button, and OK opens TV keyboard
+      const signInTab = host.querySelector('#btn-cloud-tab-signin') as HTMLElement | null;
+      const emailInput = host.querySelector('#input-cloud-email') as HTMLInputElement | null;
+      const passwordInput = host.querySelector(
+        '#input-cloud-password'
+      ) as HTMLInputElement | null;
+      const submitAuthBtn = host.querySelector(
+        '#btn-cloud-submit-auth'
+      ) as HTMLButtonElement | null;
+
+      expect(signInTab).not.toBeNull();
+      expect(emailInput).not.toBeNull();
+      expect(passwordInput).not.toBeNull();
+      expect(submitAuthBtn).not.toBeNull();
+      expect(submitAuthBtn!.disabled).toBe(false);
+
+      act(() => {
+        signInTab!.focus();
+      });
+      // Navigate Sign In -> Create Account -> Email Input -> Password Input -> Submit Button using D-Pad arrows!
+      pressTvKey('ArrowDown');
+      pressTvKey('ArrowDown');
+      expect(document.activeElement).toBe(emailInput);
+      expect(emailInput!.dataset.tvEditing).toBeUndefined();
+
+      // Pressing OK/Enter on Email input enters TV editing mode & opens Android TV keyboard (without submitting!)
+      pressTvKey('Enter');
+      expect(emailInput!.dataset.tvEditing).toBe('true');
+      expect(showTvKeyboard).toHaveBeenCalledTimes(1);
+
+      // Pressing Back while typing exits TV editing mode & hides keyboard without leaving Settings!
+      act(() => {
+        tvWindow.__lumaHandleAndroidTvBack?.();
+      });
+      expect(emailInput!.dataset.tvEditing).toBeUndefined();
+      expect(hideTvKeyboard).toHaveBeenCalledTimes(1);
+      expect(host.querySelector('#input-cloud-email')).not.toBeNull();
+
+      // Continue navigating down to Password input and then Submit button
+      pressTvKey('ArrowDown');
+      expect(document.activeElement).toBe(passwordInput);
+      pressTvKey('ArrowDown');
+      expect(document.activeElement).toBe(submitAuthBtn);
+
+      // 5. Pressing Back in Settings returns to Full-Screen Live TV (NEVER exits the app!)
+      act(() => {
+        tvWindow.__lumaHandleAndroidTvBack?.();
+      });
+      expect(host.querySelector('#input-cloud-email')).toBeNull();
+      expect(exitApp).not.toHaveBeenCalled();
+
+      // 6. On clean Full-Screen Live TV, first Back shows confirmation toast; second Back exits cleanly
+      act(() => {
+        tvWindow.__lumaHandleAndroidTvBack?.();
+      });
+      expect(exitApp).not.toHaveBeenCalled();
+      expect(host.textContent).toContain('Press Back again to exit Luma TV');
+
+      act(() => {
+        tvWindow.__lumaHandleAndroidTvBack?.();
+      });
+      expect(exitApp).toHaveBeenCalledTimes(1);
+    } finally {
+      delete tvWindow.LumaAndroidWindow;
+    }
+  });
 });

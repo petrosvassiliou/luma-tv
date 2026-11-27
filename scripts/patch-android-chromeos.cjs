@@ -183,7 +183,10 @@ console.log(`Created ${path.relative(rootDir, castProviderPath)}.`);
 // 3b. Patch MainActivity.kt with LumaAndroidWindow fullscreen + native Cast/NSD network scanner
 const patchedMain = `package ${androidPkg}
 
+import android.app.UiModeManager
 import android.content.Context
+import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.net.wifi.WifiManager
@@ -191,10 +194,12 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.view.KeyEvent
 import android.view.View
 import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
+import android.view.inputmethod.InputMethodManager
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import androidx.activity.OnBackPressedCallback
@@ -226,9 +231,23 @@ class MainActivity : TauriActivity() {
 
   @Volatile
   private var lumaImmersiveFullscreen: Boolean = false
+  private var isTvDevice: Boolean = false
   private var lumaWebView: WebView? = null
   private var fullscreenBackCallback: OnBackPressedCallback? = null
   private val mainHandler = Handler(Looper.getMainLooper())
+
+  private fun detectTelevisionDevice(): Boolean {
+    return try {
+      val uiModeManager = getSystemService(Context.UI_MODE_SERVICE) as? UiModeManager
+      val isTvMode = uiModeManager?.currentModeType == Configuration.UI_MODE_TYPE_TELEVISION
+      val hasLeanback = packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
+      val isChromeOs = packageManager.hasSystemFeature("org.chromium.arc") ||
+        packageManager.hasSystemFeature("org.chromium.arc.device_management")
+      (isTvMode || hasLeanback) && !isChromeOs
+    } catch (_: Throwable) {
+      false
+    }
+  }
 
   // Native Google Cast & MediaRouter Discovery State
   private var mediaRouter: MediaRouter? = null
@@ -321,13 +340,34 @@ class MainActivity : TauriActivity() {
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
-    val callback = object : OnBackPressedCallback(false) {
-      override fun handleOnBackPressed() {
-        applyLumaFullscreen(false, notifyJs = true)
+    isTvDevice = detectTelevisionDevice()
+    if (isTvDevice) {
+      // Android TV is always full-screen content-first (edge-to-edge + keep screen awake)
+      applyLumaFullscreen(true, notifyJs = false)
+      val tvBackCallback = object : OnBackPressedCallback(true) {
+        override fun handleOnBackPressed() {
+          val wv = lumaWebView
+          if (wv != null) {
+            wv.evaluateJavascript(
+              "(function(){ return window.__lumaHandleAndroidTvBack ? Boolean(window.__lumaHandleAndroidTvBack()) : false; })()"
+            ) { result ->
+              if (result != "true" && lumaImmersiveFullscreen && !isTvDevice) {
+                applyLumaFullscreen(false, notifyJs = true)
+              }
+            }
+          }
+        }
       }
+      onBackPressedDispatcher.addCallback(this, tvBackCallback)
+    } else {
+      val callback = object : OnBackPressedCallback(false) {
+        override fun handleOnBackPressed() {
+          applyLumaFullscreen(false, notifyJs = true)
+        }
+      }
+      fullscreenBackCallback = callback
+      onBackPressedDispatcher.addCallback(this, callback)
     }
-    fullscreenBackCallback = callback
-    onBackPressedDispatcher.addCallback(this, callback)
     initCastSubsystemOnMainThread()
   }
 
@@ -335,6 +375,35 @@ class MainActivity : TauriActivity() {
     super.onWebViewCreate(webView)
     lumaWebView = webView
     webView.addJavascriptInterface(LumaWindowBridge(), "LumaAndroidWindow")
+    if (isTvDevice) {
+      webView.isFocusable = true
+      webView.isFocusableInTouchMode = true
+      webView.requestFocus()
+    }
+  }
+
+  override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+    if (isTvDevice && event.action == KeyEvent.ACTION_DOWN) {
+      val remoteAction: String? = when (event.keyCode) {
+        KeyEvent.KEYCODE_CHANNEL_UP -> "channel-up"
+        KeyEvent.KEYCODE_CHANNEL_DOWN -> "channel-down"
+        KeyEvent.KEYCODE_GUIDE, KeyEvent.KEYCODE_TV_DATA_SERVICE -> "guide"
+        KeyEvent.KEYCODE_INFO -> "info"
+        KeyEvent.KEYCODE_SEARCH -> "search"
+        KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
+        KeyEvent.KEYCODE_MEDIA_PLAY,
+        KeyEvent.KEYCODE_MEDIA_PAUSE -> "play-pause"
+        else -> null
+      }
+      if (remoteAction != null) {
+        lumaWebView?.evaluateJavascript(
+          "window.dispatchEvent(new CustomEvent('luma-tv-remote-key',{detail:{action:'$remoteAction'}}));",
+          null
+        )
+        return true
+      }
+    }
+    return super.dispatchKeyEvent(event)
   }
 
   override fun onDestroy() {
@@ -726,14 +795,50 @@ class MainActivity : TauriActivity() {
 
   override fun onWindowFocusChanged(hasFocus: Boolean) {
     super.onWindowFocusChanged(hasFocus)
-    if (hasFocus && lumaImmersiveFullscreen) {
+    if (hasFocus && (lumaImmersiveFullscreen || isTvDevice)) {
       applyLumaFullscreen(true, notifyJs = false)
     }
   }
 
   inner class LumaWindowBridge {
     @JavascriptInterface
+    fun isTelevision(): Boolean = isTvDevice
+
+    @JavascriptInterface
+    fun showTvKeyboard() {
+      runOnUiThread {
+        val wv = lumaWebView ?: return@runOnUiThread
+        wv.requestFocus()
+        val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+        val shown = imm?.showSoftInput(wv, InputMethodManager.SHOW_IMPLICIT) ?: false
+        if (!shown) {
+          imm?.showSoftInput(wv, 0)
+        }
+      }
+    }
+
+    @JavascriptInterface
+    fun hideTvKeyboard() {
+      runOnUiThread {
+        val wv = lumaWebView ?: return@runOnUiThread
+        val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+        imm?.hideSoftInputFromWindow(wv.windowToken, 0)
+      }
+    }
+
+    @JavascriptInterface
+    fun exitApp() {
+      runOnUiThread {
+        finish()
+      }
+    }
+
+    @JavascriptInterface
     fun setFullscreen(enabled: Boolean) {
+      if (isTvDevice && !enabled) {
+        applyLumaFullscreen(true, notifyJs = false)
+        return
+      }
       applyLumaFullscreen(enabled, notifyJs = true)
     }
 

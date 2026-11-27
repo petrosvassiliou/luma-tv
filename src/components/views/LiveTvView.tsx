@@ -40,6 +40,9 @@ interface LiveTvViewProps {
   onOpenEpgView: () => void;
   isStageFullscreen?: boolean;
   revealDrawerSignal?: number;
+  isAndroidTv?: boolean;
+  tvChannelOverlayOpen?: boolean;
+  onChangeTvChannelOverlayOpen?: (open: boolean) => void;
   children: React.ReactNode; // Renders the cinema-sized PlayerStage
 }
 
@@ -63,6 +66,9 @@ export const LiveTvView: React.FC<LiveTvViewProps> = ({
   onOpenEpgView,
   isStageFullscreen = false,
   revealDrawerSignal = 0,
+  isAndroidTv = false,
+  tvChannelOverlayOpen = false,
+  onChangeTvChannelOverlayOpen,
   children,
 }) => {
   const isM3 = designMode === 'm3-expressive';
@@ -98,6 +104,10 @@ export const LiveTvView: React.FC<LiveTvViewProps> = ({
     return searchChannelsRanked(channels, filterQuery, channels.length).items;
   }, [channels, filterQuery]);
 
+  const effectiveDrawerOpen = isAndroidTv
+    ? tvChannelOverlayOpen
+    : !isStageFullscreen && drawerOpen;
+
   useEffect(() => {
     const el = listRef.current;
     if (!el) return;
@@ -109,9 +119,9 @@ export const LiveTvView: React.FC<LiveTvViewProps> = ({
     const ro = new ResizeObserver(measure);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [drawerOpen]);
+  }, [effectiveDrawerOpen]);
 
-  // Keep active channel scrolled into view when group/collection changes
+  // Keep active channel scrolled into view when group/collection changes (and auto-focus on Android TV)
   useEffect(() => {
     const el = listRef.current;
     if (!el || filterQuery.trim()) return;
@@ -123,8 +133,21 @@ export const LiveTvView: React.FC<LiveTvViewProps> = ({
       targetTop + ROW_HEIGHT > el.scrollTop + el.clientHeight
     ) {
       el.scrollTop = Math.max(0, targetTop - el.clientHeight / 2 + ROW_HEIGHT);
+      setScrollTop(el.scrollTop);
     }
-  }, [activeChannelId, filteredChannels, filterQuery, drawerOpen]);
+    if (isAndroidTv && effectiveDrawerOpen) {
+      const raf = window.requestAnimationFrame(() => {
+        const row = el.querySelector<HTMLElement>(
+          `[data-channel-id="${CSS.escape(activeChannelId)}"]`
+        );
+        if (row) {
+          row.tabIndex = 0;
+          row.focus({ preventScroll: true });
+        }
+      });
+      return () => window.cancelAnimationFrame(raf);
+    }
+  }, [activeChannelId, filteredChannels, filterQuery, effectiveDrawerOpen, isAndroidTv]);
 
   const isCollectionActive = collections.some((c) => c.id === selectedGroupId);
 
@@ -160,15 +183,15 @@ export const LiveTvView: React.FC<LiveTvViewProps> = ({
   return (
     <div
       className={`relative flex min-h-0 flex-1 overflow-hidden ${
-        isStageFullscreen ? 'gap-0 p-0' : 'gap-2.5 p-2.5'
+        isStageFullscreen || isAndroidTv ? 'gap-0 p-0' : 'gap-2.5 p-2.5'
       }`}
     >
       {/* Main Cinema Video Stage */}
       <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
         {children}
 
-        {/* Subtle Top-Right Collections, EPG & Drawer Quick Switcher */}
-        {!isStageFullscreen && (
+        {/* Subtle Top-Right Collections, EPG & Drawer Quick Switcher (Hidden on Android TV for pure content-first full screen) */}
+        {!isStageFullscreen && !isAndroidTv && (
           <div className="absolute top-3.5 right-3.5 z-30 flex items-center gap-1.5">
             {!isOnDemandActive && collections.length > 0 && onSelectGroup && (
               <button
@@ -229,13 +252,25 @@ export const LiveTvView: React.FC<LiveTvViewProps> = ({
       </div>
 
       {/* Collapsible Virtualized 54,000+ Channel & Collection Zapper Drawer */}
-      {!isStageFullscreen && drawerOpen && (
+      {isAndroidTv && effectiveDrawerOpen && (
+        <div
+          className="fixed inset-0 z-30 bg-black/35"
+          onClick={() => onChangeTvChannelOverlayOpen?.(false)}
+        />
+      )}
+      {effectiveDrawerOpen && (
         <aside
-          className={`flex w-72 shrink-0 flex-col overflow-hidden xl:w-80 ${
-            isM3
-              ? 'rounded-[26px] bg-[#161B28] ring-1 ring-white/[0.06]'
-              : 'lg-pane rounded-[22px]'
-          }`}
+          id="luma-live-channel-drawer"
+          data-tv-modal={isAndroidTv ? 'true' : undefined}
+          className={
+            isAndroidTv
+              ? 'fixed inset-y-4 right-4 z-40 flex w-96 flex-col overflow-hidden rounded-[28px] bg-[#131722]/95 shadow-[0_24px_80px_rgba(0,0,0,0.88)] ring-1 ring-[#7FD4FF]/25 backdrop-blur-2xl'
+              : `flex w-72 shrink-0 flex-col overflow-hidden xl:w-80 ${
+                  isM3
+                    ? 'rounded-[26px] bg-[#161B28] ring-1 ring-white/[0.06]'
+                    : 'lg-pane rounded-[22px]'
+                }`
+          }
         >
           <div className="border-b border-white/[0.08] p-3 space-y-2">
             <div className="flex items-center justify-between gap-2">
@@ -377,6 +412,8 @@ export const LiveTvView: React.FC<LiveTvViewProps> = ({
                   return (
                     <div
                       key={ch.id}
+                      data-channel-id={ch.id}
+                      tabIndex={isAndroidTv ? 0 : undefined}
                       style={{
                         position: 'absolute',
                         top: `${index * ROW_HEIGHT}px`,
@@ -384,7 +421,12 @@ export const LiveTvView: React.FC<LiveTvViewProps> = ({
                         right: '6px',
                         height: `${ROW_HEIGHT - 4}px`,
                       }}
-                      onClick={() => onSelectChannel(ch)}
+                      onClick={() => {
+                        onSelectChannel(ch);
+                        if (isAndroidTv) {
+                          onChangeTvChannelOverlayOpen?.(false);
+                        }
+                      }}
                       onContextMenu={(e) => {
                         if (!onOpenChannelMenu) return;
                         e.preventDefault();
@@ -426,34 +468,42 @@ export const LiveTvView: React.FC<LiveTvViewProps> = ({
                             4K
                           </span>
                         )}
-                        <button
-                          type="button"
-                          onClick={() => onToggleFavorite(ch.id)}
-                          className={`rounded-full p-1 transition ${
-                            isFav
-                              ? 'text-amber-400'
-                              : 'text-slate-500 opacity-0 group-hover:opacity-100 hover:text-amber-300'
-                          }`}
-                          title={t.favorites}
-                        >
-                          <Star className={`h-3.5 w-3.5 ${isFav ? 'fill-amber-400' : ''}`} />
-                        </button>
-                        {onOpenChannelMenu && (
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              const rect = e.currentTarget.getBoundingClientRect();
-                              onOpenChannelMenu({
-                                channel: ch,
-                                x: rect.left,
-                                y: rect.bottom + 4,
-                              });
-                            }}
-                            className="rounded-full p-1 text-slate-400 opacity-0 transition group-hover:opacity-100 hover:bg-white/10 hover:text-white"
-                            title={t.addToCollectionHeader}
-                          >
-                            <MoreVertical className="h-3.5 w-3.5" />
-                          </button>
+                        {isAndroidTv ? (
+                          isFav ? (
+                            <Star className="h-3.5 w-3.5 fill-amber-400 text-amber-400" />
+                          ) : null
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => onToggleFavorite(ch.id)}
+                              className={`rounded-full p-1 transition ${
+                                isFav
+                                  ? 'text-amber-400'
+                                  : 'text-slate-500 opacity-0 group-hover:opacity-100 hover:text-amber-300'
+                              }`}
+                              title={t.favorites}
+                            >
+                              <Star className={`h-3.5 w-3.5 ${isFav ? 'fill-amber-400' : ''}`} />
+                            </button>
+                            {onOpenChannelMenu && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  const rect = e.currentTarget.getBoundingClientRect();
+                                  onOpenChannelMenu({
+                                    channel: ch,
+                                    x: rect.left,
+                                    y: rect.bottom + 4,
+                                  });
+                                }}
+                                className="rounded-full p-1 text-slate-400 opacity-0 transition group-hover:opacity-100 hover:bg-white/10 hover:text-white"
+                                title={t.addToCollectionHeader}
+                              >
+                                <MoreVertical className="h-3.5 w-3.5" />
+                              </button>
+                            )}
+                          </>
                         )}
                       </div>
                     </div>

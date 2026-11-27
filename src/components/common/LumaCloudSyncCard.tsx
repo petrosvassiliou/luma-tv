@@ -66,12 +66,23 @@ export const LumaCloudSyncCard: React.FC<LumaCloudSyncCardProps> = ({
   const [authMode, setAuthMode] = useState<'signin' | 'signup'>('signin');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [localValidationError, setLocalValidationError] = useState<string | null>(null);
 
   const { session, isBusy, summaryCounts } = cloudState;
 
   const handleSubmitAuth = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!email.trim() || !password) return;
+    if (!email.trim()) {
+      setLocalValidationError('Please enter your email address.');
+      document.getElementById('input-cloud-email')?.focus();
+      return;
+    }
+    if (password.length < 6) {
+      setLocalValidationError('Please enter your password (at least 6 characters).');
+      document.getElementById('input-cloud-password')?.focus();
+      return;
+    }
+    setLocalValidationError(null);
     if (authMode === 'signup') {
       await cloudActions.onSignUp(email, password);
     } else {
@@ -82,7 +93,11 @@ export const LumaCloudSyncCard: React.FC<LumaCloudSyncCardProps> = ({
 
   const handleSubmitUnlock = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!password) return;
+    if (!password) {
+      setLocalValidationError('Please enter your account password to unlock sync.');
+      return;
+    }
+    setLocalValidationError(null);
     await cloudActions.onUnlockVault(password);
     setPassword('');
   };
@@ -141,7 +156,10 @@ export const LumaCloudSyncCard: React.FC<LumaCloudSyncCardProps> = ({
             <button
               id="btn-cloud-tab-signin"
               type="button"
-              onClick={() => setAuthMode('signin')}
+              onClick={() => {
+                setAuthMode('signin');
+                setLocalValidationError(null);
+              }}
               className={`rounded-full px-3.5 py-1 text-xs font-semibold transition ${
                 authMode === 'signin'
                   ? isM3
@@ -155,7 +173,10 @@ export const LumaCloudSyncCard: React.FC<LumaCloudSyncCardProps> = ({
             <button
               id="btn-cloud-tab-signup"
               type="button"
-              onClick={() => setAuthMode('signup')}
+              onClick={() => {
+                setAuthMode('signup');
+                setLocalValidationError(null);
+              }}
               className={`inline-flex items-center gap-1 rounded-full px-3.5 py-1 text-xs font-semibold transition ${
                 authMode === 'signup'
                   ? isM3
@@ -178,7 +199,10 @@ export const LumaCloudSyncCard: React.FC<LumaCloudSyncCardProps> = ({
                 autoComplete="email"
                 required
                 value={email}
-                onChange={(e) => setEmail(e.target.value)}
+                onChange={(e) => {
+                  setEmail(e.target.value);
+                  if (localValidationError) setLocalValidationError(null);
+                }}
                 placeholder="Email address…"
                 className={inputClass}
               />
@@ -193,7 +217,10 @@ export const LumaCloudSyncCard: React.FC<LumaCloudSyncCardProps> = ({
                 required
                 minLength={6}
                 value={password}
-                onChange={(e) => setPassword(e.target.value)}
+                onChange={(e) => {
+                  setPassword(e.target.value);
+                  if (localValidationError) setLocalValidationError(null);
+                }}
                 placeholder={
                   authMode === 'signup'
                     ? 'Choose password (min. 6 chars)…'
@@ -208,7 +235,7 @@ export const LumaCloudSyncCard: React.FC<LumaCloudSyncCardProps> = ({
             <button
               id="btn-cloud-submit-auth"
               type="submit"
-              disabled={isBusy || !email.trim() || password.length < 6}
+              disabled={isBusy}
               className={`inline-flex items-center gap-1.5 rounded-full px-4 py-2 text-xs font-bold transition disabled:opacity-45 ${
                 isM3 ? 'm3-primary-pill' : 'lg-pill-active'
               }`}
@@ -253,14 +280,17 @@ export const LumaCloudSyncCard: React.FC<LumaCloudSyncCardProps> = ({
                 type="password"
                 required
                 value={password}
-                onChange={(e) => setPassword(e.target.value)}
+                onChange={(e) => {
+                  setPassword(e.target.value);
+                  if (localValidationError) setLocalValidationError(null);
+                }}
                 placeholder="Account password…"
                 className={inputClass}
               />
             </div>
             <button
               type="submit"
-              disabled={isBusy || !password}
+              disabled={isBusy}
               className={`inline-flex items-center gap-1.5 rounded-full px-4 py-2 text-xs font-bold disabled:opacity-45 ${
                 isM3 ? 'm3-primary-pill' : 'lg-pill-active'
               }`}
@@ -367,13 +397,13 @@ export const LumaCloudSyncCard: React.FC<LumaCloudSyncCardProps> = ({
         </div>
       )}
 
-      {cloudState.errorMessage && (
+      {(localValidationError || cloudState.errorMessage) && (
         <div className="rounded-xl bg-rose-500/15 px-3.5 py-2 text-xs text-rose-200 ring-1 ring-rose-400/30">
-          {cloudState.errorMessage}
+          {localValidationError || cloudState.errorMessage}
         </div>
       )}
 
-      {cloudState.statusMessage && !cloudState.errorMessage && (
+      {cloudState.statusMessage && !localValidationError && !cloudState.errorMessage && (
         <div className="text-xs font-medium text-emerald-300">
           {cloudState.statusMessage}
         </div>

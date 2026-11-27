@@ -24,6 +24,10 @@
     -moz-osx-font-smoothing: grayscale;
     user-select: none;
   }
+
+  html[data-tv="true"] {
+    font-size: 18px;
+  }
 }
 
 /* ============================================================================
@@ -283,4 +287,26 @@ button:not(:disabled) {
   outline: 2px solid rgba(125, 211, 252, 0.9);
   outline-offset: 2px;
   box-shadow: 0 0 22px rgba(56, 189, 248, 0.45);
+}
+
+/* Android TV 10-Foot Remote Focus Rings (strictly scoped to [data-tv="true"]) */
+[data-tv="true"] button:focus,
+[data-tv="true"] input:focus,
+[data-tv="true"] select:focus,
+[data-tv="true"] textarea:focus,
+[data-tv="true"] a:focus,
+[data-tv="true"] [role="option"]:focus,
+[data-tv="true"] [role="button"]:focus,
+[data-tv="true"] [data-spatial="true"]:focus,
+[data-tv="true"] [tabindex="0"]:focus {
+  outline: 3px solid #7FD4FF !important;
+  outline-offset: 3px !important;
+  box-shadow: 0 0 0 6px rgba(127, 212, 255, 0.24) !important;
+}
+
+[data-tv="true"] input[data-tv-editing="true"]:focus,
+[data-tv="true"] textarea[data-tv-editing="true"]:focus {
+  outline: 3px solid #34D399 !important;
+  outline-offset: 3px !important;
+  box-shadow: 0 0 0 6px rgba(52, 211, 153, 0.28) !important;
 }

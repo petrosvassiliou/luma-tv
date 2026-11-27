@@ -31,6 +31,7 @@ import type {
   NavigationSection,
   PlatformDesignMode,
 } from '../../types/luma';
+import { LumaLogo } from '../brand/LumaLogo';
 
 interface SidebarProps {
   designMode: PlatformDesignMode;
@@ -44,6 +45,10 @@ interface SidebarProps {
   totalChannelCount: number;
   favoritesCount: number;
   collectionsCount: number;
+  isAndroidTv?: boolean;
+  nowMs?: number;
+  onOpenCommandBar?: () => void;
+  onCloseTvMenu?: () => void;
 }
 
 const GROUP_ICONS: Record<string, React.FC<{ className?: string }>> = {
@@ -68,6 +73,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
   totalChannelCount,
   favoritesCount,
   collectionsCount,
+  isAndroidTv = false,
+  nowMs,
+  onOpenCommandBar,
+  onCloseTvMenu,
 }) => {
   const isM3 = designMode === 'm3-expressive';
   const t = TRANSLATIONS[locale];
@@ -116,6 +125,152 @@ export const Sidebar: React.FC<SidebarProps> = ({
   }, [groups, groupFilter]);
 
   const displayedGroups = filteredGroups.slice(0, 120);
+
+  if (isAndroidTv) {
+    const tvNavItems = navItems.filter((item) =>
+      [
+        'live',
+        'live-epg',
+        'favorites',
+        'collections',
+        'vod',
+        'series',
+        'sources',
+        'settings',
+      ].includes(item.id)
+    );
+    const clockLabel =
+      typeof nowMs === 'number'
+        ? new Intl.DateTimeFormat(bcp47, { hour: '2-digit', minute: '2-digit' }).format(
+            nowMs
+          )
+        : '';
+
+    return (
+      <div
+        className="fixed inset-0 z-40 bg-black/55 backdrop-blur-[2px]"
+        onClick={onCloseTvMenu}
+      >
+        <aside
+          id="luma-sidebar"
+          data-tv-modal="true"
+          onClick={(e) => e.stopPropagation()}
+          className="fixed inset-y-4 left-4 z-50 flex w-[290px] flex-col overflow-hidden rounded-[28px] bg-[#131722]/96 p-4 shadow-[0_24px_80px_rgba(0,0,0,0.9)] ring-1 ring-[#7FD4FF]/25 backdrop-blur-2xl"
+        >
+          <div className="mb-3 flex items-center justify-between px-2">
+            <div className="flex items-center gap-2.5">
+              <LumaLogo size={26} />
+              <span className="text-sm font-bold tracking-tight text-white">
+                Luma TV
+              </span>
+            </div>
+            {clockLabel && (
+              <span className="font-mono text-xs font-semibold text-sky-200/90 luma-tabular">
+                {clockLabel}
+              </span>
+            )}
+          </div>
+
+          {onOpenCommandBar && (
+            <button
+              id="tv-nav-search"
+              type="button"
+              onClick={() => {
+                onCloseTvMenu?.();
+                onOpenCommandBar();
+              }}
+              className="mb-2 flex h-10 w-full items-center gap-3 rounded-full bg-[#232B3D] px-4 text-xs font-semibold text-sky-200 transition hover:bg-[#2E384F]"
+            >
+              <Search className="h-4 w-4 shrink-0 text-[#7FD4FF]" />
+              <span className="truncate">{t.searchPlaceholder}</span>
+            </button>
+          )}
+
+          <div className="luma-scroll flex-1 space-y-1 overflow-y-auto pr-0.5">
+            {tvNavItems.map((item) => {
+              const Icon = item.icon;
+              const isActive = activeSection === item.id;
+              return (
+                <button
+                  key={item.id}
+                  id={`nav-${item.id}`}
+                  type="button"
+                  onClick={() => {
+                    onSelectSection(item.id);
+                    onCloseTvMenu?.();
+                  }}
+                  className={`m3-spring flex h-10 w-full items-center justify-between gap-2 rounded-full px-4 text-xs font-semibold ${
+                    isActive
+                      ? 'm3-tonal-active'
+                      : 'text-slate-200 hover:bg-[#1E2536] hover:text-white'
+                  }`}
+                >
+                  <span className="flex min-w-0 items-center gap-3">
+                    <Icon className="h-4 w-4 shrink-0" />
+                    <span className="truncate">{item.label}</span>
+                  </span>
+                  {item.badge !== undefined && (
+                    <span className="shrink-0 text-[11px] opacity-80 luma-tabular">
+                      {item.badge}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+
+            {groups.length > 0 && (
+              <>
+                <div className="my-2.5 border-t border-white/10" />
+                <button
+                  type="button"
+                  onClick={() => {
+                    onSelectGroup('all');
+                    onCloseTvMenu?.();
+                  }}
+                  className={`flex h-9 w-full items-center justify-between rounded-full px-3.5 text-xs ${
+                    selectedGroupId === 'all' && isLiveSection
+                      ? 'bg-[#263148] font-semibold text-[#D6E3FF]'
+                      : 'text-slate-300 hover:bg-[#1E2536]'
+                  }`}
+                >
+                  <span className="flex items-center gap-2.5">
+                    <Layers className="h-3.5 w-3.5 text-[#7FD4FF]" />
+                    <span>{t.allChannels}</span>
+                  </span>
+                  <span className="text-[11px] opacity-70 luma-tabular">
+                    {totalChannelCount.toLocaleString(bcp47)}
+                  </span>
+                </button>
+                {displayedGroups.slice(0, 60).map((g) => {
+                  const active = selectedGroupId === g.id && isLiveSection;
+                  return (
+                    <button
+                      key={g.id}
+                      type="button"
+                      onClick={() => {
+                        onSelectGroup(g.id);
+                        onCloseTvMenu?.();
+                      }}
+                      className={`flex h-9 w-full items-center justify-between gap-2 rounded-full px-3.5 text-xs ${
+                        active
+                          ? 'bg-[#263148] font-semibold text-[#D6E3FF]'
+                          : 'text-slate-300 hover:bg-[#1E2536]'
+                      }`}
+                    >
+                      <span className="truncate">{g.name}</span>
+                      <span className="shrink-0 text-[11px] opacity-65 luma-tabular">
+                        {g.count}
+                      </span>
+                    </button>
+                  );
+                })}
+              </>
+            )}
+          </div>
+        </aside>
+      </div>
+    );
+  }
 
   if (isM3) {
     return (

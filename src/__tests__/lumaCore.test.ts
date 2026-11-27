@@ -443,7 +443,25 @@ describe('Luma TV v0.1 beta — Zero-Knowledge AES-256-GCM Sync Vault & 20k EPG 
       5
     );
     expect(android.isApple).toBe(false);
+    expect(android.isAndroidTv).toBe(false);
     expect(android.defaultDesignMode).toBe('m3-expressive');
+
+    const shieldTv = detectPlatformEnvironment(
+      'Mozilla/5.0 (Linux; Android 11; SHIELD Android TV Build/RQ1A.210105.003; wv) AppleWebKit/537.36',
+      'Linux aarch64',
+      0
+    );
+    expect(shieldTv.isApple).toBe(false);
+    expect(shieldTv.isAndroidTv).toBe(true);
+    expect(shieldTv.label).toBe('Android TV');
+    expect(shieldTv.defaultDesignMode).toBe('m3-expressive');
+
+    const braviaTv = detectPlatformEnvironment(
+      'Mozilla/5.0 (Linux; Android 12; BRAVIA 4K VH2) AppleWebKit/537.36',
+      'Linux armv8l',
+      0
+    );
+    expect(braviaTv.isAndroidTv).toBe(true);
 
     const cros = detectPlatformEnvironment(
       'Mozilla/5.0 (X11; CrOS x86_64 14541.0.0) AppleWebKit/537.36',
@@ -451,6 +469,7 @@ describe('Luma TV v0.1 beta — Zero-Knowledge AES-256-GCM Sync Vault & 20k EPG 
       0
     );
     expect(cros.isApple).toBe(false);
+    expect(cros.isAndroidTv).toBe(false);
     expect(cros.defaultDesignMode).toBe('m3-expressive');
 
     // Liquid Glass cannot be enabled on non-Apple devices even if requested

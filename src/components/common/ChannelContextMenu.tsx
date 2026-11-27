@@ -118,6 +118,7 @@ export const ChannelContextMenu: React.FC<ChannelContextMenuProps> = ({
     >
       <div
         ref={menuRef}
+        data-tv-modal="true"
         style={{ left: `${clampedLeft}px`, top: `${clampedTop}px`, width: `${menuWidth}px` }}
         onClick={(e) => e.stopPropagation()}
         onContextMenu={(e) => e.stopPropagation()}

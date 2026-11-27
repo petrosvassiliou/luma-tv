@@ -467,6 +467,7 @@ export const ParentalPinModal: React.FC<ParentalPinModalProps> = ({
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 p-4 backdrop-blur-md"
     >
       <div
+        data-tv-modal="true"
         onClick={(e) => e.stopPropagation()}
         className={`w-full max-w-xs p-5 text-center ${
           isM3

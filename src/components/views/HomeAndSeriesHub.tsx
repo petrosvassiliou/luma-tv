@@ -477,6 +477,7 @@ export const SeriesBrowserView: React.FC<SeriesBrowserViewProps> = ({
       <div className="luma-scroll flex-1 overflow-y-auto p-5 space-y-5">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <button
+            id="btn-series-back-catalog"
             type="button"
             onClick={() => {
               setOpenedSeriesId(null);

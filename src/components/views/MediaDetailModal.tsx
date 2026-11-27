@@ -74,6 +74,7 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-md"
     >
       <div
+        data-tv-modal="true"
         onClick={(e) => e.stopPropagation()}
         className={`w-full max-w-2xl overflow-hidden ${
           isM3

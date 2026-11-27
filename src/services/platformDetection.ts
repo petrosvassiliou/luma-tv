@@ -10,15 +10,33 @@ export type DetectedPlatformFamily =
 
 export interface PlatformDetectionResult {
   isApple: boolean;
+  isAndroidTv: boolean;
   family: DetectedPlatformFamily;
   label: string;
   defaultDesignMode: PlatformDesignMode;
+}
+
+interface AndroidTvBridgeWindow {
+  LumaAndroidWindow?: {
+    isTelevision?: () => boolean;
+  };
+}
+
+const ANDROID_TV_UA_PATTERN =
+  /\b(android tv|googletv|google tv|bravia|shield android tv|aft[a-z0-9]{1,8}|mibox|chromecast|smarttv|adt-\d|philipstv|hisense|tcl[-\s]tv|onn\.\s*4k)\b/i;
+
+export function isAndroidTvUserAgent(userAgent: string): boolean {
+  const ua = userAgent.toLowerCase();
+  if (ua.includes('cros')) return false;
+  return ua.includes('android') && ANDROID_TV_UA_PATTERN.test(ua);
 }
 
 /**
  * Detects the host OS / device family from User-Agent, platform, and touch points.
  * Apple Liquid Glass (`liquid-glass`) is strictly reserved for Apple devices
  * (macOS, iPadOS, iOS). All other platforms use Material 3 Expressive (`m3-expressive`).
+ * `isAndroidTv` is strictly true ONLY on Android TV / Google TV hardware (never on
+ * macOS, ChromeOS / Googlebooks, or Android phones/tablets).
  */
 export function detectPlatformEnvironment(
   userAgentInput?: string,
@@ -37,21 +55,32 @@ export function detectPlatformEnvironment(
     maxTouchPointsInput ??
     (typeof navigator !== 'undefined' ? navigator.maxTouchPoints ?? 0 : 0);
 
-  // Explicit non-Apple platforms take precedence over generic WebKit tokens
-  if (ua.includes('android')) {
+  const nativeTvBridgeActive =
+    userAgentInput === undefined &&
+    typeof window !== 'undefined' &&
+    Boolean(
+      (window as unknown as AndroidTvBridgeWindow).LumaAndroidWindow?.isTelevision?.()
+    );
+
+  // ChromeOS / Googlebooks always resolve to ChromeOS (never Android TV)
+  if (ua.includes('cros')) {
     return {
       isApple: false,
-      family: 'android',
-      label: 'Android',
+      isAndroidTv: false,
+      family: 'chromeos',
+      label: 'ChromeOS',
       defaultDesignMode: 'm3-expressive',
     };
   }
 
-  if (ua.includes('cros')) {
+  // Explicit Android / Android TV check
+  if (nativeTvBridgeActive || ua.includes('android')) {
+    const isTv = nativeTvBridgeActive || isAndroidTvUserAgent(ua);
     return {
       isApple: false,
-      family: 'chromeos',
-      label: 'ChromeOS',
+      isAndroidTv: isTv,
+      family: 'android',
+      label: isTv ? 'Android TV' : 'Android',
       defaultDesignMode: 'm3-expressive',
     };
   }
@@ -59,6 +88,7 @@ export function detectPlatformEnvironment(
   if (ua.includes('windows') || platform.startsWith('win')) {
     return {
       isApple: false,
+      isAndroidTv: false,
       family: 'windows',
       label: 'Windows',
       defaultDesignMode: 'm3-expressive',
@@ -82,6 +112,7 @@ export function detectPlatformEnvironment(
   if (isIosOrIpad || isMac) {
     return {
       isApple: true,
+      isAndroidTv: false,
       family: 'apple',
       label: isIosOrIpad ? 'iPadOS / iOS' : 'macOS',
       defaultDesignMode: 'liquid-glass',
@@ -91,6 +122,7 @@ export function detectPlatformEnvironment(
   if (ua.includes('linux') || platform.startsWith('linux')) {
     return {
       isApple: false,
+      isAndroidTv: false,
       family: 'linux',
       label: 'Linux',
       defaultDesignMode: 'm3-expressive',
@@ -99,6 +131,7 @@ export function detectPlatformEnvironment(
 
   return {
     isApple: false,
+    isAndroidTv: false,
     family: 'web',
     label: 'Web',
     defaultDesignMode: 'm3-expressive',
