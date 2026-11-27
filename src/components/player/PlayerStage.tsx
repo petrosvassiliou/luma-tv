@@ -133,6 +133,10 @@ interface PlayerStageProps {
   locale?: LumaLocale;
   mpvAvailable?: boolean;
   isAndroidTv?: boolean;
+  tvControlsOpen?: boolean;
+  onCloseTvControls?: () => void;
+  onOpenTvChannels?: () => void;
+  onOpenTvGuide?: () => void;
   onToast?: (message: string) => void;
   onAmbientRgbChange?: (rgb: string) => void;
 }
@@ -174,6 +178,10 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
   locale = 'de',
   mpvAvailable = false,
   isAndroidTv = false,
+  tvControlsOpen = false,
+  onCloseTvControls,
+  onOpenTvChannels,
+  onOpenTvGuide,
   onToast,
   onAmbientRgbChange,
 }) => {
@@ -645,10 +653,36 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
   }, [onToast]);
 
   useEffect(() => {
-    if (!showCastMenu) {
-      stopNetworkCastScan();
-    }
-  }, [showCastMenu]);
+    if (!isAndroidTv || !tvControlsOpen) return;
+    const focusPrimary = () => {
+      const target =
+        document.getElementById(
+          isSeekable ? 'btn-play-pause' : 'btn-tv-hud-channels'
+        ) ?? document.getElementById('btn-stream-settings');
+      target?.focus({ preventScroll: true });
+    };
+    const raf = window.requestAnimationFrame(focusPrimary);
+
+    let idleTimer: number | null = window.setTimeout(() => {
+      if (!showQualityMenu) onCloseTvControls?.();
+    }, 7000);
+
+    const resetIdle = () => {
+      if (idleTimer !== null) window.clearTimeout(idleTimer);
+      idleTimer = window.setTimeout(() => {
+        if (!document.getElementById('luma-dsp-popover')) {
+          onCloseTvControls?.();
+        }
+      }, 7000);
+    };
+
+    window.addEventListener('keydown', resetIdle, true);
+    return () => {
+      window.cancelAnimationFrame(raf);
+      if (idleTimer !== null) window.clearTimeout(idleTimer);
+      window.removeEventListener('keydown', resetIdle, true);
+    };
+  }, [isAndroidTv, tvControlsOpen, isSeekable, showQualityMenu, onCloseTvControls]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -663,12 +697,22 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
   }, [isRecording]);
 
   useEffect(() => {
-    if (!ambilightEnabled) return;
+    if (!showCastMenu) {
+      stopNetworkCastScan();
+    }
+  }, [showCastMenu]);
+
+  useEffect(() => {
+    // Skip GPU-to-CPU canvas readback on Android TV, Material 3, or Fullscreen to preserve 60fps video & UI
+    if (!ambilightEnabled || isAndroidTv || isM3 || effectiveFullscreen) return;
 
     const canvas = document.createElement('canvas');
     canvas.width = 16;
     canvas.height = 9;
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    let prevR = -100;
+    let prevG = -100;
+    let prevB = -100;
 
     const interval = window.setInterval(() => {
       const video = videoRef.current;
@@ -690,15 +734,25 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
           const avgR = Math.min(255, Math.round((r / count) * 1.15 + 14));
           const avgG = Math.min(255, Math.round((g / count) * 1.15 + 18));
           const avgB = Math.min(255, Math.round((b / count) * 1.2 + 28));
-          setSampledStreamState({ url: activeUrl, rgb: `${avgR}, ${avgG}, ${avgB}` });
+          if (
+            Math.abs(avgR - prevR) +
+              Math.abs(avgG - prevG) +
+              Math.abs(avgB - prevB) >=
+            18
+          ) {
+            prevR = avgR;
+            prevG = avgG;
+            prevB = avgB;
+            setSampledStreamState({ url: activeUrl, rgb: `${avgR}, ${avgG}, ${avgB}` });
+          }
         }
       } catch {
         // Cross-origin frame fallback
       }
-    }, 1000);
+    }, 4000);
 
     return () => window.clearInterval(interval);
-  }, [ambilightEnabled, activeUrl]);
+  }, [ambilightEnabled, isAndroidTv, isM3, effectiveFullscreen, activeUrl]);
 
   const togglePlay = () => {
     const video = videoRef.current;
@@ -983,6 +1037,7 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
   const showSynthVisual = telemetry.state !== 'playing';
   const showChrome =
     !autoHideHudMode ||
+    tvControlsOpen ||
     hudVisible ||
     hudHovered ||
     !isPlaying ||
@@ -1536,12 +1591,43 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
               </div>
             </div>
 
-            {/* Transport, DVR, Audio DSP & Spatial Controls (Decluttered automatically on Android TV) */}
+            {/* Transport, DVR, Audio DSP & Spatial Controls (Selectable 10-foot bar on Android TV) */}
             <div className="flex shrink-0 flex-wrap items-center gap-1.5">
-              {isAndroidTv && !isSeekable && (
-                <span className="mr-2 hidden rounded-full bg-white/[0.06] px-3 py-1.5 text-[11px] font-medium text-slate-300 sm:inline-flex">
-                  OK Channels · ◀ Menu · ▲▼ Ch+/−
+              {isAndroidTv && !isSeekable && !tvControlsOpen && (
+                <span className="mr-1 hidden rounded-full bg-white/[0.08] px-3 py-1 text-[11px] font-medium text-slate-200 sm:inline-flex">
+                  OK Player · ▶ Channels · ◀ Menu · ▲▼ Ch+/−
                 </span>
+              )}
+
+              {isAndroidTv && !isSeekable && tvControlsOpen && (
+                <>
+                  {onOpenTvChannels && (
+                    <button
+                      id="btn-tv-hud-channels"
+                      type="button"
+                      onClick={() => {
+                        onCloseTvControls?.();
+                        onOpenTvChannels();
+                      }}
+                      className="m3-primary-pill inline-flex h-9 shrink-0 items-center gap-1.5 rounded-full px-3.5 text-xs font-bold"
+                    >
+                      <span>{t.allChannels}</span>
+                    </button>
+                  )}
+                  {onOpenTvGuide && (
+                    <button
+                      id="btn-tv-hud-epg"
+                      type="button"
+                      onClick={() => {
+                        onCloseTvControls?.();
+                        onOpenTvGuide();
+                      }}
+                      className="m3-secondary-tonal inline-flex h-9 shrink-0 items-center gap-1.5 rounded-full px-3 text-xs font-semibold"
+                    >
+                      <span>EPG</span>
+                    </button>
+                  )}
+                </>
               )}
 
               {!isAndroidTv && !isOnDemandVod && (
@@ -1591,14 +1677,14 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
                 </button>
               )}
 
-              {(!isAndroidTv || isSeekable) && (
+              {(!isAndroidTv || isSeekable || tvControlsOpen) && (
                 <button
                   id="btn-play-pause"
                   type="button"
                   onClick={togglePlay}
                   className={
                     isM3
-                      ? `m3-primary-pill flex h-10 w-12 shrink-0 items-center justify-center ${
+                      ? `m3-primary-pill flex h-9 w-11 shrink-0 items-center justify-center ${
                           isPlaying ? 'rounded-[14px]' : 'rounded-full'
                         }`
                       : 'lg-pill-active flex h-9 w-9 shrink-0 items-center justify-center rounded-full'
@@ -1709,15 +1795,17 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
               )}
 
               {/* Aspect Ratio */}
-              {(!isAndroidTv || isSeekable) && (
+              {(!isAndroidTv || isSeekable || tvControlsOpen) && (
                 <button
                   id="btn-aspect-ratio"
                   type="button"
                   onClick={cycleAspect}
                   className={
-                    isM3
-                      ? 'm3-secondary-tonal hidden h-10 shrink-0 items-center gap-1.5 rounded-full px-3 text-[11px] font-semibold @3xl:inline-flex luma-tabular'
-                      : 'lg-capsule hidden h-9 shrink-0 items-center gap-1 rounded-full px-2.5 text-[11px] font-medium text-white/90 @3xl:inline-flex luma-tabular'
+                    isAndroidTv
+                      ? 'm3-secondary-tonal inline-flex h-9 shrink-0 items-center gap-1.5 rounded-full px-3 text-[11px] font-semibold luma-tabular'
+                      : isM3
+                        ? 'm3-secondary-tonal hidden h-10 shrink-0 items-center gap-1.5 rounded-full px-3 text-[11px] font-semibold @3xl:inline-flex luma-tabular'
+                        : 'lg-capsule hidden h-9 shrink-0 items-center gap-1 rounded-full px-2.5 text-[11px] font-medium text-white/90 @3xl:inline-flex luma-tabular'
                   }
                   title="Aspect Ratio"
                 >
@@ -1735,13 +1823,23 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
                   aria-pressed={showQualityMenu}
                   onClick={() => {
                     setShowCastMenu(false);
-                    setShowQualityMenu((v) => !v);
+                    setShowQualityMenu((v) => {
+                      const next = !v;
+                      if (!next && isAndroidTv) {
+                        window.requestAnimationFrame(() => {
+                          document.getElementById('btn-stream-settings')?.focus({
+                            preventScroll: true,
+                          });
+                        });
+                      }
+                      return next;
+                    });
                   }}
                   className={
                     isM3
                       ? `${
                           showQualityMenu ? 'm3-tonal-active' : 'm3-secondary-tonal'
-                        } flex h-10 items-center justify-center gap-1.5 rounded-full px-3 text-[11px] font-semibold`
+                        } flex h-9 items-center justify-center gap-1.5 rounded-full px-3 text-[11px] font-semibold`
                       : `${
                           showQualityMenu
                             ? 'lg-pill-active'
@@ -1751,7 +1849,9 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
                   title="Quality, Audio DSP & Subtitles"
                 >
                   <Settings2 className="h-3.5 w-3.5 shrink-0" />
-                  <span className="hidden whitespace-nowrap @4xl:inline">DSP &amp; Spuren</span>
+                  <span className={isAndroidTv ? 'inline whitespace-nowrap' : 'hidden whitespace-nowrap @4xl:inline'}>
+                    DSP &amp; Spuren
+                  </span>
                 </button>
 
                 {showQualityMenu && (

@@ -861,16 +861,24 @@ async fn handle_proxy_request(
     if is_hls_playlist && req.method() != Method::HEAD {
         match upstream.text().await {
             Ok(manifest_text) => {
-                let rewritten = rewrite_hls_manifest_for_proxy(
-                    &manifest_text,
-                    &final_upstream_url,
-                    &ctx.endpoint_url,
-                    Some(&effective_ua),
-                );
+                let is_iptv_channel_catalog = manifest_text.contains("group-title=")
+                    || manifest_text.contains("tvg-id=")
+                    || manifest_text.contains("x-tvg-url=")
+                    || manifest_text.contains("url-tvg=");
+                let body_out = if !is_iptv_channel_catalog {
+                    rewrite_hls_manifest_for_proxy(
+                        &manifest_text,
+                        &final_upstream_url,
+                        &ctx.endpoint_url,
+                        Some(&effective_ua),
+                    )
+                } else {
+                    manifest_text
+                };
                 let resp = with_cors_headers(Response::builder().status(upstream_status))
                     .header(CONTENT_TYPE, "application/vnd.apple.mpegurl; charset=utf-8")
                     .header(CACHE_CONTROL, "no-store, max-age=0")
-                    .body(full_body(rewritten))
+                    .body(full_body(body_out))
                     .unwrap_or_else(|_| Response::new(empty_body()));
                 return Ok(resp);
             }

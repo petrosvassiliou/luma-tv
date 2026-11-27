@@ -84,9 +84,20 @@ function wrapProxy(url: string, proxyEndpoint?: string): string {
   return `${clean}?url=${encodeURIComponent(url)}`;
 }
 
+async function fetchWithSingleRetry(url: string): Promise<Response> {
+  try {
+    const first = await fetch(url);
+    if (first.ok) return first;
+  } catch {
+    // Retry once below
+  }
+  await new Promise((r) => setTimeout(r, 350));
+  return await fetch(url);
+}
+
 async function fetchJsonArraySafe<T>(url: string): Promise<T[]> {
   try {
-    const res = await fetch(url);
+    const res = await fetchWithSingleRetry(url);
     if (!res.ok) return [];
     const data: unknown = await res.json();
     return Array.isArray(data) ? (data as T[]) : [];
@@ -270,27 +281,19 @@ self.onmessage = async (event: MessageEvent<WorkerIngestRequest>) => {
         seriesCats = parseJsonArray(req.prefetchedXtreamJson.seriesCategoriesRaw);
         seriesStreams = parseJsonArray(req.prefetchedXtreamJson.seriesStreamsRaw);
       } else {
-        const [authInfoRes, catsRes, streamsRes] = await Promise.all([
+        // Fetch auth + lightweight category metadata first, then stream lists sequentially
+        // so strict 1-connection Xtream Codes servers never drop or truncate responses.
+        const [authInfoRes, catsRes] = await Promise.all([
           fetch(
             wrapProxy(`${base}/player_api.php?${authParams}`, req.proxyEndpoint)
           ).catch(() => null),
-          fetch(
+          fetchWithSingleRetry(
             wrapProxy(
               `${base}/player_api.php?${authParams}&action=get_live_categories`,
               req.proxyEndpoint
             )
           ),
-          fetch(
-            wrapProxy(
-              `${base}/player_api.php?${authParams}&action=get_live_streams`,
-              req.proxyEndpoint
-            )
-          ),
         ]);
-
-        if (!catsRes.ok || !streamsRes.ok) {
-          throw new Error(`Xtream Server antwortete mit HTTP ${streamsRes.status}`);
-        }
 
         if (authInfoRes && authInfoRes.ok) {
           try {
@@ -300,32 +303,37 @@ self.onmessage = async (event: MessageEvent<WorkerIngestRequest>) => {
           }
         }
 
-        categories = (await catsRes.json()) as typeof categories;
+        if (catsRes.ok) {
+          categories = (await catsRes.json()) as typeof categories;
+        }
+
+        self.postMessage({
+          type: 'progress',
+          phase: 'Lade vollständige Live-TV Kanalliste…',
+          percent: 32,
+        } satisfies WorkerIngestResponse);
+
+        const streamsRes = await fetchWithSingleRetry(
+          wrapProxy(
+            `${base}/player_api.php?${authParams}&action=get_live_streams`,
+            req.proxyEndpoint
+          )
+        );
+        if (!streamsRes.ok) {
+          throw new Error(`Xtream Server antwortete mit HTTP ${streamsRes.status}`);
+        }
         streams = (await streamsRes.json()) as typeof streams;
 
         self.postMessage({
           type: 'progress',
           phase: 'Synchronisiere Xtream VOD-Filme & Serien-Katalog…',
-          percent: 52,
+          percent: 58,
         } satisfies WorkerIngestResponse);
 
-        [vodCats, vodStreams, seriesCats, seriesStreams] = await Promise.all([
+        [vodCats, seriesCats] = await Promise.all([
           fetchJsonArraySafe<{ category_id: string; category_name: string }>(
             wrapProxy(
               `${base}/player_api.php?${authParams}&action=get_vod_categories`,
-              req.proxyEndpoint
-            )
-          ),
-          fetchJsonArraySafe<{
-            stream_id: number;
-            name: string;
-            stream_icon?: string;
-            rating?: string | number;
-            category_id?: string;
-            container_extension?: string;
-          }>(
-            wrapProxy(
-              `${base}/player_api.php?${authParams}&action=get_vod_streams`,
               req.proxyEndpoint
             )
           ),
@@ -335,22 +343,37 @@ self.onmessage = async (event: MessageEvent<WorkerIngestRequest>) => {
               req.proxyEndpoint
             )
           ),
-          fetchJsonArraySafe<{
-            series_id: number;
-            name: string;
-            cover?: string;
-            plot?: string;
-            genre?: string;
-            releaseDate?: string;
-            rating?: string | number;
-            category_id?: string;
-          }>(
-            wrapProxy(
-              `${base}/player_api.php?${authParams}&action=get_series`,
-              req.proxyEndpoint
-            )
-          ),
         ]);
+
+        vodStreams = await fetchJsonArraySafe<{
+          stream_id: number;
+          name: string;
+          stream_icon?: string;
+          rating?: string | number;
+          category_id?: string;
+          container_extension?: string;
+        }>(
+          wrapProxy(
+            `${base}/player_api.php?${authParams}&action=get_vod_streams`,
+            req.proxyEndpoint
+          )
+        );
+
+        seriesStreams = await fetchJsonArraySafe<{
+          series_id: number;
+          name: string;
+          cover?: string;
+          plot?: string;
+          genre?: string;
+          releaseDate?: string;
+          rating?: string | number;
+          category_id?: string;
+        }>(
+          wrapProxy(
+            `${base}/player_api.php?${authParams}&action=get_series`,
+            req.proxyEndpoint
+          )
+        );
       }
 
       const catMap = new Map<string, string>();
@@ -403,7 +426,7 @@ self.onmessage = async (event: MessageEvent<WorkerIngestRequest>) => {
         }
       );
 
-      const vodItems: StoredVodItem[] = vodStreams.slice(0, 35000).map((v, idx) => {
+      const vodItems: StoredVodItem[] = vodStreams.map((v, idx) => {
         const title = v.name || `VOD #${v.stream_id}`;
         const upper = title.toUpperCase();
         const is4k = upper.includes('4K') || upper.includes('UHD');
@@ -430,7 +453,7 @@ self.onmessage = async (event: MessageEvent<WorkerIngestRequest>) => {
         };
       });
 
-      const seriesItems: StoredSeriesItem[] = seriesStreams.slice(0, 25000).map((s, idx) => {
+      const seriesItems: StoredSeriesItem[] = seriesStreams.map((s, idx) => {
         const title = s.name || `Serie #${s.series_id}`;
         const upper = title.toUpperCase();
         const is4k = upper.includes('4K') || upper.includes('UHD');

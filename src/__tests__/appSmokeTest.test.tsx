@@ -920,8 +920,36 @@ describe('Luma TV End-to-End UI & Button Smoke Test', () => {
       expect(host.querySelector('#btn-cast-airplay')).toBeNull();
       expect(host.querySelector('#btn-inapp-pip')).toBeNull();
 
-      // 2. Pressing OK/Enter on full-screen Live TV opens the on-demand Channel Overlay with Search collapsed to a shortcut button
+      // 2a. Pressing OK/Enter on full-screen Live TV opens the selectable On-Screen Player Bar (Channels, EPG, Play/Pause, Aspect, DSP & Subtitles)
       pressTvKey('Enter');
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 25));
+      });
+      const tvHudChannelsBtn = host.querySelector('#btn-tv-hud-channels');
+      const tvAspectBtn = host.querySelector('#btn-aspect-ratio');
+      const tvDspBtn = host.querySelector('#btn-stream-settings');
+      expect(tvHudChannelsBtn).not.toBeNull();
+      expect(tvAspectBtn).not.toBeNull();
+      expect(tvDspBtn).not.toBeNull();
+
+      // Open DSP & Subtitles popover right from the TV On-Screen Player Bar, then close via Back
+      act(() => {
+        (tvDspBtn as HTMLElement).focus();
+      });
+      pressTvKey('Enter');
+      expect(host.querySelector('#luma-dsp-popover')).not.toBeNull();
+      act(() => {
+        tvWindow.__lumaHandleAndroidTvBack?.();
+      });
+      expect(host.querySelector('#luma-dsp-popover')).toBeNull();
+      // Second Back closes the On-Screen Player Bar back to clean full-screen Live TV
+      act(() => {
+        tvWindow.__lumaHandleAndroidTvBack?.();
+      });
+      expect(host.querySelector('#btn-tv-hud-channels')).toBeNull();
+
+      // 2b. Pressing ArrowRight on full-screen Live TV opens the on-demand Channel Overlay with Search collapsed to a shortcut button
+      pressTvKey('ArrowRight');
       expect(host.querySelector('#luma-live-channel-drawer')).not.toBeNull();
       expect(host.querySelector('#btn-tv-channel-filter-toggle')).not.toBeNull();
       expect(

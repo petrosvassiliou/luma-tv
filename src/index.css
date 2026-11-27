@@ -290,13 +290,21 @@ button:not(:disabled) {
   box-shadow: 0 0 22px rgba(56, 189, 248, 0.45);
 }
 
-/* Android TV 10-Foot Remote Focus Rings, Smoked-Glass Transparency & Zero-Lag Transitions (strictly scoped to [data-tv="true"]) */
+/* Android TV 10-Foot Non-Clipping Inset Focus Highlights, Smoked-Glass & Zero-Lag Transitions (strictly scoped to [data-tv="true"]) */
 [data-tv="true"] *,
 [data-tv="true"] .m3-spring,
 [data-tv="true"] .m3-primary-pill,
 [data-tv="true"] .m3-secondary-tonal,
 [data-tv="true"] .m3-tonal-active {
-  transition-duration: 50ms !important;
+  transition-duration: 35ms !important;
+}
+
+[data-tv="true"] button:hover,
+[data-tv="true"] button:active,
+[data-tv="true"] .m3-primary-pill:hover,
+[data-tv="true"] .m3-primary-pill:active,
+[data-tv="true"] .m3-secondary-tonal:active {
+  transform: none !important;
 }
 
 [data-tv="true"] main > .luma-scroll {
@@ -318,6 +326,7 @@ button:not(:disabled) {
   background-color: rgba(32, 41, 60, 0.76) !important;
 }
 
+/* Inset focus ring sits 100% inside each element's border-radius so corners are NEVER clipped by overflow:hidden */
 [data-tv="true"] button:focus,
 [data-tv="true"] input:focus,
 [data-tv="true"] select:focus,
@@ -327,14 +336,24 @@ button:not(:disabled) {
 [data-tv="true"] [role="button"]:focus,
 [data-tv="true"] [data-spatial="true"]:focus,
 [data-tv="true"] [tabindex="0"]:focus {
+  outline: none !important;
+  box-shadow:
+    inset 0 0 0 2px #7FD4FF,
+    inset 0 0 16px rgba(127, 212, 255, 0.24) !important;
+  filter: brightness(1.12);
+}
+
+[data-tv="true"] input[type="checkbox"]:focus,
+[data-tv="true"] input[type="range"]:focus {
   outline: 2px solid #7FD4FF !important;
-  outline-offset: 2px !important;
-  box-shadow: 0 0 0 3px rgba(127, 212, 255, 0.2) !important;
+  outline-offset: 1px !important;
+  box-shadow: none !important;
 }
 
 [data-tv="true"] input[data-tv-editing="true"]:focus,
 [data-tv="true"] textarea[data-tv-editing="true"]:focus {
-  outline: 2px solid #34D399 !important;
-  outline-offset: 2px !important;
-  box-shadow: 0 0 0 3px rgba(52, 211, 153, 0.24) !important;
+  outline: none !important;
+  box-shadow:
+    inset 0 0 0 2px #34D399,
+    inset 0 0 16px rgba(52, 211, 153, 0.28) !important;
 }

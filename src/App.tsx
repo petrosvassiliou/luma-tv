@@ -80,6 +80,7 @@ import {
   importXmltvForSource,
   importXtreamSource,
   isPlaylistSourceStale,
+  loadPersistedChannelsFast,
   loadPersistedSourceBundle,
   migratePersistedSourceId,
   refreshSourceAccountInfo,
@@ -258,7 +259,9 @@ export function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [tvNavOpen, setTvNavOpen] = useState(false);
   const [tvChannelOverlayOpen, setTvChannelOverlayOpen] = useState(false);
+  const [tvPlayerBarOpen, setTvPlayerBarOpen] = useState(false);
   const lastTvBackExitAttemptRef = useRef<number>(0);
+  const reconcilePlaylistsChainRef = useRef<Promise<void>>(Promise.resolve());
   const [activeSection, setActiveSection] = useState<NavigationSection>('live');
   const [selectedGroupId, setSelectedGroupId] = useState<string>('all');
   const [focusedSeriesId, setFocusedSeriesId] = useState<string | null>(null);
@@ -663,7 +666,11 @@ export function App() {
     }
   });
 
+  const activeSourceIdRef = useRef<string>(activeSourceId);
+  activeSourceIdRef.current = activeSourceId;
+
   const handleSelectSourceId = useCallback((nextId: string, fromSync = false) => {
+    activeSourceIdRef.current = nextId;
     setActiveSourceIdState(nextId);
     setSelectedGroupId('all');
     try {
@@ -944,6 +951,16 @@ export function App() {
       return;
     }
     let cancelled = false;
+    // Stage 1: Load & display Live TV channels immediately for instant startup & source switching
+    loadPersistedChannelsFast(activeSourceId)
+      .then((fastChannels) => {
+        if (cancelled) return;
+        setPersistedChannels(fastChannels);
+        setLoadedBundleSourceId(activeSourceId);
+      })
+      .catch(() => undefined);
+
+    // Stage 2: Hydrate VOD, Series, and active-window XMLTV EPG right after
     loadPersistedSourceBundle(activeSourceId)
       .then((bundle) => {
         if (cancelled) return;
@@ -1316,8 +1333,8 @@ export function App() {
       builtinCatalog,
     ]);
 
-  // Unified lookup pool for Favorites & Collections (includes hidden-group, cross-playlist, and synced snapshot channels)
-  const collectionAndFavoritePool: Channel[] = useMemo(() => {
+  // Unified lookup Map + Array for Favorites & Collections (O(1) lookups across 54,000+ channels)
+  const channelByIdMap: Map<string, Channel> = useMemo(() => {
     const map = new Map<string, Channel>();
     for (const ch of persistedChannels) map.set(ch.id, ch);
     for (const ch of crossSourceLookupChannels) map.set(ch.id, ch);
@@ -1329,7 +1346,7 @@ export function App() {
         if (!map.has(ch.id)) map.set(ch.id, ch);
       }
     }
-    return Array.from(map.values());
+    return map;
   }, [
     persistedChannels,
     crossSourceLookupChannels,
@@ -1337,6 +1354,11 @@ export function App() {
     demoSourceDeleted,
     builtinCatalog,
   ]);
+
+  const collectionAndFavoritePool: Channel[] = useMemo(
+    () => Array.from(channelByIdMap.values()),
+    [channelByIdMap]
+  );
 
   const groups: ChannelGroup[] = useMemo(() => {
     const bouquetGroups: ChannelGroup[] = customBouquets.map((bq) => ({
@@ -1484,12 +1506,14 @@ export function App() {
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   useEffect(() => {
+    // Only tick every 1s when Sleep Timer is actively counting down; otherwise tick every 30s
+    // to avoid 60 unnecessary full-app React re-renders per minute across all platforms!
+    const intervalMs = sleepDeadlineMs !== null ? 1000 : 30_000;
     const timer = window.setInterval(() => {
-      const current = Date.now();
-      setNowMs(current);
-    }, 1000);
+      setNowMs(Date.now());
+    }, intervalMs);
     return () => window.clearInterval(timer);
-  }, []);
+  }, [sleepDeadlineMs]);
 
   // Trigger Sleep Timer Pause when countdown hits zero
   useEffect(() => {
@@ -1530,17 +1554,21 @@ export function App() {
   const visibleChannels = useMemo(() => {
     if (selectedGroupId === 'all') return channels;
     if (selectedGroupId === 'favorites') {
-      return collectionAndFavoritePool.filter((c) => favoriteIds.has(c.id));
+      const favList: Channel[] = [];
+      for (const fid of favoriteIds) {
+        const ch = channelByIdMap.get(fid);
+        if (ch) favList.push(ch);
+      }
+      return favList;
     }
     const customBq = customBouquets.find((b) => b.id === selectedGroupId);
     if (customBq) {
-      const byId = new Map(collectionAndFavoritePool.map((c) => [c.id, c]));
       return customBq.channelIds
-        .map((id) => byId.get(id))
+        .map((id) => channelByIdMap.get(id))
         .filter((c): c is Channel => Boolean(c));
     }
     return channels.filter((c) => c.groupId === selectedGroupId);
-  }, [channels, collectionAndFavoritePool, selectedGroupId, favoriteIds, customBouquets]);
+  }, [channels, channelByIdMap, selectedGroupId, favoriteIds, customBouquets]);
 
   // Automatically start on the user's configured Default Startup Channel, or otherwise the First Favorite channel
   useEffect(() => {
@@ -2544,8 +2572,16 @@ export function App() {
             updatedAtMs: sp.updatedAt ?? prev.updatedAtMs ?? Date.now(),
           };
           await lumaDb.sources.put(updated);
+          const expectedMinChannels =
+            typeof sp.channelCount === 'number' && sp.channelCount > 0
+              ? Math.floor(sp.channelCount * 0.9)
+              : 1;
+          const incompleteChannelLoad =
+            actualStoredCount === 0 ||
+            prev.epgStatus === 'syncing' ||
+            actualStoredCount < expectedMinChannels;
           if (
-            (credsChanged || actualStoredCount === 0) &&
+            (credsChanged || incompleteChannelLoad) &&
             ((updated.type === 'xtream' &&
               updated.rawUrlOrHost &&
               updated.username &&
@@ -2565,26 +2601,29 @@ export function App() {
 
       if (
         preferredActiveId &&
-        (preferredActiveId === 'builtin-reference' ||
-          preferredActiveId === 'none' ||
-          refreshedSources.some((s) => s.id === preferredActiveId))
+        refreshedSources.some((s) => s.id === preferredActiveId)
       ) {
         handleSelectSourceId(preferredActiveId, true);
-        if (preferredActiveId !== 'builtin-reference' && preferredActiveId !== 'none') {
-          await refreshActiveSourceBundle(preferredActiveId);
-        }
+        await refreshActiveSourceBundle(preferredActiveId);
       } else if (
-        activeSourceId !== 'builtin-reference' &&
-        activeSourceId !== 'none' &&
-        !refreshedSources.some((s) => s.id === activeSourceId)
+        preferredActiveId === 'builtin-reference' &&
+        !demoSourceDeleted &&
+        refreshedSources.length === 0
       ) {
-        const fallbackId =
-          refreshedSources[0]?.id ?? (demoSourceDeleted ? 'none' : 'builtin-reference');
-        handleSelectSourceId(fallbackId, true);
+        handleSelectSourceId('builtin-reference', true);
+      } else if (
+        refreshedSources.length > 0 &&
+        (activeSourceIdRef.current === 'builtin-reference' ||
+          activeSourceIdRef.current === 'none' ||
+          !refreshedSources.some((s) => s.id === activeSourceIdRef.current))
+      ) {
+        handleSelectSourceId(refreshedSources[0].id, true);
+        await refreshActiveSourceBundle(refreshedSources[0].id);
       }
 
       if (toHydrate.length > 0) {
         setCloudHydratingPlaylists(true);
+        suppressCloudAutoPushUntilRef.current = Date.now() + 45_000;
         try {
           const proxyEndpoint =
             proxyConfig.enabled || isLocalRustProxyEndpoint(proxyConfig.endpointUrl)
@@ -2593,7 +2632,25 @@ export function App() {
           let hydrationErrors: string[] = [];
           for (const src of toHydrate) {
             try {
-              await resyncPersistedSource({ source: src, proxyEndpoint });
+              await resyncPersistedSource({
+                source: src,
+                proxyEndpoint,
+                onLiveChannelsReady: () => {
+                  const curActive = activeSourceIdRef.current;
+                  if (curActive === src.id) {
+                    void loadPersistedChannelsFast(src.id).then((chs) => {
+                      setPersistedChannels(chs);
+                      setLoadedBundleSourceId(src.id);
+                    });
+                  }
+                  void lumaDb.sources
+                    .orderBy('createdAt')
+                    .reverse()
+                    .toArray()
+                    .then(setPersistedSources);
+                  setPlaylistHydrationEpoch((n) => n + 1);
+                },
+              });
             } catch (err) {
               hydrationErrors.push(
                 `${src.name}: ${err instanceof Error ? err.message : 'sync error'}`
@@ -2606,13 +2663,16 @@ export function App() {
             .toArray();
           setPersistedSources(afterHydrate);
           setPlaylistHydrationEpoch((n) => n + 1);
-          const targetActive = preferredActiveId || activeSourceId;
+          const resolvedActive = activeSourceIdRef.current;
           if (
-            targetActive &&
-            targetActive !== 'builtin-reference' &&
-            targetActive !== 'none'
+            resolvedActive &&
+            resolvedActive !== 'builtin-reference' &&
+            resolvedActive !== 'none'
           ) {
-            await refreshActiveSourceBundle(targetActive);
+            await refreshActiveSourceBundle(resolvedActive);
+          } else if (afterHydrate.length > 0) {
+            handleSelectSourceId(afterHydrate[0].id, true);
+            await refreshActiveSourceBundle(afterHydrate[0].id);
           }
           if (hydrationErrors.length > 0) {
             setCloudErrorMessage(
@@ -2620,12 +2680,12 @@ export function App() {
             );
           }
         } finally {
+          suppressCloudAutoPushUntilRef.current = Date.now() + 3000;
           setCloudHydratingPlaylists(false);
         }
       }
     },
     [
-      activeSourceId,
       demoSourceDeleted,
       handleSelectSourceId,
       nativeProbe?.localProxyUrl,
@@ -2774,10 +2834,14 @@ export function App() {
         payload.playlists !== undefined ||
         (options?.deletedPlaylistIds?.length ?? 0) > 0
       ) {
-        void reconcileSyncedPlaylists(payload.playlists ?? [], {
-          preferredActiveId: payload.activeSourceId,
-          deletedPlaylistIds: options?.deletedPlaylistIds,
-        });
+        reconcilePlaylistsChainRef.current = reconcilePlaylistsChainRef.current
+          .catch(() => undefined)
+          .then(() =>
+            reconcileSyncedPlaylists(payload.playlists ?? [], {
+              preferredActiveId: payload.activeSourceId,
+              deletedPlaylistIds: options?.deletedPlaylistIds,
+            })
+          );
       } else if (payload.activeSourceId === 'builtin-reference') {
         handleSelectSourceId('builtin-reference', true);
       }
@@ -2811,13 +2875,12 @@ export function App() {
         for (const sid of bq.seriesIds ?? []) neededSerIds.add(sid);
       }
 
-      const chById = new Map(collectionAndFavoritePool.map((c) => [c.id, c]));
       const channelSnapshots: Record<string, Channel> = {};
       let chCount = 0;
       for (const cid of neededChIds) {
         if (chCount >= 500) break;
         if (cid.startsWith('ch-')) continue;
-        const ch = chById.get(cid);
+        const ch = channelByIdMap.get(cid);
         if (ch) {
           channelSnapshots[cid] = {
             id: ch.id,
@@ -2905,8 +2968,8 @@ export function App() {
     },
     [
       activeSourceId,
+      channelByIdMap,
       cloudSyncPlaylistsEnabled,
-      collectionAndFavoritePool,
       collectionAndFavoriteSeriesPool,
       collectionAndFavoriteVodPool,
       customBouquets,
@@ -3070,6 +3133,7 @@ export function App() {
   useEffect(() => {
     if (
       !sourcesDbLoaded ||
+      cloudHydratingPlaylists ||
       !cloudSession?.uid ||
       !cloudSession.hasVaultKey ||
       !cloudAutoSyncEnabled
@@ -3106,6 +3170,7 @@ export function App() {
     }
   }, [
     cloudAutoSyncEnabled,
+    cloudHydratingPlaylists,
     cloudSession?.hasVaultKey,
     cloudSession?.uid,
     sourcesDbLoaded,
@@ -3120,6 +3185,7 @@ export function App() {
     }
     if (
       !sourcesDbLoaded ||
+      cloudHydratingPlaylists ||
       !cloudSession?.uid ||
       !cloudSession.hasVaultKey ||
       !cloudAutoSyncEnabled
@@ -3158,6 +3224,7 @@ export function App() {
   }, [
     activeSourceId,
     cloudAutoSyncEnabled,
+    cloudHydratingPlaylists,
     cloudSession?.hasVaultKey,
     cloudSession?.uid,
     cloudSyncPlaylistsEnabled,
@@ -3416,6 +3483,7 @@ export function App() {
   const isTvBareLive =
     platformEnv.isAndroidTv &&
     activeSection === 'live' &&
+    !tvPlayerBarOpen &&
     !activeOnDemand &&
     !timeshiftProgram &&
     !tvNavOpen &&
@@ -3499,6 +3567,10 @@ export function App() {
       setTvChannelOverlayOpen(false);
       return true;
     }
+    if (tvPlayerBarOpen) {
+      setTvPlayerBarOpen(false);
+      return true;
+    }
     if (activeSection === 'live' && activeOnDemand) {
       if (activeOnDemand.returnSection === 'series') {
         setFocusedSeriesId(activeOnDemand.favoriteTargetId);
@@ -3544,6 +3616,7 @@ export function App() {
     shortcutsOpen,
     tvNavOpen,
     tvChannelOverlayOpen,
+    tvPlayerBarOpen,
     activeSection,
     activeOnDemand,
     timeshiftProgram,
@@ -3559,11 +3632,13 @@ export function App() {
 
     const onOpenNav = () => {
       setTvChannelOverlayOpen(false);
+      setTvPlayerBarOpen(false);
       setTvNavOpen(true);
     };
     const onCloseOverlays = () => {
       setTvNavOpen(false);
       setTvChannelOverlayOpen(false);
+      setTvPlayerBarOpen(false);
     };
     const onRemoteKey = (evt: Event) => {
       const action = (evt as CustomEvent<{ action?: string }>).detail?.action;
@@ -3605,12 +3680,33 @@ export function App() {
         return;
       }
 
+      const isOk = e.key === 'Enter' || e.key === 'Select' || e.keyCode === 23;
+
+      // When watching seekable VOD/Series/Catch-Up in full screen with TV player bar hidden,
+      // pressing OK / Up / Down reveals and focuses the interactive TV On-Screen Player Bar.
+      if (
+        activeSection === 'live' &&
+        (activeOnDemand || timeshiftProgram) &&
+        !tvPlayerBarOpen &&
+        !tvNavOpen &&
+        !tvChannelOverlayOpen &&
+        !commandBarOpen &&
+        !shortcutsOpen &&
+        !inspectMedia &&
+        !channelMenuTarget
+      ) {
+        if (isOk || e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+          e.preventDefault();
+          setTvPlayerBarOpen(true);
+          return;
+        }
+      }
+
       if (!isTvBareLive) return;
       if (document.querySelector('#luma-dsp-popover, #luma-cast-popover, [role="listbox"]')) {
         return;
       }
 
-      const isOk = e.key === 'Enter' || e.key === 'Select' || e.keyCode === 23;
       if (e.key === 'ArrowUp') {
         e.preventDefault();
         zapRelative(-1);
@@ -3622,9 +3718,12 @@ export function App() {
       } else if (e.key === 'ArrowLeft') {
         e.preventDefault();
         setTvNavOpen(true);
-      } else if (e.key === 'ArrowRight' || isOk) {
+      } else if (e.key === 'ArrowRight') {
         e.preventDefault();
         setTvChannelOverlayOpen(true);
+      } else if (isOk) {
+        e.preventDefault();
+        setTvPlayerBarOpen(true);
       }
     };
 
@@ -3640,7 +3739,22 @@ export function App() {
       window.removeEventListener('luma-tv-remote-key', onRemoteKey);
       window.removeEventListener('keydown', onTvBareLiveAndBackKeyDown);
     };
-  }, [platformEnv.isAndroidTv, handleAndroidTvBack, isTvBareLive, zapRelative]);
+  }, [
+    platformEnv.isAndroidTv,
+    handleAndroidTvBack,
+    isTvBareLive,
+    zapRelative,
+    activeSection,
+    activeOnDemand,
+    timeshiftProgram,
+    tvPlayerBarOpen,
+    tvNavOpen,
+    tvChannelOverlayOpen,
+    commandBarOpen,
+    shortcutsOpen,
+    inspectMedia,
+    channelMenuTarget,
+  ]);
 
   const fileDropHandlers = useMemo(
     () => ({
@@ -4014,6 +4128,10 @@ export function App() {
       locale={preferences.locale}
       mpvAvailable={Boolean(nativeProbe?.mpvAvailable)}
       isAndroidTv={platformEnv.isAndroidTv}
+      tvControlsOpen={platformEnv.isAndroidTv && tvPlayerBarOpen}
+      onCloseTvControls={() => setTvPlayerBarOpen(false)}
+      onOpenTvChannels={() => setTvChannelOverlayOpen(true)}
+      onOpenTvGuide={() => setActiveSection('live-epg')}
       onToast={(msg) => {
         setToastMessage(msg);
         window.setTimeout(() => setToastMessage(null), 3200);

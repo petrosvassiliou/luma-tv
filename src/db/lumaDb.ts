@@ -70,7 +70,7 @@ export const lumaDb = new LumaDatabase();
 
 export async function bulkSaveChannelsChunked(
   items: StoredChannel[],
-  chunkSize = 2000,
+  chunkSize = 8000,
   onProgress?: (written: number, total: number) => void
 ): Promise<void> {
   for (let i = 0; i < items.length; i += chunkSize) {
@@ -82,7 +82,7 @@ export async function bulkSaveChannelsChunked(
 
 export async function bulkSaveVodChunked(
   items: StoredVodItem[],
-  chunkSize = 1500
+  chunkSize = 6000
 ): Promise<void> {
   for (let i = 0; i < items.length; i += chunkSize) {
     await lumaDb.vodItems.bulkPut(items.slice(i, i + chunkSize));
@@ -91,7 +91,7 @@ export async function bulkSaveVodChunked(
 
 export async function bulkSaveSeriesChunked(
   items: StoredSeriesItem[],
-  chunkSize = 1500
+  chunkSize = 6000
 ): Promise<void> {
   for (let i = 0; i < items.length; i += chunkSize) {
     await lumaDb.seriesItems.bulkPut(items.slice(i, i + chunkSize));
@@ -100,7 +100,7 @@ export async function bulkSaveSeriesChunked(
 
 export async function bulkSaveEpgChunked(
   items: StoredEpgProgram[],
-  chunkSize = 2500,
+  chunkSize = 8000,
   onProgress?: (written: number, total: number) => void
 ): Promise<void> {
   for (let i = 0; i < items.length; i += chunkSize) {

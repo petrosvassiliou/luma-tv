@@ -199,92 +199,143 @@ function findScrollableAncestor(el: HTMLElement | null): HTMLElement | null {
   return null;
 }
 
+interface TvLogicalRow {
+  top: number;
+  bottom: number;
+  centerY: number;
+  items: TvCandidateMeta[];
+}
+
+/**
+ * Groups visible UI elements into ordered horizontal visual rows (Top -> Bottom)
+ * and sorts items within each row strictly Left -> Right so D-Pad navigation
+ * always follows predictable, sequential reading order without random diagonal jumps.
+ */
+export function buildLogicalTvRows(candidates: TvCandidateMeta[]): TvLogicalRow[] {
+  const sorted = [...candidates].sort(
+    (a, b) => a.rect.y - b.rect.y || a.rect.x - b.rect.x
+  );
+  const rows: TvLogicalRow[] = [];
+
+  for (const cand of sorted) {
+    const top = cand.rect.y;
+    const bottom = cand.rect.y + cand.rect.height;
+    const centerY = top + cand.rect.height / 2;
+
+    let matchedRow: TvLogicalRow | null = null;
+    for (let i = rows.length - 1; i >= Math.max(0, rows.length - 3); i--) {
+      const r = rows[i];
+      const overlap = Math.max(0, Math.min(r.bottom, bottom) - Math.max(r.top, top));
+      const minHeight = Math.max(1, Math.min(r.bottom - r.top, cand.rect.height));
+      if (overlap >= minHeight * 0.38 || Math.abs(centerY - r.centerY) <= 14) {
+        matchedRow = r;
+        break;
+      }
+    }
+
+    if (matchedRow) {
+      matchedRow.items.push(cand);
+      matchedRow.top = Math.min(matchedRow.top, top);
+      matchedRow.bottom = Math.max(matchedRow.bottom, bottom);
+      matchedRow.centerY =
+        matchedRow.items.reduce((acc, it) => acc + it.rect.y + it.rect.height / 2, 0) /
+        matchedRow.items.length;
+    } else {
+      rows.push({
+        top,
+        bottom,
+        centerY,
+        items: [cand],
+      });
+    }
+  }
+
+  rows.sort((a, b) => a.centerY - b.centerY);
+  for (const r of rows) {
+    r.items.sort((a, b) => a.rect.x - b.rect.x);
+  }
+  return rows;
+}
+
+function pickHorizontallyAlignedInRow(
+  origin: TvCandidateMeta,
+  row: TvLogicalRow
+): TvCandidateMeta {
+  const ox = origin.rect.x + origin.rect.width / 2;
+  let best = row.items[0];
+  let bestScore = Number.POSITIVE_INFINITY;
+
+  for (const cand of row.items) {
+    const overlapX = Math.max(
+      0,
+      Math.min(origin.rect.x + origin.rect.width, cand.rect.x + cand.rect.width) -
+        Math.max(origin.rect.x, cand.rect.x)
+    );
+    const cx = cand.rect.x + cand.rect.width / 2;
+    const centerDist = Math.abs(cx - ox);
+    // Prefer items whose horizontal span overlaps origin, then nearest center X
+    const score = overlapX > 0 ? centerDist * 0.25 - overlapX : 200 + centerDist;
+    if (score < bestScore) {
+      bestScore = score;
+      best = cand;
+    }
+  }
+  return best;
+}
+
 function pickBestTvCandidate(
   origin: TvCandidateMeta,
   candidates: TvCandidateMeta[],
   direction: SpatialDirection,
-  allowUpToTitlebar: boolean
+  allowUpToTitlebar: boolean,
+  cachedRows?: TvLogicalRow[]
 ): TvCandidateMeta | null {
-  const ox = origin.rect.x + origin.rect.width / 2;
-  const oy = origin.rect.y + origin.rect.height / 2;
-
-  let best: TvCandidateMeta | null = null;
-  let bestScore = Number.POSITIVE_INFINITY;
-
-  for (const c of candidates) {
-    if (c.el === origin.el || c.rect.width === 0 || c.rect.height === 0) continue;
-
-    // Strict vertical region containment so scrolling Settings/Catalog never jumps into Sidebar
+  const sameRegion = candidates.filter((c) => {
+    if (c.rect.width === 0 || c.rect.height === 0) return false;
     if (direction === 'down') {
-      if (origin.region !== 'titlebar' && c.region !== origin.region) continue;
-    } else if (direction === 'up') {
-      if (c.region !== origin.region) {
-        if (!(allowUpToTitlebar && c.region === 'titlebar')) continue;
-      }
+      return origin.region === 'titlebar' || c.region === origin.region;
     }
-
-    const cx = c.rect.x + c.rect.width / 2;
-    const cy = c.rect.y + c.rect.height / 2;
-    const dx = cx - ox;
-    const dy = cy - oy;
-
-    const overlapX = Math.max(
-      0,
-      Math.min(origin.rect.x + origin.rect.width, c.rect.x + c.rect.width) -
-        Math.max(origin.rect.x, c.rect.x)
-    );
-    const gapX =
-      overlapX > 0
-        ? 0
-        : Math.min(
-            Math.abs(origin.rect.x - (c.rect.x + c.rect.width)),
-            Math.abs(c.rect.x - (origin.rect.x + origin.rect.width))
-          );
-
-    const overlapY = Math.max(
-      0,
-      Math.min(origin.rect.y + origin.rect.height, c.rect.y + c.rect.height) -
-        Math.max(origin.rect.y, c.rect.y)
-    );
-    const gapY =
-      overlapY > 0
-        ? 0
-        : Math.min(
-            Math.abs(origin.rect.y - (c.rect.y + c.rect.height)),
-            Math.abs(c.rect.y - (origin.rect.y + origin.rect.height))
-          );
-
-    let score = 0;
-    if (direction === 'right') {
-      if (dx <= 6) continue;
-      // Candidate must actually sit to the right (not stacked directly above/below in another row)
-      if (overlapY <= 2 && c.rect.x < origin.rect.x + origin.rect.width - 14) continue;
-      score = dx + (overlapY > 2 ? Math.abs(dy) * 0.4 : 500 + gapY * 6.0 + Math.abs(dy));
-      if (c.region !== origin.region) score += 120;
-    } else if (direction === 'left') {
-      if (dx >= -6) continue;
-      // Candidate must actually sit to the left (prevents jumping up into wider inputs above)
-      if (overlapY <= 2 && c.rect.x + c.rect.width > origin.rect.x + 14) continue;
-      score = -dx + (overlapY > 2 ? Math.abs(dy) * 0.4 : 500 + gapY * 6.0 + Math.abs(dy));
-      if (c.region !== origin.region) score += 120;
-    } else if (direction === 'down') {
-      if (dy <= 6) continue;
-      score = dy * 2.2 + gapX * 0.75 + Math.abs(dx) * 0.18;
-      if (origin.form && origin.form === c.form) score -= 180;
-    } else {
-      if (dy >= -6) continue;
-      score = -dy * 2.2 + gapX * 0.75 + Math.abs(dx) * 0.18;
-      if (origin.form && origin.form === c.form) score -= 180;
-      if (c.region !== origin.region) score += 260;
+    if (direction === 'up') {
+      return c.region === origin.region || (allowUpToTitlebar && c.region === 'titlebar');
     }
+    return c.region === origin.region;
+  });
 
-    if (score < bestScore) {
-      bestScore = score;
-      best = c;
+  const rows =
+    cachedRows && sameRegion.length === candidates.length
+      ? cachedRows
+      : buildLogicalTvRows(sameRegion);
+
+  let rowIdx = -1;
+  let colIdx = -1;
+  for (let r = 0; r < rows.length; r++) {
+    const idx = rows[r].items.findIndex((it) => it.el === origin.el);
+    if (idx >= 0) {
+      rowIdx = r;
+      colIdx = idx;
+      break;
     }
   }
 
-  return best;
+  if (rowIdx < 0) return null;
+
+  if (direction === 'right') {
+    const curRow = rows[rowIdx];
+    return colIdx + 1 < curRow.items.length ? curRow.items[colIdx + 1] : null;
+  }
+
+  if (direction === 'left') {
+    const curRow = rows[rowIdx];
+    return colIdx - 1 >= 0 ? curRow.items[colIdx - 1] : null;
+  }
+
+  if (direction === 'down') {
+    const nextRow = rows[rowIdx + 1];
+    return nextRow ? pickHorizontallyAlignedInRow(origin, nextRow) : null;
+  }
+
+  const prevRow = rows[rowIdx - 1];
+  return prevRow ? pickHorizontallyAlignedInRow(origin, prevRow) : null;
 }
 
 export function useSpatialDpadFocus(
@@ -361,11 +412,36 @@ export function useSpatialDpadFocus(
     // =========================================================================
     // ANDROID TV 10-FOOT REMOTE SPATIAL ENGINE (Strictly isolated to tvMode)
     // =========================================================================
-    const collectTvCandidates = (): {
+    let cachedSnapshot: {
+      atMs: number;
       items: TvCandidateMeta[];
+      rows: TvLogicalRow[];
+      hasRealLayout: boolean;
+      overlayRoot: HTMLElement | null;
+    } | null = null;
+
+    const invalidateTvCache = () => {
+      cachedSnapshot = null;
+    };
+
+    const collectTvCandidates = (
+      allowCache = false
+    ): {
+      items: TvCandidateMeta[];
+      rows: TvLogicalRow[];
       hasRealLayout: boolean;
       overlayRoot: HTMLElement | null;
     } => {
+      const now = performance.now();
+      if (
+        allowCache &&
+        cachedSnapshot &&
+        now - cachedSnapshot.atMs < 180 &&
+        (!cachedSnapshot.overlayRoot || document.body.contains(cachedSnapshot.overlayRoot))
+      ) {
+        return cachedSnapshot;
+      }
+
       const sampleBtn = document.querySelector<HTMLElement>('button');
       const hasRealLayout = Boolean(
         sampleBtn && sampleBtn.getBoundingClientRect().width > 0
@@ -378,6 +454,11 @@ export function useSpatialDpadFocus(
 
       for (let i = 0; i < raw.length; i++) {
         const el = raw[i];
+        // Skip nested action micro-buttons inside a focusable catalog card so 1 press = 1 card
+        if (el.tagName === 'BUTTON') {
+          const parentCard = el.parentElement?.closest('main .cursor-pointer');
+          if (parentCard && parentCard !== el) continue;
+        }
         const r = el.getBoundingClientRect();
         if (!isTvCandidateRendered(el, r, hasRealLayout)) continue;
         ensureTvTabbable(el);
@@ -395,7 +476,15 @@ export function useSpatialDpadFocus(
           },
         });
       }
-      return { items, hasRealLayout, overlayRoot };
+      const rows = hasRealLayout ? buildLogicalTvRows(items) : [];
+      cachedSnapshot = {
+        atMs: now,
+        items,
+        rows,
+        hasRealLayout,
+        overlayRoot,
+      };
+      return cachedSnapshot;
     };
 
     const focusTvElement = (target: HTMLElement) => {
@@ -475,7 +564,7 @@ export function useSpatialDpadFocus(
     };
 
     const moveTvFocus = (dir: SpatialDirection, currentActive: HTMLElement | null): boolean => {
-      const { items, hasRealLayout } = collectTvCandidates();
+      const { items, rows, hasRealLayout } = collectTvCandidates(true);
       if (items.length === 0) return false;
 
       const activeIdx = currentActive
@@ -521,10 +610,11 @@ export function useSpatialDpadFocus(
       }
 
       const allowUpToTitlebar = !scroller || scroller.scrollTop <= 8;
-      let winner = pickBestTvCandidate(origin, items, dir, allowUpToTitlebar);
+      let winner = pickBestTvCandidate(origin, items, dir, allowUpToTitlebar, rows);
 
       if (!winner && dir === 'up' && !allowUpToTitlebar && scroller) {
         scroller.scrollTop = Math.max(0, scroller.scrollTop - 200);
+        invalidateTvCache();
         return true;
       }
 
@@ -533,6 +623,7 @@ export function useSpatialDpadFocus(
           scroller.scrollTop + scroller.clientHeight < scroller.scrollHeight - 6;
         if (canScrollMore) {
           scroller.scrollTop = scroller.scrollTop + 200;
+          invalidateTvCache();
           return true;
         }
       }
@@ -673,17 +764,20 @@ export function useSpatialDpadFocus(
         const tag = active.tagName;
         if (tag === 'INPUT' && (active as HTMLInputElement).type === 'checkbox') {
           e.preventDefault();
+          invalidateTvCache();
           active.click();
           return;
         }
         if (tag === 'BUTTON' || tag === 'A') {
           e.preventDefault();
           e.stopPropagation();
+          invalidateTvCache();
           active.click();
           return;
         }
         if (tag !== 'SELECT' && tag !== 'INPUT') {
           e.preventDefault();
+          invalidateTvCache();
           active.click();
           return;
         }
@@ -713,11 +807,13 @@ export function useSpatialDpadFocus(
 
     window.addEventListener('keydown', onTvKeyDown, true);
     window.addEventListener('focusout', onTvFocusOut, true);
+    window.addEventListener('scroll', invalidateTvCache, true);
     window.addEventListener('luma-tv-ime-closed', onTvImeClosed);
     return () => {
       window.cancelAnimationFrame(rafFocus);
       window.removeEventListener('keydown', onTvKeyDown, true);
       window.removeEventListener('focusout', onTvFocusOut, true);
+      window.removeEventListener('scroll', invalidateTvCache, true);
       window.removeEventListener('luma-tv-ime-closed', onTvImeClosed);
     };
   }, [enabled, modalBlocked, tvMode, activeSection]);

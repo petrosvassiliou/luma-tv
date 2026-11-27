@@ -50,6 +50,7 @@ export interface SyncedPlaylistSource {
   password?: string;
   outputFormat?: 'm3u8' | 'ts';
   xmltvUrl?: string;
+  channelCount?: number;
   hiddenGroupIds?: string[];
   epgOffsetHours?: number;
   createdAt?: number;
@@ -519,6 +520,8 @@ function mergeTwoPlaylistEntries(params: {
       mergedCreatedAt
     ) || Date.now();
 
+  const mergedChannelCount = Math.max(l.channelCount ?? 0, r.channelCount ?? 0);
+
   return {
     id: canonicalId,
     name: mergedName || primary.name,
@@ -529,6 +532,7 @@ function mergeTwoPlaylistEntries(params: {
     ...(mergedPassword ? { password: mergedPassword } : {}),
     ...(mergedFormat ? { outputFormat: mergedFormat } : {}),
     ...(mergedXmltv ? { xmltvUrl: mergedXmltv } : {}),
+    ...(mergedChannelCount > 0 ? { channelCount: mergedChannelCount } : {}),
     hiddenGroupIds: mergedHiddenGroups,
     epgOffsetHours: mergedOffset,
     createdAt: mergedCreatedAt,
@@ -2892,6 +2896,7 @@ export function serializePlaylistForSync(
     ...(source.password ? { password: source.password } : {}),
     ...(source.outputFormat ? { outputFormat: source.outputFormat } : {}),
     ...(source.xmltvUrl ? { xmltvUrl: source.xmltvUrl } : {}),
+    ...(source.channelCount > 0 ? { channelCount: source.channelCount } : {}),
     hiddenGroupIds: source.hiddenGroupIds ?? [],
     epgOffsetHours: source.epgOffsetHours ?? 0,
     createdAt: source.createdAt,

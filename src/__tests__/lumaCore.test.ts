@@ -57,7 +57,10 @@ import {
   isPlaylistSourceStale,
   parseXtreamAccountInfoPayload,
 } from '../services/playlistService';
-import { pickBestSpatialCandidate } from '../services/spatialNavigation';
+import {
+  buildLogicalTvRows,
+  pickBestSpatialCandidate,
+} from '../services/spatialNavigation';
 import {
   convertSubtitleToWebVtt,
   detectSubtitleLanguageFromFilename,
@@ -303,6 +306,51 @@ describe('Luma TV v0.1 beta — Zero-Knowledge AES-256-GCM Sync Vault & 20k EPG 
     expect(pickBestSpatialCandidate(origin, candidates, 'right')).toBe('btn-right-aligned');
     expect(pickBestSpatialCandidate(origin, candidates, 'down')).toBe('btn-below');
     expect(pickBestSpatialCandidate(origin, candidates, 'left')).toBeNull();
+
+    // Verify logical TV row grouping orders Top -> Bottom rows and Left -> Right columns
+    const dummyEl = {} as HTMLElement;
+    const rows = buildLogicalTvRows([
+      {
+        el: dummyEl,
+        id: 'row0-right',
+        region: 'main',
+        form: null,
+        rect: { id: 'row0-right', x: 780, y: 24, width: 140, height: 34 },
+      },
+      {
+        el: dummyEl,
+        id: 'row2-submit',
+        region: 'main',
+        form: null,
+        rect: { id: 'row2-submit', x: 40, y: 210, width: 200, height: 36 },
+      },
+      {
+        el: dummyEl,
+        id: 'row1-tab2',
+        region: 'main',
+        form: null,
+        rect: { id: 'row1-tab2', x: 130, y: 110, width: 120, height: 32 },
+      },
+      {
+        el: dummyEl,
+        id: 'row1-tab1',
+        region: 'main',
+        form: null,
+        rect: { id: 'row1-tab1', x: 40, y: 110, width: 80, height: 32 },
+      },
+      {
+        el: dummyEl,
+        id: 'row2-forgot',
+        region: 'main',
+        form: null,
+        rect: { id: 'row2-forgot', x: 300, y: 214, width: 120, height: 28 },
+      },
+    ]);
+    expect(rows.map((r) => r.items.map((it) => it.id))).toEqual([
+      ['row0-right'],
+      ['row1-tab1', 'row1-tab2'],
+      ['row2-submit', 'row2-forgot'],
+    ]);
 
     // Verify 100% translation key parity across DE, EN, IT, FR, ES, and GR
     expect(SUPPORTED_LOCALES).toEqual(['de', 'en', 'it', 'fr', 'es', 'gr']);

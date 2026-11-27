@@ -209,9 +209,22 @@ async function resolveEffectiveIngestProxy(
   return probe.localProxyUrl || undefined;
 }
 
+function isLocalLoopbackProxyUrl(proxyUrl?: string): boolean {
+  return Boolean(
+    proxyUrl &&
+      (proxyUrl.startsWith('http://127.0.0.1:') ||
+        proxyUrl.startsWith('http://localhost:'))
+  );
+}
+
 async function tryPrefetchM3uOrXmlTextViaRust(
-  url?: string
+  url?: string,
+  effectiveProxy?: string
 ): Promise<string | undefined> {
+  // Prefer direct off-main-thread WebWorker streaming via local Rust 127.0.0.1 proxy when active
+  if (isLocalLoopbackProxyUrl(effectiveProxy)) {
+    return undefined;
+  }
   if (!url || !url.startsWith('http') || !isTauriDesktopOrMobile()) {
     return undefined;
   }
@@ -223,6 +236,7 @@ async function tryPrefetchXtreamCatalogViaRust(params: {
   serverUrl: string;
   username: string;
   password: string;
+  effectiveProxy?: string;
   onProgress?: (phase: string, percent: number) => void;
 }): Promise<
   | {
@@ -236,6 +250,9 @@ async function tryPrefetchXtreamCatalogViaRust(params: {
     }
   | undefined
 > {
+  // When local Rust 127.0.0.1 loopback proxy is running, let the background WebWorker stream
+  // JSON directly over HTTP so multi-megabyte catalogs never cross the main-thread WebView IPC bridge!
+  if (isLocalLoopbackProxyUrl(params.effectiveProxy)) return undefined;
   if (!isTauriDesktopOrMobile()) return undefined;
   const base = params.serverUrl.trim().replace(/\/+$/, '');
   const authParams = `username=${encodeURIComponent(params.username)}&password=${encodeURIComponent(params.password)}`;
@@ -245,15 +262,14 @@ async function tryPrefetchXtreamCatalogViaRust(params: {
     18
   );
 
-  const [authRaw, liveCategoriesRaw, liveStreamsRaw] = await Promise.all([
-    fetchNativeTextViaRust(`${base}/player_api.php?${authParams}`),
-    fetchNativeTextViaRust(
-      `${base}/player_api.php?${authParams}&action=get_live_categories`
-    ),
-    fetchNativeTextViaRust(
-      `${base}/player_api.php?${authParams}&action=get_live_streams`
-    ),
-  ]);
+  // Fetch sequentially to respect strict 1-connection Xtream panels and keep peak RAM low
+  const authRaw = await fetchNativeTextViaRust(`${base}/player_api.php?${authParams}`);
+  const liveCategoriesRaw = await fetchNativeTextViaRust(
+    `${base}/player_api.php?${authParams}&action=get_live_categories`
+  );
+  const liveStreamsRaw = await fetchNativeTextViaRust(
+    `${base}/player_api.php?${authParams}&action=get_live_streams`
+  );
 
   if (!liveCategoriesRaw || !liveStreamsRaw) {
     return undefined;
@@ -264,21 +280,18 @@ async function tryPrefetchXtreamCatalogViaRust(params: {
     52
   );
 
-  const [vodCategoriesRaw, vodStreamsRaw, seriesCategoriesRaw, seriesStreamsRaw] =
-    await Promise.all([
-      fetchNativeTextViaRust(
-        `${base}/player_api.php?${authParams}&action=get_vod_categories`
-      ),
-      fetchNativeTextViaRust(
-        `${base}/player_api.php?${authParams}&action=get_vod_streams`
-      ),
-      fetchNativeTextViaRust(
-        `${base}/player_api.php?${authParams}&action=get_series_categories`
-      ),
-      fetchNativeTextViaRust(
-        `${base}/player_api.php?${authParams}&action=get_series`
-      ),
-    ]);
+  const vodCategoriesRaw = await fetchNativeTextViaRust(
+    `${base}/player_api.php?${authParams}&action=get_vod_categories`
+  );
+  const vodStreamsRaw = await fetchNativeTextViaRust(
+    `${base}/player_api.php?${authParams}&action=get_vod_streams`
+  );
+  const seriesCategoriesRaw = await fetchNativeTextViaRust(
+    `${base}/player_api.php?${authParams}&action=get_series_categories`
+  );
+  const seriesStreamsRaw = await fetchNativeTextViaRust(
+    `${base}/player_api.php?${authParams}&action=get_series`
+  );
 
   return {
     authRaw,
@@ -338,7 +351,7 @@ export async function importM3uPlaylist(params: {
   const effectiveProxy = await resolveEffectiveIngestProxy(params.proxyEndpoint);
   const prefetchedM3u =
     !params.rawText && params.url
-      ? await tryPrefetchM3uOrXmlTextViaRust(params.url)
+      ? await tryPrefetchM3uOrXmlTextViaRust(params.url, effectiveProxy)
       : undefined;
 
   const res = await runWorkerTask(
@@ -479,6 +492,7 @@ export async function importXtreamSource(params: {
     serverUrl: params.serverUrl,
     username: params.username,
     password: params.password,
+    effectiveProxy,
     onProgress: params.onProgress,
   });
 
@@ -693,7 +707,7 @@ export async function importXmltvForSource(params: {
   const effectiveProxy = await resolveEffectiveIngestProxy(params.proxyEndpoint);
   const prefetchedXml =
     !params.rawText && !params.rawBuffer && params.url && !params.url.endsWith('.gz')
-      ? await tryPrefetchM3uOrXmlTextViaRust(params.url)
+      ? await tryPrefetchM3uOrXmlTextViaRust(params.url, effectiveProxy)
       : undefined;
 
   const res = await runWorkerTask(
@@ -804,12 +818,19 @@ export async function runEndToEndWorkerDemoImport(
   return { source, epgCount };
 }
 
+export async function loadPersistedChannelsFast(
+  sourceId: string
+): Promise<StoredChannel[]> {
+  return await lumaDb.channels.where('sourceId').equals(sourceId).sortBy('sortOrder');
+}
+
 export async function loadPersistedSourceBundle(sourceId: string): Promise<{
   channels: StoredChannel[];
   vodItems: StoredVodItem[];
   seriesItems: StoredSeriesItem[];
   epgByTvgId: Map<string, StoredEpgProgram[]>;
 }> {
+  const minEpgEndMs = Date.now() - 24 * 3_600_000;
   const [channels, vodItems, seriesItems, epgList] = await Promise.all([
     lumaDb.channels.where('sourceId').equals(sourceId).sortBy('sortOrder'),
     lumaDb.vodItems.where('sourceId').equals(sourceId).toArray(),
@@ -819,6 +840,7 @@ export async function loadPersistedSourceBundle(sourceId: string): Promise<{
 
   const epgByTvgId = new Map<string, StoredEpgProgram[]>();
   for (const p of epgList) {
+    if (p.endMs < minEpgEndMs) continue;
     const bucket = epgByTvgId.get(p.tvgId);
     if (bucket) bucket.push(p);
     else epgByTvgId.set(p.tvgId, [p]);
@@ -1076,124 +1098,207 @@ export async function deduplicateStoredPlaylistSources(
   return remap;
 }
 
+const inFlightSourceSyncs = new Map<string, Promise<void>>();
+
 export async function resyncPersistedSource(params: {
   source: StoredPlaylistSource;
   proxyEndpoint?: string;
   onProgress?: (phase: string, percent: number) => void;
+  onLiveChannelsReady?: (channelCount: number) => void;
 }): Promise<void> {
-  const { source, proxyEndpoint, onProgress } = params;
-  const existingChannels = await lumaDb.channels
-    .where('sourceId')
-    .equals(source.id)
-    .toArray();
-
-  const overridesByStream = new Map<
-    string,
-    { customName?: string; isHidden?: boolean }
-  >();
-  for (const ch of existingChannels) {
-    if (ch.customName || ch.isHidden) {
-      overridesByStream.set(ch.streamUrl, {
-        customName: ch.customName,
-        isHidden: ch.isHidden,
-      });
-    }
+  const { source, proxyEndpoint, onProgress, onLiveChannelsReady } = params;
+  const existingJob = inFlightSourceSyncs.get(source.id);
+  if (existingJob) {
+    await existingJob;
+    return;
   }
 
-  const effectiveProxy = await resolveEffectiveIngestProxy(proxyEndpoint);
-  let res: Extract<WorkerIngestResponse, { type: 'm3u-result' }>;
-  if (
-    source.type === 'xtream' &&
-    source.rawUrlOrHost &&
-    source.username &&
-    source.password
-  ) {
-    const prefetchedXtreamJson = await tryPrefetchXtreamCatalogViaRust({
-      serverUrl: source.rawUrlOrHost,
-      username: source.username,
-      password: source.password,
-      onProgress,
-    });
-    res = await runWorkerTask(
-      {
-        type: 'ingest-xtream',
-        sourceId: source.id,
+  const job = (async () => {
+    const existingChannels = await lumaDb.channels
+      .where('sourceId')
+      .equals(source.id)
+      .toArray();
+
+    const overridesByStream = new Map<
+      string,
+      { customName?: string; isHidden?: boolean }
+    >();
+    for (const ch of existingChannels) {
+      if (ch.customName || ch.isHidden) {
+        overridesByStream.set(ch.streamUrl, {
+          customName: ch.customName,
+          isHidden: ch.isHidden,
+        });
+      }
+    }
+
+    const effectiveProxy = await resolveEffectiveIngestProxy(proxyEndpoint);
+    let res: Extract<WorkerIngestResponse, { type: 'm3u-result' }>;
+    if (
+      source.type === 'xtream' &&
+      source.rawUrlOrHost &&
+      source.username &&
+      source.password
+    ) {
+      const prefetchedXtreamJson = await tryPrefetchXtreamCatalogViaRust({
         serverUrl: source.rawUrlOrHost,
         username: source.username,
         password: source.password,
-        outputFormat: source.outputFormat ?? 'm3u8',
-        proxyEndpoint: effectiveProxy,
-        prefetchedXtreamJson,
-      },
-      'm3u-result',
-      onProgress
-    );
-  } else if (source.rawUrlOrHost && source.rawUrlOrHost.startsWith('http')) {
-    const prefetchedM3u = await tryPrefetchM3uOrXmlTextViaRust(
-      source.rawUrlOrHost
-    );
-    res = await runWorkerTask(
-      {
-        type: 'parse-m3u',
-        sourceId: source.id,
-        rawText: prefetchedM3u,
-        url: prefetchedM3u ? undefined : source.rawUrlOrHost,
-        proxyEndpoint: effectiveProxy,
-      },
-      'm3u-result',
-      onProgress
-    );
-  } else {
-    throw new Error('Lokale Datei-Quelle kann nicht per URL aktualisiert werden.');
-  }
-
-  const mergedChannels = res.channels.map((ch) => {
-    const prev = overridesByStream.get(ch.streamUrl);
-    if (!prev) return ch;
-    return {
-      ...ch,
-      customName: prev.customName,
-      name: prev.customName || ch.name,
-      isHidden: prev.isHidden,
-    };
-  });
-
-  await Promise.all([
-    lumaDb.channels.where('sourceId').equals(source.id).delete(),
-    lumaDb.vodItems.where('sourceId').equals(source.id).delete(),
-    lumaDb.seriesItems.where('sourceId').equals(source.id).delete(),
-  ]);
-
-  await bulkSaveChannelsChunked(mergedChannels);
-  if (res.vodItems.length > 0) await bulkSaveVodChunked(res.vodItems);
-  if (res.seriesItems && res.seriesItems.length > 0) {
-    await bulkSaveSeriesChunked(res.seriesItems);
-  }
-
-  await lumaDb.sources.update(source.id, {
-    channelCount: mergedChannels.length,
-    vodCount: res.vodItems.length,
-    seriesCount: res.seriesItems?.length ?? 0,
-    epgStatus: 'synced',
-    lastUpdated: formatSyncTimestamp(),
-    lastSyncedAtMs: Date.now(),
-    ...(res.discoveredXmltvUrl && !source.xmltvUrl
-      ? { xmltvUrl: res.discoveredXmltvUrl }
-      : {}),
-    ...(res.accountInfo ? { accountInfo: res.accountInfo } : {}),
-  });
-
-  const effectiveXmltvUrl = source.xmltvUrl || res.discoveredXmltvUrl;
-  if (effectiveXmltvUrl && effectiveXmltvUrl.startsWith('http')) {
-    try {
-      await importXmltvForSource({
-        sourceId: source.id,
-        url: effectiveXmltvUrl,
-        proxyEndpoint: effectiveProxy,
+        effectiveProxy,
         onProgress,
       });
-    } catch {
-      // Keep refreshed playlist active even if XMLTV endpoint fails
+      try {
+        res = await runWorkerTask(
+          {
+            type: 'ingest-xtream',
+            sourceId: source.id,
+            serverUrl: source.rawUrlOrHost,
+            username: source.username,
+            password: source.password,
+            outputFormat: source.outputFormat ?? 'm3u8',
+            proxyEndpoint: effectiveProxy,
+            prefetchedXtreamJson,
+          },
+          'm3u-result',
+          onProgress
+        );
+      } catch (workerErr) {
+        // Fallback: if WebWorker fetch failed without prefetch, retry once via Rust native fetch
+        if (!prefetchedXtreamJson && isTauriDesktopOrMobile()) {
+          const fallbackPrefetch = await tryPrefetchXtreamCatalogViaRust({
+            serverUrl: source.rawUrlOrHost,
+            username: source.username,
+            password: source.password,
+            effectiveProxy: undefined,
+            onProgress,
+          });
+          if (!fallbackPrefetch) throw workerErr;
+          res = await runWorkerTask(
+            {
+              type: 'ingest-xtream',
+              sourceId: source.id,
+              serverUrl: source.rawUrlOrHost,
+              username: source.username,
+              password: source.password,
+              outputFormat: source.outputFormat ?? 'm3u8',
+              prefetchedXtreamJson: fallbackPrefetch,
+            },
+            'm3u-result',
+            onProgress
+          );
+        } else {
+          throw workerErr;
+        }
+      }
+    } else if (source.rawUrlOrHost && source.rawUrlOrHost.startsWith('http')) {
+      const prefetchedM3u = await tryPrefetchM3uOrXmlTextViaRust(
+        source.rawUrlOrHost,
+        effectiveProxy
+      );
+      try {
+        res = await runWorkerTask(
+          {
+            type: 'parse-m3u',
+            sourceId: source.id,
+            rawText: prefetchedM3u,
+            url: prefetchedM3u ? undefined : source.rawUrlOrHost,
+            proxyEndpoint: effectiveProxy,
+          },
+          'm3u-result',
+          onProgress
+        );
+      } catch (workerErr) {
+        if (!prefetchedM3u && isTauriDesktopOrMobile()) {
+          const fallbackText = await tryPrefetchM3uOrXmlTextViaRust(
+            source.rawUrlOrHost,
+            undefined
+          );
+          if (!fallbackText) throw workerErr;
+          res = await runWorkerTask(
+            {
+              type: 'parse-m3u',
+              sourceId: source.id,
+              rawText: fallbackText,
+            },
+            'm3u-result',
+            onProgress
+          );
+        } else {
+          throw workerErr;
+        }
+      }
+    } else {
+      throw new Error('Lokale Datei-Quelle kann nicht per URL aktualisiert werden.');
+    }
+
+    const mergedChannels =
+      overridesByStream.size > 0
+        ? res.channels.map((ch) => {
+            const prev = overridesByStream.get(ch.streamUrl);
+            if (!prev) return ch;
+            return {
+              ...ch,
+              customName: prev.customName,
+              name: prev.customName || ch.name,
+              isHidden: prev.isHidden,
+            };
+          })
+        : res.channels;
+
+    // 1. Commit ALL Live TV channels first so 100% of live channels are immediately browsable!
+    await lumaDb.sources.update(source.id, { epgStatus: 'syncing' }).catch(() => undefined);
+    await lumaDb.channels.where('sourceId').equals(source.id).delete();
+    await bulkSaveChannelsChunked(mergedChannels);
+    await lumaDb.sources.update(source.id, {
+      channelCount: mergedChannels.length,
+      ...(res.accountInfo ? { accountInfo: res.accountInfo } : {}),
+    });
+    onLiveChannelsReady?.(mergedChannels.length);
+
+    // 2. Commit VOD & Series catalogs next
+    await Promise.all([
+      lumaDb.vodItems.where('sourceId').equals(source.id).delete(),
+      lumaDb.seriesItems.where('sourceId').equals(source.id).delete(),
+    ]);
+    if (res.vodItems.length > 0) await bulkSaveVodChunked(res.vodItems);
+    if (res.seriesItems && res.seriesItems.length > 0) {
+      await bulkSaveSeriesChunked(res.seriesItems);
+    }
+
+    await lumaDb.sources.update(source.id, {
+      channelCount: mergedChannels.length,
+      vodCount: res.vodItems.length,
+      seriesCount: res.seriesItems?.length ?? 0,
+      epgStatus: 'synced',
+      lastUpdated: formatSyncTimestamp(),
+      lastSyncedAtMs: Date.now(),
+      ...(res.discoveredXmltvUrl && !source.xmltvUrl
+        ? { xmltvUrl: res.discoveredXmltvUrl }
+        : {}),
+      ...(res.accountInfo ? { accountInfo: res.accountInfo } : {}),
+    });
+
+    const effectiveXmltvUrl = source.xmltvUrl || res.discoveredXmltvUrl;
+    if (effectiveXmltvUrl && effectiveXmltvUrl.startsWith('http')) {
+      try {
+        await importXmltvForSource({
+          sourceId: source.id,
+          url: effectiveXmltvUrl,
+          proxyEndpoint: effectiveProxy,
+          onProgress,
+        });
+      } catch {
+        // Keep refreshed playlist active even if XMLTV endpoint fails
+      }
+    }
+  })();
+
+  inFlightSourceSyncs.set(source.id, job);
+  try {
+    await job;
+  } finally {
+    if (inFlightSourceSyncs.get(source.id) === job) {
+      inFlightSourceSyncs.delete(source.id);
     }
   }
 }

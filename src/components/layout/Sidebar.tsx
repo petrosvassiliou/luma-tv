@@ -61,7 +61,7 @@ const GROUP_ICONS: Record<string, React.FC<{ className?: string }>> = {
   FolderHeart,
 };
 
-export const Sidebar: React.FC<SidebarProps> = ({
+const SidebarInner: React.FC<SidebarProps> = ({
   designMode,
   locale,
   collapsed,
@@ -591,3 +591,5 @@ export const Sidebar: React.FC<SidebarProps> = ({
     </aside>
   );
 };
+
+export const Sidebar = React.memo(SidebarInner);

@@ -45,7 +45,7 @@ interface CustomTitlebarProps {
   nowMs: number;
 }
 
-export const CustomTitlebar: React.FC<CustomTitlebarProps> = ({
+const CustomTitlebarInner: React.FC<CustomTitlebarProps> = ({
   designMode,
   locale,
   onSelectLocale,
@@ -347,3 +347,5 @@ export const CustomTitlebar: React.FC<CustomTitlebarProps> = ({
     </header>
   );
 };
+
+export const CustomTitlebar = React.memo(CustomTitlebarInner);

@@ -49,7 +49,7 @@ interface LiveTvViewProps {
 const ROW_HEIGHT = 48;
 const OVERSCAN = 10;
 
-export const LiveTvView: React.FC<LiveTvViewProps> = ({
+const LiveTvViewInner: React.FC<LiveTvViewProps> = ({
   designMode,
   locale,
   channels,
@@ -612,3 +612,5 @@ export const LiveTvView: React.FC<LiveTvViewProps> = ({
     </div>
   );
 };
+
+export const LiveTvView = React.memo(LiveTvViewInner);
